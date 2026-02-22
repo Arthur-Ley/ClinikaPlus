@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   Boxes,
   ChevronDown,
@@ -17,7 +17,6 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import Button from '../../components/ui/Button.tsx';
-import { inventoryItems } from '../../data/mockData';
 
 type RequestSeverity = 'Critical' | 'Warning';
 type RequestStatus = 'Pending' | 'Completed' | 'Cancelled';
@@ -50,6 +49,37 @@ type Supplier = {
   address?: string;
 };
 
+type InventoryStatus = 'Adequate' | 'Low' | 'Critical';
+type MedicationStockItem = {
+  id: string;
+  name: string;
+  category: string;
+  stock: number;
+  unit: string;
+  status: InventoryStatus;
+  reorder: number;
+  supplier: string;
+  lastUpdated: string;
+};
+type MedicationStockApiItem = {
+  medication_id: number;
+  medication_name: string;
+  category_name: string;
+  unit: string;
+  reorder_threshold: number;
+  total_stock: number;
+  status: InventoryStatus;
+  supplier_name: string | null;
+  last_updated: string | null;
+};
+type SupplierApiRow = {
+  supplier_id: number;
+  supplier_name: string;
+  status: string;
+  is_preferred: boolean;
+};
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+
 function getSupplierForCategory(category: string) {
   const normalized = category.toLowerCase();
   if (normalized.includes('anti') || normalized.includes('antibiotic') || normalized.includes('antimicrobial')) return 'MedSupply Co.';
@@ -57,36 +87,6 @@ function getSupplierForCategory(category: string) {
   if (normalized.includes('asthma') || normalized.includes('broncho') || normalized.includes('fluid')) return 'HealthSource';
   return 'MediHealth Depot';
 }
-
-const generatedRestockRequests: RestockRequest[] = inventoryItems
-  .filter((item) => item.stock < item.reorder || item.status === 'Critical')
-  .map((item, idx) => {
-    const severity: RequestSeverity = item.stock <= 0 || item.status === 'Critical' ? 'Critical' : 'Warning';
-    const quantity = Math.max(item.reorder - item.stock, item.reorder);
-    const status: RequestStatus =
-      severity === 'Critical' ? 'Pending' : idx % 4 === 0 ? 'Completed' : idx % 5 === 0 ? 'Cancelled' : 'Pending';
-
-    return {
-      id: `RR-${String(1101 + idx).padStart(4, '0')}`,
-      medication: item.name,
-      category: item.category,
-      severity,
-      quantity,
-      unit: item.unit,
-      currentStock: item.stock,
-      threshold: item.reorder,
-      requestedOn: severity === 'Critical' ? 'Feb 22, 2026' : 'Feb 18, 2026',
-      supplier: getSupplierForCategory(item.category),
-      status,
-    };
-  });
-
-const suppliers: Supplier[] = [
-  { id: 'SUP-001', name: 'MedSupply Co.', totalRequests: 28, completed: 24, cancelled: 2, status: 'Preferred', contact: '+639469519755', email: 'philippinemedicalsupplytrading@gmail.com', address: 'Quezon City, Philippines' },
-  { id: 'SUP-002', name: 'PharmaPlus', totalRequests: 14, completed: 12, cancelled: 1, status: 'Active', contact: '+639123456789', email: 'contact@pharmaplus.com', address: 'Pasig City, Philippines' },
-  { id: 'SUP-003', name: 'HealthSource', totalRequests: 6, completed: 3, cancelled: 2, status: 'Review', contact: '+639221112233', email: 'ops@healthsource.ph', address: 'Cebu City, Philippines' },
-  { id: 'SUP-004', name: 'MediHealth Depot', totalRequests: 0, completed: 0, cancelled: 0, status: 'Active', contact: '+639178889900', email: 'support@medihealth.ph', address: 'Makati City, Philippines' },
-];
 
 function cardIconStyle(tone: 'blue' | 'amber') {
   return tone === 'blue'
@@ -98,7 +98,10 @@ export default function RestockSuppliers() {
   const [requestSeverityFilter, setRequestSeverityFilter] = useState('All Severity');
   const [requestCategoryFilter, setRequestCategoryFilter] = useState('All Categories');
   const [statusFilter, setStatusFilter] = useState('All Status');
-  const [supplierRows, setSupplierRows] = useState<Supplier[]>(suppliers);
+  const [supplierRows, setSupplierRows] = useState<Supplier[]>([]);
+  const [stockRows, setStockRows] = useState<MedicationStockItem[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [modal, setModal] = useState<'none' | 'add' | 'confirm' | 'success' | 'view'>('none');
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [confirmChecked, setConfirmChecked] = useState(false);
@@ -118,11 +121,103 @@ export default function RestockSuppliers() {
     address: '',
   });
 
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoading(true);
+    setLoadError('');
+
+    async function loadData() {
+      try {
+        const [medicationsRes, suppliersRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/medications`),
+          fetch(`${API_BASE_URL}/medications/suppliers`),
+        ]);
+
+        if (!medicationsRes.ok || !suppliersRes.ok) {
+          throw new Error('Failed to load medication or supplier records.');
+        }
+
+        const medicationsJson = (await medicationsRes.json()) as { items: MedicationStockApiItem[] };
+        const suppliersJson = (await suppliersRes.json()) as { suppliers: SupplierApiRow[] };
+        if (!isMounted) return;
+
+        const mappedStocks: MedicationStockItem[] = (medicationsJson.items || []).map((entry) => ({
+          id: `I-${String(entry.medication_id).padStart(3, '0')}`,
+          name: entry.medication_name,
+          category: entry.category_name,
+          stock: entry.total_stock ?? 0,
+          unit: entry.unit,
+          status: entry.status,
+          reorder: entry.reorder_threshold,
+          supplier: entry.supplier_name || getSupplierForCategory(entry.category_name),
+          lastUpdated: entry.last_updated || new Date().toISOString(),
+        }));
+
+        const mappedSuppliers: Supplier[] = (suppliersJson.suppliers || []).map((supplier) => {
+          const resolvedStatus: SupplierStatus =
+            supplier.is_preferred ? 'Preferred' : supplier.status === 'Active' ? 'Active' : 'Review';
+
+          return {
+            id: `SUP-${String(supplier.supplier_id).padStart(3, '0')}`,
+            name: supplier.supplier_name,
+            totalRequests: 0,
+            completed: 0,
+            cancelled: 0,
+            status: resolvedStatus,
+          };
+        });
+
+        setStockRows(mappedStocks);
+        setSupplierRows(mappedSuppliers);
+      } catch (error) {
+        if (!isMounted) return;
+        setLoadError(error instanceof Error ? error.message : 'Failed to load data.');
+        setStockRows([]);
+        setSupplierRows([]);
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    }
+
+    loadData();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const generatedRestockRequests: RestockRequest[] = useMemo(() => {
+    return stockRows
+      .filter((item) => item.stock < item.reorder || item.status === 'Critical')
+      .map((item, idx) => {
+        const severity: RequestSeverity = item.stock <= 0 || item.status === 'Critical' ? 'Critical' : 'Warning';
+        const quantity = Math.max(item.reorder - item.stock, item.reorder);
+        const status: RequestStatus =
+          severity === 'Critical' ? 'Pending' : idx % 4 === 0 ? 'Completed' : idx % 5 === 0 ? 'Cancelled' : 'Pending';
+        const requestedOn = item.lastUpdated && item.lastUpdated !== 'N/A'
+          ? new Date(item.lastUpdated).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })
+          : new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
+
+        return {
+          id: `RR-${String(1101 + idx).padStart(4, '0')}`,
+          medication: item.name,
+          category: item.category,
+          severity,
+          quantity,
+          unit: item.unit,
+          currentStock: item.stock,
+          threshold: item.reorder,
+          requestedOn,
+          supplier: item.supplier || getSupplierForCategory(item.category),
+          status,
+        };
+      });
+  }, [stockRows]);
+
   const requestCategories = useMemo(() => {
     const categories = Array.from(new Set(generatedRestockRequests.map((request) => request.category)));
     categories.sort((a, b) => a.localeCompare(b));
     return categories;
-  }, []);
+  }, [generatedRestockRequests]);
 
   const filteredRestockRequests = useMemo(() => {
     return generatedRestockRequests.filter((request) => {
@@ -130,7 +225,7 @@ export default function RestockSuppliers() {
       const matchesCategory = requestCategoryFilter === 'All Categories' || request.category === requestCategoryFilter;
       return matchesSeverity && matchesCategory;
     });
-  }, [requestSeverityFilter, requestCategoryFilter]);
+  }, [generatedRestockRequests, requestSeverityFilter, requestCategoryFilter]);
 
   const requestsByStatus = useMemo(() => {
     return {
@@ -142,11 +237,11 @@ export default function RestockSuppliers() {
 
   const criticalNeedsCount = useMemo(
     () => generatedRestockRequests.filter((request) => request.severity === 'Critical').length,
-    [],
+    [generatedRestockRequests],
   );
   const pendingRequestsCount = useMemo(
     () => generatedRestockRequests.filter((request) => request.status === 'Pending').length,
-    [],
+    [generatedRestockRequests],
   );
   const oldestPendingDate = useMemo(() => {
     const pending = generatedRestockRequests.filter((request) => request.status === 'Pending');
@@ -154,13 +249,13 @@ export default function RestockSuppliers() {
     return pending
       .map((request) => request.requestedOn)
       .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0];
-  }, []);
+  }, [generatedRestockRequests]);
   const mostUrgentMedication = useMemo(() => {
     if (generatedRestockRequests.length === 0) return 'N/A';
     return generatedRestockRequests
       .slice()
       .sort((a, b) => a.currentStock - b.currentStock)[0].medication;
-  }, []);
+  }, [generatedRestockRequests]);
   const activeSuppliersCount = useMemo(
     () => supplierRows.filter((supplier) => supplier.status === 'Active' || supplier.status === 'Preferred').length,
     [supplierRows],
@@ -180,7 +275,7 @@ export default function RestockSuppliers() {
       if (request.status === 'Cancelled') acc[request.supplier].cancelled += 1;
       return acc;
     }, {});
-  }, []);
+  }, [generatedRestockRequests]);
 
   const alignedSuppliers = useMemo(() => {
     return supplierRows.map((supplier) => {
@@ -258,6 +353,16 @@ export default function RestockSuppliers() {
       <h1 className="text-3xl font-bold tracking-tight text-gray-800">Inventory | Restock and Suppliers</h1>
 
       <section className="flex flex-col gap-5 rounded-2xl bg-gray-300/80 p-5">
+        {isLoading && (
+          <article className="rounded-xl border border-gray-300 bg-gray-100 p-4 text-sm text-gray-600">
+            Loading medication and supplier data...
+          </article>
+        )}
+        {!isLoading && loadError && (
+          <article className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+            {loadError}
+          </article>
+        )}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <article className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
             <div className="flex items-start justify-between">

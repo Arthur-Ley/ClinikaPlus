@@ -2,44 +2,218 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import Button from '../../components/ui/Button.tsx';
 import Pagination from '../../components/ui/Pagination.tsx';
 import { Plus, X, Search, ChevronDown, Boxes, AlertTriangle, PackageX, CheckCircle2, Pencil, Pill } from 'lucide-react';
-import { DEFAULT_PAGE_SIZE, inventoryItems } from '../../data/mockData';
+ 
 
 type InventoryStatus = 'Adequate' | 'Low' | 'Critical';
 
-type InventoryRow = (typeof inventoryItems)[number];
+type InventoryRow = {
+  id: string;
+  name: string;
+  category: string;
+  batch: string;
+  stock: number;
+  unit: string;
+  status: InventoryStatus;
+  expiry: string;
+  reorder: number;
+  supplier: string;
+  form: string;
+  strength: string;
+  lastUpdated: string;
+  lastUpdatedIso: string | null;
+};
+type CategoryOption = {
+  category_id: number;
+  category_name: string;
+};
+type SupplierOption = {
+  supplier_id: number;
+  supplier_name: string;
+  status: string;
+  is_preferred: boolean;
+};
+type CreateMedicationResponse = {
+  medication: {
+    medication_id: number;
+    medication_name: string;
+    category_id: number;
+    form: string;
+    strength: string | null;
+    unit: string;
+    reorder_threshold: number;
+  };
+  batch: {
+    batch_id: number;
+    batch_number: string;
+    quantity: number;
+    expiry_date: string;
+    supplier_id: number;
+  };
+  inventory: {
+    inventory_id: number;
+    medication_id: number;
+    total_stock: number;
+    status: InventoryStatus;
+    last_updated: string;
+  };
+};
+type MedicationStockApiItem = {
+  medication_id: number;
+  medication_name: string;
+  category_name: string;
+  form: string;
+  strength: string | null;
+  unit: string;
+  reorder_threshold: number;
+  total_stock: number;
+  status: InventoryStatus;
+  last_updated: string | null;
+  batch_number: string | null;
+  expiry_date: string | null;
+  supplier_name: string | null;
+};
+
+const formOptions = ['Tablet', 'Capsule', 'Pen', 'Syrup', 'Inhaler', 'Vial'] as const;
+const unitOptions = ['pcs', 'pens', 'vials', 'bottles', 'inhalers', 'sachets'] as const;
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const DEFAULT_PAGE_SIZE = 5;
+
+function normalizeStatus(value: string): InventoryStatus {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'critical') return 'Critical';
+  if (normalized === 'low') return 'Low';
+  return 'Adequate';
+}
+
+function formatDateDisplay(value: string | null) {
+  if (!value) return 'N/A';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'N/A';
+  return date.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
+}
+
+function matchesMonthFilter(lastUpdatedIso: string | null, filterMonth: string) {
+  if (filterMonth === 'This Month' || filterMonth === 'Last Month' || filterMonth === 'Last 3 Months') {
+    if (!lastUpdatedIso) return false;
+    const updatedAt = new Date(lastUpdatedIso);
+    if (Number.isNaN(updatedAt.getTime())) return false;
+    const now = new Date();
+    const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const threeMonthsAgoStart = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+
+    if (filterMonth === 'This Month') {
+      return updatedAt >= currentMonthStart && updatedAt < nextMonthStart;
+    }
+    if (filterMonth === 'Last Month') {
+      return updatedAt >= lastMonthStart && updatedAt < currentMonthStart;
+    }
+    return updatedAt >= threeMonthsAgoStart && updatedAt < nextMonthStart;
+  }
+
+  return true;
+}
+
+function statusSortRank(status: InventoryStatus) {
+  if (status === 'Critical') return 0;
+  if (status === 'Low') return 1;
+  return 2;
+}
 
 export default function CurrentStocks() {
-  const [items, setItems] = useState<InventoryRow[]>(inventoryItems);
+  const [items, setItems] = useState<InventoryRow[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [selectedItem, setSelectedItem] = useState<typeof items[0] | null>(null);
+  const [selectedItem, setSelectedItem] = useState<InventoryRow | null>(null);
   const [filterCategory, setFilterCategory] = useState('All Categories');
   const [filterStatus, setFilterStatus] = useState('All Status');
   const [filterMonth, setFilterMonth] = useState('This Month');
   const [currentPage, setCurrentPage] = useState(1);
   const [isAddMedicationOpen, setIsAddMedicationOpen] = useState(false);
   const [isAddedSuccessOpen, setIsAddedSuccessOpen] = useState(false);
+  const [isLoadingStocks, setIsLoadingStocks] = useState(false);
+  const [stocksError, setStocksError] = useState('');
+  const [isSubmittingMedication, setIsSubmittingMedication] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [categoryDropdown, setCategoryDropdown] = useState<CategoryOption[]>([]);
+  const [supplierDropdown, setSupplierDropdown] = useState<SupplierOption[]>([]);
   const [newMedication, setNewMedication] = useState({
     name: '',
-    category: 'Diabetes Care',
+    categoryId: '',
+    form: 'Tablet',
+    strength: '',
+    unit: 'pcs',
+    quantity: '',
     batch: '',
     reorder: '',
     expiry: '',
-    supplier: '',
-    status: 'Adequate' as InventoryStatus,
+    supplierId: '',
   });
 
+  async function loadMedicationStocks() {
+    setIsLoadingStocks(true);
+    setStocksError('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/medications`);
+      if (!response.ok) {
+        throw new Error('Failed to load medications from database.');
+      }
+
+      const data = (await response.json()) as { items: MedicationStockApiItem[] };
+      const normalized: InventoryRow[] = (data.items || []).map((entry) => ({
+        id: `I-${String(entry.medication_id).padStart(3, '0')}`,
+        name: entry.medication_name,
+        category: entry.category_name,
+        batch: entry.batch_number || 'N/A',
+        stock: entry.total_stock ?? 0,
+        unit: entry.unit,
+        status: normalizeStatus(entry.status),
+        expiry: entry.expiry_date || 'N/A',
+        reorder: entry.reorder_threshold,
+        supplier: entry.supplier_name || 'N/A',
+        form: entry.form || '',
+        strength: entry.strength || '',
+        lastUpdated: formatDateDisplay(entry.last_updated),
+        lastUpdatedIso: entry.last_updated,
+      }));
+
+      setItems(normalized);
+      if (selectedItem) {
+        const refreshed = normalized.find((row) => row.id === selectedItem.id) || null;
+        setSelectedItem(refreshed);
+      }
+    } catch (error) {
+      setStocksError(error instanceof Error ? error.message : 'Failed to load medications.');
+      setItems([]);
+    } finally {
+      setIsLoadingStocks(false);
+    }
+  }
+
+  useEffect(() => {
+    loadMedicationStocks();
+  }, []);
+
   const filteredItems = useMemo(() => {
-    return items.filter((item) => {
-      const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchesStatus = filterStatus === 'All Status' || item.status === filterStatus;
-      const matchesCategory = filterCategory === 'All Categories' || item.category === filterCategory;
-      return matchesSearch && matchesStatus && matchesCategory;
-    });
-  }, [searchTerm, filterStatus, filterCategory, items]);
+    return items
+      .filter((item) => {
+        const matchesSearch = item.name.toLowerCase().includes(searchTerm.toLowerCase());
+        const matchesStatus = filterStatus === 'All Status' || item.status === filterStatus;
+        const matchesCategory = filterCategory === 'All Categories' || item.category === filterCategory;
+        const matchesMonth = matchesMonthFilter(item.lastUpdatedIso, filterMonth);
+        return matchesSearch && matchesStatus && matchesCategory && matchesMonth;
+      })
+      .sort((a, b) => {
+        const statusRankDiff = statusSortRank(a.status) - statusSortRank(b.status);
+        if (statusRankDiff !== 0) return statusRankDiff;
+        return a.name.localeCompare(b.name);
+      });
+  }, [searchTerm, filterStatus, filterCategory, filterMonth, items]);
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchTerm, filterStatus, filterCategory]);
+  }, [searchTerm, filterStatus, filterCategory, filterMonth]);
 
   const totalPages = Math.max(1, Math.ceil(filteredItems.length / DEFAULT_PAGE_SIZE));
 
@@ -48,6 +222,48 @@ export default function CurrentStocks() {
       setCurrentPage(totalPages);
     }
   }, [currentPage, totalPages]);
+
+  useEffect(() => {
+    if (!isAddMedicationOpen) return;
+
+    let isMounted = true;
+    setFormError('');
+
+    async function loadDropdowns() {
+      try {
+        const [categoryRes, supplierRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/medications/categories`),
+          fetch(`${API_BASE_URL}/medications/suppliers`),
+        ]);
+
+        if (!categoryRes.ok || !supplierRes.ok) {
+          throw new Error('Failed to load category/supplier data.');
+        }
+
+        const categoryJson = (await categoryRes.json()) as { categories: CategoryOption[] };
+        const supplierJson = (await supplierRes.json()) as { suppliers: SupplierOption[] };
+
+        if (!isMounted) return;
+
+        setCategoryDropdown(categoryJson.categories || []);
+        setSupplierDropdown(supplierJson.suppliers || []);
+        setNewMedication((prev) => ({
+          ...prev,
+          categoryId: prev.categoryId || String(categoryJson.categories?.[0]?.category_id || ''),
+          supplierId: prev.supplierId || String(supplierJson.suppliers?.[0]?.supplier_id || ''),
+        }));
+      } catch (error) {
+        if (!isMounted) return;
+        setFormError(error instanceof Error ? error.message : 'Failed to load form options.');
+      }
+    }
+
+    loadDropdowns();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isAddMedicationOpen]);
 
   const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
   const pagedItems = filteredItems.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
@@ -71,45 +287,70 @@ export default function CurrentStocks() {
     return categories;
   }, [items]);
 
-  function handleAddMedicationSubmit(e: FormEvent<HTMLFormElement>) {
+  async function handleAddMedicationSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const nextReorder = Number(newMedication.reorder || 0);
-    const nextStock = nextReorder || 1;
+    setIsSubmittingMedication(true);
+    setFormError('');
 
-    const nextItem: InventoryRow = {
-      id: `I-${String(items.length + 1).padStart(3, '0')}`,
-      name: newMedication.name || 'New Medication',
-      category: newMedication.category || 'General Medicine',
-      batch: newMedication.batch || `NEW-${Date.now()}`,
-      stock: nextStock,
-      unit: 'pcs',
-      status: newMedication.status,
-      expiry: newMedication.expiry || '2027-01-01',
-      reorder: nextReorder,
-    };
+    try {
+      const payload = {
+        medication_name: newMedication.name,
+        category_id: Number(newMedication.categoryId),
+        form: newMedication.form,
+        strength: newMedication.strength,
+        unit: newMedication.unit,
+        reorder_threshold: Number(newMedication.reorder),
+        batch_number: newMedication.batch,
+        quantity: Number(newMedication.quantity),
+        expiry_date: newMedication.expiry,
+        supplier_id: Number(newMedication.supplierId),
+      };
 
-    setItems((prev) => [nextItem, ...prev]);
-    setIsAddMedicationOpen(false);
-    setIsAddedSuccessOpen(true);
-    setNewMedication({
-      name: '',
-      category: 'Diabetes Care',
-      batch: '',
-      reorder: '',
-      expiry: '',
-      supplier: '',
-      status: 'Adequate',
-    });
-    setCurrentPage(1);
+      const response = await fetch(`${API_BASE_URL}/medications`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const json = (await response.json()) as CreateMedicationResponse | { error: string };
+      if (!response.ok) {
+        throw new Error('error' in json ? json.error : 'Failed to create medication.');
+      }
+
+      setIsAddMedicationOpen(false);
+      setIsAddedSuccessOpen(true);
+      setNewMedication({
+        name: '',
+        categoryId: categoryDropdown[0] ? String(categoryDropdown[0].category_id) : '',
+        form: 'Tablet',
+        strength: '',
+        unit: 'pcs',
+        quantity: '',
+        batch: '',
+        reorder: '',
+        expiry: '',
+        supplierId: supplierDropdown[0] ? String(supplierDropdown[0].supplier_id) : '',
+      });
+      await loadMedicationStocks();
+      setCurrentPage(1);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Failed to create medication.');
+    } finally {
+      setIsSubmittingMedication(false);
+    }
   }
 
   function getMedicationMeta(item: InventoryRow) {
     return {
       batch: item.batch,
       category: item.category,
-      supplier: 'PharmaPlus',
+      supplier: item.supplier,
+      form: item.form,
+      strength: item.strength,
       suggestedRestock: `${item.reorder} ${item.unit}`,
-      lastUpdated: 'Feb 08, 2026',
+      lastUpdated: item.lastUpdated,
     };
   }
 
@@ -176,7 +417,10 @@ export default function CurrentStocks() {
             <div className="flex gap-2 flex-wrap">
               <Button
                 className="inline-flex h-10 items-center gap-2 whitespace-nowrap bg-green-600 pl-3 pr-4 py-1.5 text-sm text-white hover:bg-green-700"
-                onClick={() => setIsAddMedicationOpen(true)}
+                onClick={() => {
+                  setFormError('');
+                  setIsAddMedicationOpen(true);
+                }}
               >
                 <Plus size={16} className="shrink-0" />
                 Add Medication
@@ -241,7 +485,28 @@ export default function CurrentStocks() {
                 </tr>
               </thead>
               <tbody>
-                {pagedItems.map((item, idx) => (
+                {isLoadingStocks && (
+                  <tr>
+                    <td colSpan={9} className="px-3 py-6 text-center text-sm text-gray-600">
+                      Loading medications from database...
+                    </td>
+                  </tr>
+                )}
+                {!isLoadingStocks && stocksError && (
+                  <tr>
+                    <td colSpan={9} className="px-3 py-6 text-center text-sm text-red-600">
+                      {stocksError}
+                    </td>
+                  </tr>
+                )}
+                {!isLoadingStocks && !stocksError && pagedItems.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="px-3 py-6 text-center text-sm text-gray-600">
+                      No medication records found in the database.
+                    </td>
+                  </tr>
+                )}
+                {!isLoadingStocks && !stocksError && pagedItems.map((item, idx) => (
                   <tr key={item.id} className="border-t border-gray-200 hover:bg-gray-200/40">
                     <td className="px-2 py-1.5 font-semibold text-gray-800">#{String(startIndex + idx + 1).padStart(3, '0')}</td>
                     <td className="px-2 py-1.5 text-gray-800 truncate" title={item.name}>{item.name}</td>
@@ -306,6 +571,8 @@ export default function CurrentStocks() {
               <p>Batch: <span className="font-bold text-gray-800">{getMedicationMeta(selectedItem).batch}</span></p>
               <div className="my-2 border-b border-gray-300" />
               <p>Category: <span className="font-bold text-gray-800">{getMedicationMeta(selectedItem).category}</span></p>
+              <p>Form: <span className="font-bold text-gray-800">{getMedicationMeta(selectedItem).form || 'N/A'}</span></p>
+              <p>Strength: <span className="font-bold text-gray-800">{getMedicationMeta(selectedItem).strength || 'N/A'}</span></p>
               <p>Stock: <span className="font-bold text-gray-800">{selectedItem.stock} {selectedItem.unit}</span></p>
               <p>Threshold: <span className="font-bold text-gray-800">{selectedItem.reorder} {selectedItem.unit}</span></p>
               <p>Expiry: <span className="font-bold text-gray-800">{selectedItem.expiry}</span></p>
@@ -360,14 +627,62 @@ export default function CurrentStocks() {
               </label>
               <label className="text-sm text-gray-700">
                 Category
-                <input
+                <select
+                  required
                   className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
-                  value={newMedication.category}
-                  onChange={(e) => setNewMedication((prev) => ({ ...prev, category: e.target.value }))}
+                  value={newMedication.categoryId}
+                  onChange={(e) => setNewMedication((prev) => ({ ...prev, categoryId: e.target.value }))}
+                >
+                  <option value="">Select category</option>
+                  {categoryDropdown.map((category) => (
+                    <option key={category.category_id} value={String(category.category_id)}>
+                      {category.category_name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-sm text-gray-700">
+                Form
+                <select
+                  required
+                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
+                  value={newMedication.form}
+                  onChange={(e) => setNewMedication((prev) => ({ ...prev, form: e.target.value }))}
+                >
+                  {formOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-sm text-gray-700">
+                Strength
+                <input
+                  required
+                  placeholder="e.g., 500mg or 100IU/mL"
+                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
+                  value={newMedication.strength}
+                  onChange={(e) => setNewMedication((prev) => ({ ...prev, strength: e.target.value }))}
                 />
               </label>
               <label className="text-sm text-gray-700">
-                Threshold
+                Unit
+                <select
+                  required
+                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
+                  value={newMedication.unit}
+                  onChange={(e) => setNewMedication((prev) => ({ ...prev, unit: e.target.value }))}
+                >
+                  {unitOptions.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-sm text-gray-700">
+                Reorder Threshold
                 <input
                   type="number"
                   required
@@ -378,11 +693,23 @@ export default function CurrentStocks() {
                 />
               </label>
               <label className="text-sm text-gray-700">
-                Batch
+                Batch Number
                 <input
+                  required
                   className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
                   value={newMedication.batch}
                   onChange={(e) => setNewMedication((prev) => ({ ...prev, batch: e.target.value }))}
+                />
+              </label>
+              <label className="text-sm text-gray-700">
+                Quantity
+                <input
+                  type="number"
+                  required
+                  min={1}
+                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
+                  value={newMedication.quantity}
+                  onChange={(e) => setNewMedication((prev) => ({ ...prev, quantity: e.target.value }))}
                 />
               </label>
               <label className="text-sm text-gray-700">
@@ -395,30 +722,32 @@ export default function CurrentStocks() {
                   onChange={(e) => setNewMedication((prev) => ({ ...prev, expiry: e.target.value }))}
                 />
               </label>
-              <label className="text-sm text-gray-700">
-                Status
-                <select
-                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
-                  value={newMedication.status}
-                  onChange={(e) => setNewMedication((prev) => ({ ...prev, status: e.target.value as InventoryStatus }))}
-                >
-                  <option value="Adequate">Adequate</option>
-                  <option value="Low">Low</option>
-                  <option value="Critical">Critical</option>
-                </select>
-              </label>
               <label className="text-sm text-gray-700 md:col-span-2">
                 Supplier
-                <input
+                <select
+                  required
                   className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
-                  value={newMedication.supplier}
-                  onChange={(e) => setNewMedication((prev) => ({ ...prev, supplier: e.target.value }))}
-                />
+                  value={newMedication.supplierId}
+                  onChange={(e) => setNewMedication((prev) => ({ ...prev, supplierId: e.target.value }))}
+                >
+                  <option value="">Select supplier</option>
+                  {supplierDropdown.map((supplier) => (
+                    <option key={supplier.supplier_id} value={String(supplier.supplier_id)}>
+                      {supplier.supplier_name}
+                    </option>
+                  ))}
+                </select>
               </label>
             </div>
 
-            <button type="submit" className="mt-5 h-9 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white">
-              Add Medication
+            {formError && <p className="mt-3 text-sm text-red-600">{formError}</p>}
+
+            <button
+              type="submit"
+              className="mt-5 h-9 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white disabled:opacity-60"
+              disabled={isSubmittingMedication}
+            >
+              {isSubmittingMedication ? 'Saving...' : 'Add Medication'}
             </button>
           </form>
         </div>

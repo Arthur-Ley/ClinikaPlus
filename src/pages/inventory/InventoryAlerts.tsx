@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, ChevronDown, X, Pencil, Pill } from 'lucide-react';
 import Pagination from '../../components/ui/Pagination.tsx';
-import { inventoryItems } from '../../data/mockData';
 
 type Severity = 'critical' | 'warning';
+type InventoryStatus = 'Adequate' | 'Low' | 'Critical';
 
 type InventoryAlert = {
   id: string;
@@ -17,7 +17,39 @@ type InventoryAlert = {
 };
 
 const ALERTS_PAGE_SIZE = 6;
-type InventoryRow = (typeof inventoryItems)[number];
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+
+type InventoryRow = {
+  id: string;
+  name: string;
+  category: string;
+  batch: string;
+  stock: number;
+  unit: string;
+  status: InventoryStatus;
+  expiry: string;
+  reorder: number;
+  supplier: string;
+  form: string;
+  strength: string;
+  lastUpdated: string;
+};
+
+type MedicationStockApiItem = {
+  medication_id: number;
+  medication_name: string;
+  category_name: string;
+  form: string;
+  strength: string | null;
+  unit: string;
+  reorder_threshold: number;
+  total_stock: number;
+  status: InventoryStatus;
+  last_updated: string | null;
+  batch_number: string | null;
+  expiry_date: string | null;
+  supplier_name: string | null;
+};
 
 const severityColors = {
   critical: 'border-red-300 bg-red-50',
@@ -25,6 +57,9 @@ const severityColors = {
 };
 
 export default function InventoryAlerts() {
+  const [items, setItems] = useState<InventoryRow[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [severityFilter, setSeverityFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -44,8 +79,54 @@ export default function InventoryAlerts() {
   const [createdRequestIds, setCreatedRequestIds] = useState<Record<string, true>>({});
   const [isRestockSuccessOpen, setIsRestockSuccessOpen] = useState(false);
 
+  useEffect(() => {
+    let isMounted = true;
+    setIsLoading(true);
+    setLoadError('');
+
+    async function loadMedicationStocks() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/medications`);
+        if (!response.ok) {
+          throw new Error('Failed to load medications.');
+        }
+        const data = (await response.json()) as { items: MedicationStockApiItem[] };
+        if (!isMounted) return;
+
+        const normalized: InventoryRow[] = (data.items || []).map((entry) => ({
+          id: `I-${String(entry.medication_id).padStart(3, '0')}`,
+          name: entry.medication_name,
+          category: entry.category_name,
+          batch: entry.batch_number || 'N/A',
+          stock: entry.total_stock ?? 0,
+          unit: entry.unit,
+          status: entry.status,
+          expiry: entry.expiry_date || 'N/A',
+          reorder: entry.reorder_threshold,
+          supplier: entry.supplier_name || 'N/A',
+          form: entry.form || '',
+          strength: entry.strength || '',
+          lastUpdated: entry.last_updated || 'N/A',
+        }));
+        setItems(normalized);
+      } catch (error) {
+        if (!isMounted) return;
+        setItems([]);
+        setLoadError(error instanceof Error ? error.message : 'Failed to load medications.');
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    }
+
+    loadMedicationStocks();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   const alerts = useMemo<InventoryAlert[]>(() => {
-    return inventoryItems
+    return items
       .filter((item) => item.stock < item.reorder || item.status === 'Critical')
       .map((item) => ({
         id: item.id,
@@ -57,7 +138,7 @@ export default function InventoryAlerts() {
         unit: item.unit,
         severity: item.stock <= 0 || item.status === 'Critical' ? 'critical' : 'warning',
       }));
-  }, []);
+  }, [items]);
 
   const filteredAlerts = useMemo(() => {
     return alerts.filter((alert) => {
@@ -150,19 +231,19 @@ export default function InventoryAlerts() {
   }
 
   function getMedicationMetaFromAlert(alert: InventoryAlert) {
-    const matchedItem = inventoryItems.find((item) => item.id === alert.id);
+    const matchedItem = items.find((item) => item.id === alert.id);
     if (!matchedItem) {
       return {
         batch: 'N/A',
         category: alert.category,
-        supplier: 'PharmaPlus',
+        supplier: 'N/A',
         suggestedRestock: `${alert.suggestedRestock} ${alert.unit}`,
       };
     }
     return {
       batch: matchedItem.batch,
       category: matchedItem.category,
-      supplier: 'PharmaPlus',
+      supplier: matchedItem.supplier,
       suggestedRestock: `${alert.suggestedRestock} ${alert.unit}`,
     };
   }
@@ -187,9 +268,9 @@ export default function InventoryAlerts() {
     return {
       batch: item.batch,
       category: item.category,
-      supplier: 'PharmaPlus',
+      supplier: item.supplier,
       suggestedRestock: `${item.reorder} ${item.unit}`,
-      lastUpdated: 'Feb 08, 2026',
+      lastUpdated: item.lastUpdated,
     };
   }
 
@@ -270,6 +351,16 @@ export default function InventoryAlerts() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {isLoading && (
+              <article className="rounded-xl border border-gray-300 bg-gray-50 p-4 text-sm text-gray-600 md:col-span-2 xl:col-span-3">
+                Loading medication alerts...
+              </article>
+            )}
+            {!isLoading && loadError && (
+              <article className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 md:col-span-2 xl:col-span-3">
+                {loadError}
+              </article>
+            )}
             {pagedAlerts.map((alert) => (
               <div
                 key={alert.id}
@@ -287,7 +378,7 @@ export default function InventoryAlerts() {
                   <button
                     className="text-blue-600 hover:text-blue-700"
                     onClick={() => {
-                      const matchedItem = inventoryItems.find((item) => item.id === alert.id);
+                      const matchedItem = items.find((item) => item.id === alert.id);
                       if (matchedItem) setSelectedItem(matchedItem);
                     }}
                   >
