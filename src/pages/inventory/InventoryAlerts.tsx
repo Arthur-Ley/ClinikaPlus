@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ChevronDown, X, Pencil, Pill } from 'lucide-react';
+import { AlertTriangle, ChevronDown, X, Pencil, Pill, Search } from 'lucide-react';
 import Pagination from '../../components/ui/Pagination.tsx';
+import { createRestockRequest, loadRestockRequests } from './restockRequestsStore.ts';
 
 type Severity = 'critical' | 'warning';
 type InventoryStatus = 'Adequate' | 'Low' | 'Critical';
@@ -29,6 +30,7 @@ type InventoryRow = {
   status: InventoryStatus;
   expiry: string;
   reorder: number;
+  supplierId: number | null;
   supplier: string;
   form: string;
   strength: string;
@@ -48,6 +50,7 @@ type MedicationStockApiItem = {
   last_updated: string | null;
   batch_number: string | null;
   expiry_date: string | null;
+  supplier_id: number | null;
   supplier_name: string | null;
 };
 
@@ -62,6 +65,7 @@ export default function InventoryAlerts() {
   const [loadError, setLoadError] = useState('');
   const [severityFilter, setSeverityFilter] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
+  const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedItem, setSelectedItem] = useState<InventoryRow | null>(null);
   const [restockTarget, setRestockTarget] = useState<InventoryAlert | null>(null);
@@ -103,6 +107,7 @@ export default function InventoryAlerts() {
           status: entry.status,
           expiry: entry.expiry_date || 'N/A',
           reorder: entry.reorder_threshold,
+          supplierId: entry.supplier_id ?? null,
           supplier: entry.supplier_name || 'N/A',
           form: entry.form || '',
           strength: entry.strength || '',
@@ -125,6 +130,29 @@ export default function InventoryAlerts() {
     };
   }, []);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadExistingRequestFlags() {
+      try {
+        const existingPendingByMedication = (await loadRestockRequests()).reduce<Record<string, true>>((acc, request) => {
+          if (request.status === 'Pending') {
+            acc[request.medicationId] = true;
+          }
+          return acc;
+        }, {});
+        if (isMounted) setCreatedRequestIds(existingPendingByMedication);
+      } catch {
+        if (isMounted) setCreatedRequestIds({});
+      }
+    }
+
+    loadExistingRequestFlags();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   const alerts = useMemo<InventoryAlert[]>(() => {
     return items
       .filter((item) => item.stock < item.reorder || item.status === 'Critical')
@@ -141,13 +169,25 @@ export default function InventoryAlerts() {
   }, [items]);
 
   const filteredAlerts = useMemo(() => {
-    return alerts.filter((alert) => {
-      return (
-        (severityFilter === '' || alert.severity === severityFilter) &&
-        (categoryFilter === '' || alert.category.toLowerCase().includes(categoryFilter.toLowerCase()))
-      );
-    });
-  }, [severityFilter, categoryFilter, alerts]);
+    const severityRank: Record<Severity, number> = {
+      critical: 0,
+      warning: 1,
+    };
+
+    return alerts
+      .filter((alert) => {
+        return (
+          alert.name.toLowerCase().includes(searchTerm.toLowerCase()) &&
+          (severityFilter === '' || alert.severity === severityFilter) &&
+          (categoryFilter === '' || alert.category.toLowerCase().includes(categoryFilter.toLowerCase()))
+        );
+      })
+      .sort((a, b) => {
+        const severityDiff = severityRank[a.severity] - severityRank[b.severity];
+        if (severityDiff !== 0) return severityDiff;
+        return a.lowStock - b.lowStock;
+      });
+  }, [searchTerm, severityFilter, categoryFilter, alerts]);
 
   const criticalAlerts = useMemo(() => alerts.filter((alert) => alert.severity === 'critical'), [alerts]);
   const warningAlerts = useMemo(() => alerts.filter((alert) => alert.severity === 'warning'), [alerts]);
@@ -194,7 +234,7 @@ export default function InventoryAlerts() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [severityFilter, categoryFilter]);
+  }, [searchTerm, severityFilter, categoryFilter]);
 
   const totalPages = Math.max(1, Math.ceil(filteredAlerts.length / ALERTS_PAGE_SIZE));
 
@@ -248,7 +288,7 @@ export default function InventoryAlerts() {
     };
   }
 
-  function confirmRestockRequest() {
+  async function confirmRestockRequest() {
     if (!restockTarget) return;
 
     const nextErrors = {
@@ -259,9 +299,38 @@ export default function InventoryAlerts() {
     setRestockErrors(nextErrors);
     if (Object.values(nextErrors).some(Boolean)) return;
 
-    setCreatedRequestIds((prev) => ({ ...prev, [restockTarget.id]: true }));
-    setRestockTarget(null);
-    setIsRestockSuccessOpen(true);
+    const matchedItem = items.find((item) => item.id === restockTarget.id);
+    if (!matchedItem?.supplierId) {
+      setRestockErrors((prev) => ({ ...prev, supplier: 'No linked supplier found for this medication.' }));
+      return;
+    }
+    const threshold = matchedItem ? matchedItem.reorder : restockTarget.suggestedRestock;
+
+    try {
+      await createRestockRequest({
+      medicationId: Number(restockTarget.id.replace('I-', '')),
+      supplierId: matchedItem.supplierId,
+      medication: restockTarget.name,
+      category: restockTarget.category,
+      severity: restockTarget.severity === 'critical' ? 'Critical' : 'Warning',
+      suggestedQuantity: restockTarget.suggestedRestock,
+      quantity: Number(restockDetails.quantity),
+      unit: restockTarget.unit,
+      currentStock: restockTarget.lowStock,
+      threshold,
+      neededBy: restockDetails.neededBy,
+      notes: restockDetails.notes,
+    });
+
+      setCreatedRequestIds((prev) => ({ ...prev, [restockTarget.id]: true }));
+      setRestockTarget(null);
+      setIsRestockSuccessOpen(true);
+    } catch (error) {
+      setRestockErrors((prev) => ({
+        ...prev,
+        supplier: error instanceof Error ? error.message : 'Failed to create restock request.',
+      }));
+    }
   }
 
   function getMedicationMeta(item: InventoryRow) {
@@ -321,7 +390,19 @@ export default function InventoryAlerts() {
         </div>
 
         <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-          <div className="mb-5 flex flex-wrap items-center justify-end gap-2">
+          <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="w-full md:w-72 relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+              <input
+                type="text"
+                placeholder="Search Medication"
+                className="w-full h-10 pl-9 pr-4 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
             <div className="relative">
               <select
                 className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
@@ -347,6 +428,7 @@ export default function InventoryAlerts() {
                 ))}
               </select>
               <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
             </div>
           </div>
 

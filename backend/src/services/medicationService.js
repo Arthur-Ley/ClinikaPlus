@@ -85,6 +85,7 @@ async function listMedicationStocks() {
       last_updated: inventory?.last_updated || null,
       batch_number: batch?.batch_number || null,
       expiry_date: batch?.expiry_date || null,
+      supplier_id: batch?.supplier_id || null,
       supplier_name: batch?.tbl_suppliers?.supplier_name || null,
     };
   });

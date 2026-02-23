@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -15,8 +16,39 @@ import {
   LineChart,
   Shield,
 } from 'lucide-react';
+import { RESTOCK_REQUESTS_CHANGED_EVENT } from '../pages/inventory/restockRequestsStore.ts';
 
-function TopLink({ to, label, icon: Icon }: { to: string; label: string; icon: React.ComponentType<{ size?: number; className?: string }> }) {
+type LinkIcon = React.ComponentType<{ size?: number; className?: string }>;
+type BadgeCount = number;
+
+type MedicationStockApiItem = {
+  medication_id: number;
+  reorder_threshold: number;
+  total_stock: number;
+  status: 'Adequate' | 'Low' | 'Critical';
+};
+
+type RestockRequestApiItem = {
+  medication_id: number;
+  status: 'Pending' | 'Completed' | 'Cancelled';
+};
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+
+function CountBadge({ count, active }: { count: BadgeCount; active?: boolean }) {
+  if (count <= 0) return null;
+  return (
+    <span
+      className={`inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-bold leading-5 ${
+        active ? 'bg-white text-blue-700' : 'bg-red-500 text-white'
+      }`}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  );
+}
+
+function TopLink({ to, label, icon: Icon }: { to: string; label: string; icon: LinkIcon }) {
   return (
     <NavLink
       to={to}
@@ -27,12 +59,12 @@ function TopLink({ to, label, icon: Icon }: { to: string; label: string; icon: R
       }
     >
       <Icon size={18} />
-      {label}
+      <span className="truncate">{label}</span>
     </NavLink>
   );
 }
 
-function SubLink({ to, label, icon: Icon }: { to: string; label: string; icon: React.ComponentType<{ size?: number; className?: string }> }) {
+function SubLink({ to, label, icon: Icon, badgeCount = 0 }: { to: string; label: string; icon: LinkIcon; badgeCount?: BadgeCount }) {
   return (
     <NavLink
       to={to}
@@ -42,8 +74,15 @@ function SubLink({ to, label, icon: Icon }: { to: string; label: string; icon: R
         }`
       }
     >
-      <Icon size={16} />
-      {label}
+      {({ isActive }) => (
+        <>
+          <Icon size={16} />
+          <span className="truncate">{label}</span>
+          <span className="ml-auto">
+            <CountBadge count={badgeCount} active={isActive} />
+          </span>
+        </>
+      )}
     </NavLink>
   );
 }
@@ -53,12 +92,14 @@ function Group({
   active,
   icon: Icon,
   label,
+  badgeCount,
   children,
 }: {
   to: string;
   active: boolean;
-  icon: React.ComponentType<{ size?: number; className?: string }>;
+  icon: LinkIcon;
   label: string;
+  badgeCount?: BadgeCount;
   children?: React.ReactNode;
 }) {
   return (
@@ -74,7 +115,10 @@ function Group({
         }`}
       >
         <Icon size={18} />
-        {label}
+        <span className="truncate">{label}</span>
+        <span className="ml-auto">
+          <CountBadge count={badgeCount || 0} active={active} />
+        </span>
       </NavLink>
       <div
         className={`grid transition-all duration-300 ease-in-out ${
@@ -91,10 +135,59 @@ function Group({
 
 export default function Sidebar() {
   const { pathname } = useLocation();
+  const [inventoryAlertCount, setInventoryAlertCount] = useState(0);
 
   const inventoryActive = pathname.startsWith('/inventory');
   const billingActive = pathname.startsWith('/billing');
   const reportsActive = pathname.startsWith('/reports');
+  const needsCountRefresh = useMemo(() => pathname.startsWith('/inventory'), [pathname]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadActionableInventoryAlertCount() {
+      try {
+        const [medicationsRes, requestsRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/medications`),
+          fetch(`${API_BASE_URL}/restock-requests`),
+        ]);
+        if (!medicationsRes.ok || !requestsRes.ok) {
+          throw new Error('Failed to load inventory alert counters.');
+        }
+
+        const medicationsJson = (await medicationsRes.json()) as { items: MedicationStockApiItem[] };
+        const requestsJson = (await requestsRes.json()) as { items: RestockRequestApiItem[] };
+
+        const pendingMedicationIds = new Set(
+          (requestsJson.items || [])
+            .filter((request) => request.status === 'Pending')
+            .map((request) => request.medication_id),
+        );
+
+        const actionableCount = (medicationsJson.items || []).filter((item) => {
+          const isAlert = item.total_stock < item.reorder_threshold || item.status === 'Critical';
+          const hasPendingRequest = pendingMedicationIds.has(item.medication_id);
+          return isAlert && !hasPendingRequest;
+        }).length;
+
+        if (isMounted) setInventoryAlertCount(actionableCount);
+      } catch {
+        if (isMounted) setInventoryAlertCount(0);
+      }
+    }
+
+    loadActionableInventoryAlertCount();
+
+    function handleRequestChange() {
+      loadActionableInventoryAlertCount();
+    }
+
+    window.addEventListener(RESTOCK_REQUESTS_CHANGED_EVENT, handleRequestChange);
+    return () => {
+      isMounted = false;
+      window.removeEventListener(RESTOCK_REQUESTS_CHANGED_EVENT, handleRequestChange);
+    };
+  }, [needsCountRefresh]);
 
   return (
     <aside className="relative z-30 w-[250px] bg-[#F5F7FA] flex flex-col h-full px-5 py-5">
@@ -107,9 +200,15 @@ export default function Sidebar() {
       <nav className="space-y-2">
         <TopLink to="/dashboard" label="Overview" icon={LayoutDashboard} />
 
-        <Group to="/inventory/current-stocks" active={inventoryActive} label="Inventory" icon={Package}>
+        <Group
+          to="/inventory/current-stocks"
+          active={inventoryActive}
+          label="Inventory"
+          icon={Package}
+          badgeCount={inventoryAlertCount}
+        >
           <SubLink to="/inventory/current-stocks" label="Current Stocks" icon={Boxes} />
-          <SubLink to="/inventory/alerts" label="Inventory Alerts" icon={TriangleAlert} />
+          <SubLink to="/inventory/alerts" label="Inventory Alerts" icon={TriangleAlert} badgeCount={inventoryAlertCount} />
           <SubLink to="/inventory/restock" label="Restock & Suppliers" icon={Truck} />
         </Group>
 

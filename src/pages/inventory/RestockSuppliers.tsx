@@ -17,12 +17,20 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import Button from '../../components/ui/Button.tsx';
+import {
+  loadRestockRequests,
+  updateRestockRequest,
+  type RestockRequestSeverity,
+  type RestockRequestStatus,
+} from './restockRequestsStore.ts';
 
-type RequestSeverity = 'Critical' | 'Warning';
-type RequestStatus = 'Pending' | 'Completed' | 'Cancelled';
+type RequestSeverity = RestockRequestSeverity;
+type RequestStatus = RestockRequestStatus;
 
 type RestockRequest = {
+  requestId: number;
   id: string;
+  medicationId: string;
   medication: string;
   category: string;
   severity: RequestSeverity;
@@ -31,13 +39,18 @@ type RestockRequest = {
   currentStock: number;
   threshold: number;
   requestedOn: string;
+  requestedOnIso: string;
+  supplierId: number;
   supplier: string;
   status: RequestStatus;
+  neededBy: string;
+  notes: string;
 };
 
 type SupplierStatus = 'Preferred' | 'Active' | 'Review';
 
 type Supplier = {
+  supplierId: number;
   id: string;
   name: string;
   totalRequests: number;
@@ -49,29 +62,6 @@ type Supplier = {
   address?: string;
 };
 
-type InventoryStatus = 'Adequate' | 'Low' | 'Critical';
-type MedicationStockItem = {
-  id: string;
-  name: string;
-  category: string;
-  stock: number;
-  unit: string;
-  status: InventoryStatus;
-  reorder: number;
-  supplier: string;
-  lastUpdated: string;
-};
-type MedicationStockApiItem = {
-  medication_id: number;
-  medication_name: string;
-  category_name: string;
-  unit: string;
-  reorder_threshold: number;
-  total_stock: number;
-  status: InventoryStatus;
-  supplier_name: string | null;
-  last_updated: string | null;
-};
 type SupplierApiRow = {
   supplier_id: number;
   supplier_name: string;
@@ -80,12 +70,10 @@ type SupplierApiRow = {
 };
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
 
-function getSupplierForCategory(category: string) {
-  const normalized = category.toLowerCase();
-  if (normalized.includes('anti') || normalized.includes('antibiotic') || normalized.includes('antimicrobial')) return 'MedSupply Co.';
-  if (normalized.includes('hypertensive') || normalized.includes('dyslipidemia') || normalized.includes('thrombotic')) return 'PharmaPlus';
-  if (normalized.includes('asthma') || normalized.includes('broncho') || normalized.includes('fluid')) return 'HealthSource';
-  return 'MediHealth Depot';
+function formatDateLabel(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'N/A';
+  return parsed.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
 }
 
 function cardIconStyle(tone: 'blue' | 'amber') {
@@ -99,13 +87,27 @@ export default function RestockSuppliers() {
   const [requestCategoryFilter, setRequestCategoryFilter] = useState('All Categories');
   const [statusFilter, setStatusFilter] = useState('All Status');
   const [supplierRows, setSupplierRows] = useState<Supplier[]>([]);
-  const [stockRows, setStockRows] = useState<MedicationStockItem[]>([]);
+  const [restockRequests, setRestockRequests] = useState<RestockRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
-  const [modal, setModal] = useState<'none' | 'add' | 'confirm' | 'success' | 'view'>('none');
+  const [modal, setModal] = useState<
+    'none' | 'add' | 'confirm' | 'success' | 'viewSupplier' | 'viewRequest' | 'editRequest' | 'cancelRequest'
+  >('none');
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
+  const [selectedRequest, setSelectedRequest] = useState<RestockRequest | null>(null);
   const [confirmChecked, setConfirmChecked] = useState(false);
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
+  const [restockEdit, setRestockEdit] = useState({
+    supplierId: '',
+    quantity: '',
+    neededBy: '',
+    notes: '',
+  });
+  const [restockEditErrors, setRestockEditErrors] = useState({
+    supplier: '',
+    quantity: '',
+    neededBy: '',
+  });
   const [newSupplier, setNewSupplier] = useState({
     name: '',
     status: '' as SupplierStatus | '',
@@ -128,30 +130,13 @@ export default function RestockSuppliers() {
 
     async function loadData() {
       try {
-        const [medicationsRes, suppliersRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/medications`),
-          fetch(`${API_BASE_URL}/medications/suppliers`),
-        ]);
-
-        if (!medicationsRes.ok || !suppliersRes.ok) {
-          throw new Error('Failed to load medication or supplier records.');
+        const suppliersRes = await fetch(`${API_BASE_URL}/medications/suppliers`);
+        if (!suppliersRes.ok) {
+          throw new Error('Failed to load supplier records.');
         }
 
-        const medicationsJson = (await medicationsRes.json()) as { items: MedicationStockApiItem[] };
         const suppliersJson = (await suppliersRes.json()) as { suppliers: SupplierApiRow[] };
         if (!isMounted) return;
-
-        const mappedStocks: MedicationStockItem[] = (medicationsJson.items || []).map((entry) => ({
-          id: `I-${String(entry.medication_id).padStart(3, '0')}`,
-          name: entry.medication_name,
-          category: entry.category_name,
-          stock: entry.total_stock ?? 0,
-          unit: entry.unit,
-          status: entry.status,
-          reorder: entry.reorder_threshold,
-          supplier: entry.supplier_name || getSupplierForCategory(entry.category_name),
-          lastUpdated: entry.last_updated || new Date().toISOString(),
-        }));
 
         const mappedSuppliers: Supplier[] = (suppliersJson.suppliers || []).map((supplier) => {
           const resolvedStatus: SupplierStatus =
@@ -159,6 +144,7 @@ export default function RestockSuppliers() {
 
           return {
             id: `SUP-${String(supplier.supplier_id).padStart(3, '0')}`,
+            supplierId: supplier.supplier_id,
             name: supplier.supplier_name,
             totalRequests: 0,
             completed: 0,
@@ -167,13 +153,13 @@ export default function RestockSuppliers() {
           };
         });
 
-        setStockRows(mappedStocks);
         setSupplierRows(mappedSuppliers);
+        await syncRestockRequests();
       } catch (error) {
         if (!isMounted) return;
         setLoadError(error instanceof Error ? error.message : 'Failed to load data.');
-        setStockRows([]);
         setSupplierRows([]);
+        setRestockRequests([]);
       } finally {
         if (isMounted) setIsLoading(false);
       }
@@ -185,47 +171,40 @@ export default function RestockSuppliers() {
     };
   }, []);
 
-  const generatedRestockRequests: RestockRequest[] = useMemo(() => {
-    return stockRows
-      .filter((item) => item.stock < item.reorder || item.status === 'Critical')
-      .map((item, idx) => {
-        const severity: RequestSeverity = item.stock <= 0 || item.status === 'Critical' ? 'Critical' : 'Warning';
-        const quantity = Math.max(item.reorder - item.stock, item.reorder);
-        const status: RequestStatus =
-          severity === 'Critical' ? 'Pending' : idx % 4 === 0 ? 'Completed' : idx % 5 === 0 ? 'Cancelled' : 'Pending';
-        const requestedOn = item.lastUpdated && item.lastUpdated !== 'N/A'
-          ? new Date(item.lastUpdated).toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' })
-          : new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
-
-        return {
-          id: `RR-${String(1101 + idx).padStart(4, '0')}`,
-          medication: item.name,
-          category: item.category,
-          severity,
-          quantity,
-          unit: item.unit,
-          currentStock: item.stock,
-          threshold: item.reorder,
-          requestedOn,
-          supplier: item.supplier || getSupplierForCategory(item.category),
-          status,
-        };
-      });
-  }, [stockRows]);
+  async function syncRestockRequests() {
+    const mappedRequests: RestockRequest[] = (await loadRestockRequests())
+      .map((request) => ({
+        ...request,
+        requestedOn: formatDateLabel(request.requestedOnIso),
+      }))
+      .sort((a, b) => new Date(b.requestedOnIso).getTime() - new Date(a.requestedOnIso).getTime());
+    setRestockRequests(mappedRequests);
+  }
 
   const requestCategories = useMemo(() => {
-    const categories = Array.from(new Set(generatedRestockRequests.map((request) => request.category)));
+    const categories = Array.from(new Set(restockRequests.map((request) => request.category)));
     categories.sort((a, b) => a.localeCompare(b));
     return categories;
-  }, [generatedRestockRequests]);
+  }, [restockRequests]);
 
   const filteredRestockRequests = useMemo(() => {
-    return generatedRestockRequests.filter((request) => {
-      const matchesSeverity = requestSeverityFilter === 'All Severity' || request.severity === requestSeverityFilter;
-      const matchesCategory = requestCategoryFilter === 'All Categories' || request.category === requestCategoryFilter;
-      return matchesSeverity && matchesCategory;
-    });
-  }, [generatedRestockRequests, requestSeverityFilter, requestCategoryFilter]);
+    const severityRank: Record<RequestSeverity, number> = {
+      Critical: 0,
+      Warning: 1,
+    };
+
+    return restockRequests
+      .filter((request) => {
+        const matchesSeverity = requestSeverityFilter === 'All Severity' || request.severity === requestSeverityFilter;
+        const matchesCategory = requestCategoryFilter === 'All Categories' || request.category === requestCategoryFilter;
+        return matchesSeverity && matchesCategory;
+      })
+      .sort((a, b) => {
+        const severityDiff = severityRank[a.severity] - severityRank[b.severity];
+        if (severityDiff !== 0) return severityDiff;
+        return new Date(b.requestedOnIso).getTime() - new Date(a.requestedOnIso).getTime();
+      });
+  }, [restockRequests, requestSeverityFilter, requestCategoryFilter]);
 
   const requestsByStatus = useMemo(() => {
     return {
@@ -236,26 +215,25 @@ export default function RestockSuppliers() {
   }, [filteredRestockRequests]);
 
   const criticalNeedsCount = useMemo(
-    () => generatedRestockRequests.filter((request) => request.severity === 'Critical').length,
-    [generatedRestockRequests],
+    () => restockRequests.filter((request) => request.severity === 'Critical').length,
+    [restockRequests],
   );
   const pendingRequestsCount = useMemo(
-    () => generatedRestockRequests.filter((request) => request.status === 'Pending').length,
-    [generatedRestockRequests],
+    () => restockRequests.filter((request) => request.status === 'Pending').length,
+    [restockRequests],
   );
   const oldestPendingDate = useMemo(() => {
-    const pending = generatedRestockRequests.filter((request) => request.status === 'Pending');
+    const pending = restockRequests.filter((request) => request.status === 'Pending');
     if (pending.length === 0) return 'N/A';
-    return pending
-      .map((request) => request.requestedOn)
-      .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0];
-  }, [generatedRestockRequests]);
+    const oldestPending = pending.slice().sort((a, b) => new Date(a.requestedOnIso).getTime() - new Date(b.requestedOnIso).getTime())[0];
+    return oldestPending.requestedOn;
+  }, [restockRequests]);
   const mostUrgentMedication = useMemo(() => {
-    if (generatedRestockRequests.length === 0) return 'N/A';
-    return generatedRestockRequests
+    if (restockRequests.length === 0) return 'N/A';
+    return restockRequests
       .slice()
       .sort((a, b) => a.currentStock - b.currentStock)[0].medication;
-  }, [generatedRestockRequests]);
+  }, [restockRequests]);
   const activeSuppliersCount = useMemo(
     () => supplierRows.filter((supplier) => supplier.status === 'Active' || supplier.status === 'Preferred').length,
     [supplierRows],
@@ -266,7 +244,7 @@ export default function RestockSuppliers() {
   );
 
   const supplierRequestStats = useMemo(() => {
-    return generatedRestockRequests.reduce<Record<string, { total: number; completed: number; cancelled: number }>>((acc, request) => {
+    return restockRequests.reduce<Record<string, { total: number; completed: number; cancelled: number }>>((acc, request) => {
       if (!acc[request.supplier]) {
         acc[request.supplier] = { total: 0, completed: 0, cancelled: 0 };
       }
@@ -275,7 +253,7 @@ export default function RestockSuppliers() {
       if (request.status === 'Cancelled') acc[request.supplier].cancelled += 1;
       return acc;
     }, {});
-  }, [generatedRestockRequests]);
+  }, [restockRequests]);
 
   const alignedSuppliers = useMemo(() => {
     return supplierRows.map((supplier) => {
@@ -295,6 +273,106 @@ export default function RestockSuppliers() {
       return matchesStatus;
     });
   }, [alignedSuppliers, statusFilter]);
+
+  function statusCardClass(status: RequestStatus) {
+    if (status === 'Completed') return 'border-[#22C55E] bg-[#22C55E]/15';
+    if (status === 'Pending') return 'border-[#F59E0B] bg-[#F59E0B]/15';
+    return 'border-[#EF4444] bg-[#EF4444]/15';
+  }
+
+  function statusAccentClass(status: RequestStatus) {
+    if (status === 'Completed') return 'text-[#22C55E]';
+    if (status === 'Pending') return 'text-[#F59E0B]';
+    return 'text-[#EF4444]';
+  }
+
+  function statusButtonClass(status: RequestStatus) {
+    if (status === 'Completed') return 'bg-[#22C55E] hover:bg-[#16A34A]';
+    if (status === 'Pending') return 'bg-[#F59E0B] hover:bg-[#D97706]';
+    return 'bg-[#EF4444] hover:bg-[#DC2626]';
+  }
+
+  function openViewRequest(request: RestockRequest) {
+    setSelectedRequest(request);
+    setModal('viewRequest');
+  }
+
+  function openAdjustRequest(request: RestockRequest) {
+    setSelectedRequest(request);
+    setRestockEdit({
+      supplierId: String(request.supplierId),
+      quantity: String(request.quantity),
+      neededBy: request.neededBy,
+      notes: request.notes,
+    });
+    setRestockEditErrors({
+      supplier: '',
+      quantity: '',
+      neededBy: '',
+    });
+    setModal('editRequest');
+  }
+
+  async function saveAdjustedRequest() {
+    if (!selectedRequest) return;
+
+    const supplierId = Number(restockEdit.supplierId);
+    const nextErrors = {
+      supplier: Number.isInteger(supplierId) && supplierId > 0 ? '' : 'Supplier is required.',
+      quantity: Number(restockEdit.quantity) > 0 ? '' : 'Quantity must be greater than 0.',
+      neededBy: restockEdit.neededBy ? '' : 'Needed-by date is required.',
+    };
+    setRestockEditErrors(nextErrors);
+    if (Object.values(nextErrors).some(Boolean)) return;
+
+    try {
+      await updateRestockRequest(selectedRequest.requestId, {
+        supplierId,
+        quantity: Number(restockEdit.quantity),
+        neededBy: restockEdit.neededBy,
+        notes: restockEdit.notes,
+      });
+      await syncRestockRequests();
+      setModal('none');
+      setSelectedRequest(null);
+    } catch (error) {
+      setRestockEditErrors((prev) => ({
+        ...prev,
+        supplier: error instanceof Error ? error.message : 'Failed to update restock request.',
+      }));
+    }
+  }
+
+  function openCancelRequest(request: RestockRequest) {
+    setSelectedRequest(request);
+    setModal('cancelRequest');
+  }
+
+  async function confirmCancelRequest() {
+    if (!selectedRequest) return;
+
+    try {
+      await updateRestockRequest(selectedRequest.requestId, { status: 'Cancelled' });
+      await syncRestockRequests();
+      setModal('none');
+      setSelectedRequest(null);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Failed to cancel request.');
+    }
+  }
+
+  async function markRequestAsCompleted() {
+    if (!selectedRequest) return;
+
+    try {
+      await updateRestockRequest(selectedRequest.requestId, { status: 'Completed' });
+      await syncRestockRequests();
+      setModal('none');
+      setSelectedRequest(null);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Failed to complete request.');
+    }
+  }
 
   function handleAddSupplierSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -320,6 +398,7 @@ export default function RestockSuppliers() {
     const nextId = `SUP-${String(supplierRows.length + 1).padStart(3, '0')}`;
     const supplier: Supplier = {
       id: nextId,
+      supplierId: -(supplierRows.length + 1),
       name: newSupplier.name || 'New Supplier',
       totalRequests: 0,
       completed: 0,
@@ -448,10 +527,10 @@ export default function RestockSuppliers() {
                   </div>
                   <div className="space-y-2">
                     {requestsByStatus[status].map((request) => (
-                      <article key={request.id} className="rounded-lg border border-blue-300 bg-blue-100/70 p-3 text-sm">
+                      <article key={request.id} className={`rounded-lg border p-3 text-sm ${statusCardClass(request.status)}`}>
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
-                            <div className="flex items-center gap-1 text-blue-700">
+                            <div className={`flex items-center gap-1 ${statusAccentClass(request.status)}`}>
                               <Truck className="h-3.5 w-3.5" />
                               <span className="font-semibold">Request ID: {request.id}</span>
                             </div>
@@ -463,7 +542,7 @@ export default function RestockSuppliers() {
                           <button
                             type="button"
                             onClick={() => setExpandedRequestId((prev) => (prev === request.id ? null : request.id))}
-                            className="rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white hover:bg-blue-700"
+                            className={`rounded-md px-2 py-1 text-xs font-semibold text-white ${statusButtonClass(request.status)}`}
                           >
                             {expandedRequestId === request.id ? 'Hide' : 'Details'}
                           </button>
@@ -476,14 +555,24 @@ export default function RestockSuppliers() {
                               <p>Quantity: {request.quantity} {request.unit}</p>
                               <p>Requested On: {request.requestedOn}</p>
                               <p>Supplier: {request.supplier}</p>
-                              <p className={request.status === 'Pending' ? 'text-amber-600' : request.status === 'Completed' ? 'text-blue-600' : 'text-red-600'}>
+                              <p className={statusAccentClass(request.status)}>
                                 Status: {request.status}
                               </p>
                             </div>
-                            <div className="mt-3 flex flex-wrap items-center gap-4 text-sm text-blue-600">
-                              <button className="hover:text-blue-700">View Stock Request</button>
-                              {request.status === 'Pending' && <button className="hover:text-blue-700">Adjust Restock</button>}
-                              {request.status === 'Pending' && <button className="hover:text-blue-700">Cancel</button>}
+                            <div className={`mt-3 flex flex-wrap items-center gap-4 text-sm ${statusAccentClass(request.status)}`}>
+                              <button type="button" className="hover:opacity-80" onClick={() => openViewRequest(request)}>
+                                View Stock Request
+                              </button>
+                              {request.status === 'Pending' && (
+                                <button type="button" className="hover:opacity-80" onClick={() => openAdjustRequest(request)}>
+                                  Adjust Restock
+                                </button>
+                              )}
+                              {request.status === 'Pending' && (
+                                <button type="button" className="hover:opacity-80" onClick={() => openCancelRequest(request)}>
+                                  Cancel
+                                </button>
+                              )}
                             </div>
                           </>
                         )}
@@ -509,11 +598,11 @@ export default function RestockSuppliers() {
 
         <div className="order-1 rounded-2xl bg-gray-100 p-4 md:p-5">
           <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="mr-2 flex items-center gap-2">
-                <Building2 className="h-5 w-5 text-gray-500" />
-                <h2 className="text-xl font-semibold text-gray-700">Supplier Table</h2>
-              </div>
+            <div className="flex items-center gap-2">
+              <Building2 className="h-5 w-5 text-gray-500" />
+              <h2 className="text-xl font-semibold text-gray-700">Supplier Table</h2>
+            </div>
+            <div className="flex flex-wrap items-center gap-2 md:justify-end">
               <Button
                 className="inline-flex h-10 items-center gap-2 whitespace-nowrap bg-green-500 pl-3 pr-4 py-1.5 text-sm hover:bg-green-600"
                 onClick={() => setModal('add')}
@@ -564,7 +653,7 @@ export default function RestockSuppliers() {
                         className="font-semibold text-blue-600 hover:text-blue-700"
                         onClick={() => {
                           setSelectedSupplier(supplier);
-                          setModal('view');
+                          setModal('viewSupplier');
                         }}
                       >
                         View
@@ -730,7 +819,141 @@ export default function RestockSuppliers() {
         </div>
       )}
 
-      {modal === 'view' && selectedSupplier && (
+      {modal === 'viewRequest' && selectedRequest && (
+        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
+          <div className="w-full max-w-[520px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between border-b border-gray-300 pb-3">
+              <h2 className="text-xl font-semibold text-gray-800">Stock Request Details</h2>
+              <button type="button" onClick={() => setModal('none')} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600">
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="space-y-1.5 text-sm text-gray-800">
+              <p><span className="font-semibold">Request ID:</span> {selectedRequest.id}</p>
+              <p><span className="font-semibold">Medication:</span> {selectedRequest.medication}</p>
+              <p><span className="font-semibold">Category:</span> {selectedRequest.category}</p>
+              <p><span className="font-semibold">Severity:</span> {selectedRequest.severity}</p>
+              <p><span className="font-semibold">Quantity:</span> {selectedRequest.quantity} {selectedRequest.unit}</p>
+              <p><span className="font-semibold">Stock / Threshold:</span> {selectedRequest.currentStock} {selectedRequest.unit} / {selectedRequest.threshold} {selectedRequest.unit}</p>
+              <p><span className="font-semibold">Supplier:</span> {selectedRequest.supplier}</p>
+              <p><span className="font-semibold">Requested On:</span> {selectedRequest.requestedOn}</p>
+              <p><span className="font-semibold">Needed By:</span> {selectedRequest.neededBy || 'N/A'}</p>
+              <p><span className="font-semibold">Status:</span> <span className={statusAccentClass(selectedRequest.status)}>{selectedRequest.status}</span></p>
+              <p><span className="font-semibold">Notes:</span> {selectedRequest.notes || 'N/A'}</p>
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              {selectedRequest.status === 'Pending' && (
+                <button
+                  type="button"
+                  onClick={markRequestAsCompleted}
+                  className="h-9 rounded-lg bg-[#22C55E] px-4 text-sm font-semibold text-white hover:bg-[#16A34A]"
+                >
+                  Mark as Completed
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setModal('none')}
+                className="h-9 rounded-lg border border-gray-300 px-4 text-sm font-semibold text-gray-700"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modal === 'editRequest' && selectedRequest && (
+        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
+          <div className="w-full max-w-[520px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-3 flex items-center justify-between border-b border-gray-300 pb-3">
+              <h2 className="text-xl font-semibold text-gray-800">Adjust Restock Request</h2>
+              <button type="button" onClick={() => setModal('none')} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600">
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <label className="text-sm text-gray-700 md:col-span-2">
+                Supplier
+                <select
+                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
+                  value={restockEdit.supplierId}
+                  onChange={(e) => setRestockEdit((prev) => ({ ...prev, supplierId: e.target.value }))}
+                >
+                  <option value="">Select supplier</option>
+                  {supplierRows.map((supplier) => (
+                    <option key={supplier.id} value={String(supplier.supplierId)}>
+                      {supplier.name}
+                    </option>
+                  ))}
+                </select>
+                {restockEditErrors.supplier && <p className="mt-1 text-xs text-red-500">{restockEditErrors.supplier}</p>}
+              </label>
+
+              <label className="text-sm text-gray-700">
+                Quantity ({selectedRequest.unit})
+                <input
+                  type="number"
+                  min={1}
+                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
+                  value={restockEdit.quantity}
+                  onChange={(e) => setRestockEdit((prev) => ({ ...prev, quantity: e.target.value }))}
+                />
+                {restockEditErrors.quantity && <p className="mt-1 text-xs text-red-500">{restockEditErrors.quantity}</p>}
+              </label>
+
+              <label className="text-sm text-gray-700">
+                Needed By
+                <input
+                  type="date"
+                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
+                  value={restockEdit.neededBy}
+                  onChange={(e) => setRestockEdit((prev) => ({ ...prev, neededBy: e.target.value }))}
+                />
+                {restockEditErrors.neededBy && <p className="mt-1 text-xs text-red-500">{restockEditErrors.neededBy}</p>}
+              </label>
+
+              <label className="text-sm text-gray-700 md:col-span-2">
+                Notes (Optional)
+                <textarea
+                  className="mt-1 w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2 text-sm"
+                  rows={3}
+                  value={restockEdit.notes}
+                  onChange={(e) => setRestockEdit((prev) => ({ ...prev, notes: e.target.value }))}
+                />
+              </label>
+            </div>
+
+            <button type="button" onClick={saveAdjustedRequest} className="mt-4 h-10 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">
+              Save Changes
+            </button>
+          </div>
+        </div>
+      )}
+
+      {modal === 'cancelRequest' && selectedRequest && (
+        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
+          <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-gray-100 p-6 text-center shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-2xl font-bold text-gray-800">Cancel Request?</h3>
+            <p className="mt-2 text-sm text-gray-600">
+              This will mark <span className="font-semibold text-gray-800">{selectedRequest.id}</span> as Cancelled.
+            </p>
+            <div className="mt-5 flex items-center justify-center gap-3">
+              <button type="button" onClick={() => setModal('none')} className="h-9 rounded-lg border border-gray-300 px-4 text-sm font-semibold text-gray-700">
+                Keep Pending
+              </button>
+              <button type="button" onClick={confirmCancelRequest} className="h-9 rounded-lg bg-[#EF4444] px-4 text-sm font-semibold text-white hover:bg-[#DC2626]">
+                Confirm Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {modal === 'viewSupplier' && selectedSupplier && (
         <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
           <div className="w-full max-w-[760px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between border-b border-gray-300 pb-3">
