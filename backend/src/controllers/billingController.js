@@ -1,0 +1,56 @@
+import {
+  addBillItemFlow,
+  cancelBillFlow,
+  createBillFlow,
+  createPaymentFlow,
+  getBillDetailsFlow,
+  getBillingAnalyticsFlow,
+  listBillsFlow,
+  removeBillItemFlow,
+  updateBillItemFlow,
+} from "../services/billingService.js";
+
+export async function createBill(req, res) {
+  const result = await createBillFlow(req.body);
+  return res.status(201).json(result);
+}
+
+export async function getBills(req, res) {
+  const result = await listBillsFlow(req.query);
+  return res.status(200).json(result);
+}
+
+export async function addBillItem(req, res) {
+  const result = await addBillItemFlow(req.params.billId, req.body);
+  return res.status(201).json(result);
+}
+
+export async function createPayment(req, res) {
+  const result = await createPaymentFlow(req.params.billId, req.body);
+  return res.status(201).json(result);
+}
+
+export async function updateBillItem(req, res) {
+  const result = await updateBillItemFlow(req.params.billId, req.params.billItemId, req.body);
+  return res.status(200).json(result);
+}
+
+export async function removeBillItem(req, res) {
+  const result = await removeBillItemFlow(req.params.billId, req.params.billItemId);
+  return res.status(200).json(result);
+}
+
+export async function cancelBill(req, res) {
+  const bill = await cancelBillFlow(req.params.billId);
+  return res.status(200).json({ bill });
+}
+
+export async function getBillDetails(req, res) {
+  const result = await getBillDetailsFlow(req.params.billId);
+  return res.status(200).json(result);
+}
+
+export async function getBillingAnalytics(_req, res) {
+  const analytics = await getBillingAnalyticsFlow();
+  return res.status(200).json({ analytics });
+}

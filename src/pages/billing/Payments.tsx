@@ -61,7 +61,7 @@ function formatDateForTable(value: string) {
 
 export default function Payments() {
   const [searchTerm, setSearchTerm] = useState('');
-  const { paymentQueue } = useBillingPayments();
+  const { paymentQueue, markPaymentPaid, setPaymentProcessing } = useBillingPayments();
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('all');
   const [modal, setModal] = useState<PaymentModal>('none');
   const [selectedRow, setSelectedRow] = useState<PaymentRow | null>(null);
@@ -69,6 +69,7 @@ export default function Payments() {
   const [amountReceived, setAmountReceived] = useState('');
   const [gcashReference, setGcashReference] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const filteredRows = useMemo(() => {
     const normalized = searchTerm.trim().toLowerCase();
@@ -170,6 +171,13 @@ export default function Payments() {
   }
 
   function handleProceedFromMethod() {
+    if (selectedRow) {
+      void setPaymentProcessing({
+        id: selectedRow.id,
+        method: selectedMethod,
+      });
+    }
+
     if (selectedMethod === 'Cash') {
       setModal('cash');
       return;
@@ -181,6 +189,52 @@ export default function Payments() {
   const paymentMethodLabel =
     selectedMethod === 'Cash' ? 'Cash' : selectedMethod === 'Maya' ? 'E-Wallet (Maya)' : 'E-Wallet (GCash)';
   const paymentReference = isWalletMethod ? gcashReference || selectedRow?.id || 'N/A' : 'N/A';
+
+  async function handleConfirmPayment() {
+    if (!selectedRow || isSubmitting) return;
+
+    if (selectedMethod === 'Cash') {
+      const received = Number(amountReceived || 0);
+      if (Number.isNaN(received) || received < selectedRow.amount) {
+        window.alert('Amount received is not enough.');
+        return;
+      }
+    }
+
+    if (isWalletMethod && !gcashReference.trim()) {
+      window.alert('Reference number is required for GCash/Maya payments.');
+      return;
+    }
+
+    const paidDate = new Date().toISOString();
+    const reference = isWalletMethod ? gcashReference.trim() : undefined;
+
+    try {
+      setIsSubmitting(true);
+      await markPaymentPaid({
+        id: selectedRow.id,
+        method: selectedMethod,
+        reference,
+        paidDate,
+      });
+      setSelectedRow((prev) =>
+        prev
+          ? {
+              ...prev,
+              method: selectedMethod,
+              status: 'Paid',
+              date: paidDate.slice(0, 10),
+            }
+          : prev,
+      );
+      setModal('success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to record payment.';
+      window.alert(message);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
 
   return (
     <div className="space-y-5">
@@ -530,7 +584,7 @@ export default function Payments() {
                 <button type="button" onClick={closeAllModals} className="h-9 flex-1 rounded-lg bg-gray-300 text-sm font-semibold text-gray-600">
                   Cancel
                 </button>
-                <button type="button" onClick={() => setModal('success')} className="h-9 flex-1 rounded-lg bg-blue-600 text-sm font-semibold text-white">
+                <button type="button" onClick={handleConfirmPayment} className="h-9 flex-1 rounded-lg bg-blue-600 text-sm font-semibold text-white">
                   Confirm Payment
                 </button>
               </div>

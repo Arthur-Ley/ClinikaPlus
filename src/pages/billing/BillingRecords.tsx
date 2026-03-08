@@ -26,43 +26,71 @@ type BillRow = {
 };
 
 type ServiceItem = {
+  type: 'service' | 'medication';
   name: string;
   quantity: number;
   unitPrice: number;
+  serviceId?: number | null;
+  logId?: number | null;
+};
+
+type MedicationCatalogItem = {
+  medication_id: number;
+  medication_name: string;
+  total_stock: number;
+};
+
+type MedicationStockApiItem = {
+  medication_id: number;
+  medication_name: string;
+  total_stock: number;
 };
 
 type BillModal = 'none' | 'create' | 'view' | 'success';
 type BillingFilter = 'all' | 'pending' | 'paid' | 'cancelled';
 
 const serviceCatalog = [
-  { name: 'Consultation', unitPrice: 500 },
-  { name: 'Laboratory', unitPrice: 450 },
-  { name: 'X-Ray', unitPrice: 1200 },
-  { name: 'Dentistry', unitPrice: 700 },
-  { name: 'Blood Tests', unitPrice: 350 },
-  { name: 'Physical Therapy', unitPrice: 850 },
-  { name: 'Oral Examination', unitPrice: 300 },
-  { name: 'Urinalysis', unitPrice: 200 },
+  { service_id: 1, name: 'Consultation', unitPrice: 500 },
+  { service_id: 2, name: 'Laboratory', unitPrice: 450 },
+  { service_id: 3, name: 'X-Ray', unitPrice: 1200 },
+  { service_id: 4, name: 'Dentistry', unitPrice: 700 },
+  { service_id: 5, name: 'Blood Tests', unitPrice: 350 },
+  { service_id: 6, name: 'Physical Therapy', unitPrice: 850 },
+  { service_id: 7, name: 'Oral Examination', unitPrice: 300 },
+  { service_id: 8, name: 'Urinalysis', unitPrice: 200 },
 ];
 
-const medicationCatalog = [
-  { name: 'Amoxicillin 250mg', unitPrice: 20 },
-  { name: 'Penicillin', unitPrice: 15 },
-  { name: 'Insulin (Rapid)', unitPrice: 180 },
-  { name: 'Vitamin C', unitPrice: 8 },
-  { name: 'Cetirizin', unitPrice: 10 },
-  { name: 'Paracetamol 500mg', unitPrice: 12 },
-  { name: 'Metformin', unitPrice: 18 },
-  { name: 'Bioflu', unitPrice: 22 },
+const fallbackMedicationCatalog: MedicationCatalogItem[] = [
+  { medication_id: 1, medication_name: 'Amoxicillin 250mg', total_stock: 999 },
+  { medication_id: 2, medication_name: 'Penicillin', total_stock: 999 },
+  { medication_id: 3, medication_name: 'Insulin (Rapid)', total_stock: 999 },
+  { medication_id: 4, medication_name: 'Vitamin C', total_stock: 999 },
+  { medication_id: 5, medication_name: 'Cetirizin', total_stock: 999 },
+  { medication_id: 6, medication_name: 'Paracetamol 500mg', total_stock: 999 },
+  { medication_id: 7, medication_name: 'Metformin', total_stock: 999 },
+  { medication_id: 8, medication_name: 'Bioflu', total_stock: 999 },
 ];
+const medicationPriceByName: Record<string, number> = {
+  'Amoxicillin 250mg': 20,
+  Penicillin: 15,
+  'Insulin (Rapid)': 180,
+  'Vitamin C': 8,
+  Cetirizin: 10,
+  'Paracetamol 500mg': 12,
+  Metformin: 18,
+  Bioflu: 22,
+};
 
 const existingBillServices: ServiceItem[] = [
-  { name: 'Consultation', quantity: 1, unitPrice: 500 },
-  { name: 'Amoxicillin 250mg', quantity: 10, unitPrice: 20 },
-  { name: 'X-Ray', quantity: 1, unitPrice: 1200 },
+  { type: 'service', name: 'Consultation', quantity: 1, unitPrice: 500, serviceId: null, logId: null },
+  { type: 'medication', name: 'Amoxicillin 250mg', quantity: 10, unitPrice: 20, serviceId: null, logId: 1 },
+  { type: 'service', name: 'X-Ray', quantity: 1, unitPrice: 1200, serviceId: null, logId: null },
 ];
 
 const PAGE_SIZE = 5;
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const VAT_RATE = 0.12;
+const SENIOR_DISCOUNT_RATE = 0.2;
 
 function money(value: number) {
   return `PHP ${value.toLocaleString()}`;
@@ -85,6 +113,24 @@ function formatDateForTable(value: string) {
     day: '2-digit',
     year: 'numeric',
   });
+}
+
+function parsePositiveInt(value: string) {
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+function resolveMedicationUnitPrice(name: string) {
+  return medicationPriceByName[name] ?? 20;
+}
+
+function toSafeQuantity(value: string) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return 1;
+  return parsed;
 }
 
 function StatusPill({ status }: { status: string }) {
@@ -115,7 +161,6 @@ function toAutoIds(status: BillStatus, records: BillRow[]) {
   const sequence = String(next).padStart(4, '0');
   return {
     billId: `B-${code}-${sequence}`,
-    patientId: `P-${code}-${sequence}`,
   };
 }
 
@@ -133,10 +178,38 @@ export default function BillingRecords() {
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [serviceSearch, setServiceSearch] = useState('');
   const [medicationSearch, setMedicationSearch] = useState('');
+  const [medicationCatalog, setMedicationCatalog] = useState<MedicationCatalogItem[]>(fallbackMedicationCatalog);
   const [showServicePicker, setShowServicePicker] = useState(false);
   const [showMedicationPicker, setShowMedicationPicker] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const [isSeniorCitizen, setIsSeniorCitizen] = useState(false);
   const visitDateInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/medications`);
+        if (!response.ok) return;
+        const payload = (await response.json()) as { items?: MedicationStockApiItem[] };
+        if (!active || !Array.isArray(payload.items) || !payload.items.length) return;
+        setMedicationCatalog(
+          payload.items.map((item) => ({
+            medication_id: item.medication_id,
+            medication_name: item.medication_name,
+            total_stock: item.total_stock ?? 0,
+          })),
+        );
+      } catch {
+        // Keep fallback medication catalog if API is unavailable.
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const filteredBills = useMemo(() => {
     const normalized = searchTerm.trim().toLowerCase();
@@ -213,8 +286,8 @@ export default function BillingRecords() {
     return services.reduce((acc, service) => acc + service.quantity * service.unitPrice, 0);
   }, [services]);
 
-  const discount = 0;
-  const tax = 0;
+  const discount = isSeniorCitizen ? subtotal * SENIOR_DISCOUNT_RATE : 0;
+  const tax = isSeniorCitizen ? 0 : subtotal * VAT_RATE;
   const total = subtotal - discount + tax;
 
   const filteredServiceCatalog = useMemo(() => {
@@ -226,15 +299,15 @@ export default function BillingRecords() {
   const filteredMedicationCatalog = useMemo(() => {
     const query = medicationSearch.trim().toLowerCase();
     if (!query) return medicationCatalog;
-    return medicationCatalog.filter((item) => item.name.toLowerCase().includes(query));
-  }, [medicationSearch]);
+    return medicationCatalog.filter((item) => item.medication_name.toLowerCase().includes(query));
+  }, [medicationSearch, medicationCatalog]);
 
   function resetCreateForm() {
     const defaultStatus: BillStatus = 'Pending';
     const ids = toAutoIds(defaultStatus, billingRecords);
     setBillIdInput(ids.billId);
     setBillStatusInput(defaultStatus);
-    setPatientIdInput(ids.patientId);
+    setPatientIdInput('');
     setPatientNameInput('');
     setVisitDateInput('');
     setServices([]);
@@ -242,6 +315,7 @@ export default function BillingRecords() {
     setShowMedicationPicker(false);
     setServiceSearch('');
     setMedicationSearch('');
+    setIsSeniorCitizen(false);
   }
 
   function openCreateModal() {
@@ -265,30 +339,144 @@ export default function BillingRecords() {
     setModal('view');
   }
 
-  function addService(name: string, unitPrice: number, quantity = 1) {
-    setServices((prev) => [...prev, { name, quantity, unitPrice }]);
+  function addService(serviceId: number, name: string, unitPrice: number, quantity = 1) {
+    setServices((prev) => [...prev, { type: 'service', name, quantity, unitPrice, serviceId, logId: null }]);
     setShowServicePicker(false);
   }
 
-  function handleSubmitBill() {
-    if (!isEditingExisting) {
-      const status = normalizeBillStatus(billStatusInput);
-      const generatedIds = toAutoIds(status, billingRecords);
-      const id = billIdInput.trim() || generatedIds.billId;
-      const patient = patientNameInput.trim() || 'Unknown Patient';
-      const date = visitDateInput.trim() || new Date().toISOString().slice(0, 10);
-      const totalAmount = `P${Math.round(total).toLocaleString()}`;
-
-      addBill({
-        id,
-        patient,
-        date,
-        total: totalAmount,
-        status,
-      });
+  function addMedication(item: MedicationCatalogItem, unitPrice: number, quantity = 1) {
+    if (item.total_stock < quantity) {
+      window.alert(`Insufficient stock for ${item.medication_name}. Available: ${item.total_stock}`);
+      return;
     }
 
-    setModal('success');
+    setServices((prev) => [
+      ...prev,
+      {
+        type: 'medication',
+        name: item.medication_name,
+        quantity,
+        unitPrice,
+        serviceId: null,
+        logId: item.medication_id,
+      },
+    ]);
+    setShowMedicationPicker(false);
+  }
+
+  function updateServiceQuantity(index: number, rawValue: string) {
+    setServices((prev) => {
+      const next = [...prev];
+      const target = next[index];
+      if (!target) return prev;
+
+      const requestedQuantity = toSafeQuantity(rawValue);
+      if (target.type !== 'medication') {
+        next[index] = { ...target, quantity: requestedQuantity };
+        return next;
+      }
+
+      const medicationId = target.logId ?? null;
+      const catalogItem = medicationCatalog.find((item) => item.medication_id === medicationId);
+      const availableStock = catalogItem?.total_stock ?? 0;
+
+      if (availableStock <= 0) {
+        window.alert(`Insufficient stock for ${target.name}.`);
+        next[index] = { ...target, quantity: 1 };
+        return next;
+      }
+
+      if (requestedQuantity > availableStock) {
+        window.alert(`Insufficient stock for ${target.name}. Available: ${availableStock}`);
+        next[index] = { ...target, quantity: availableStock };
+        return next;
+      }
+
+      next[index] = { ...target, quantity: requestedQuantity };
+      return next;
+    });
+  }
+
+  function changeServiceQuantity(index: number, delta: number) {
+    setServices((prev) => {
+      const next = [...prev];
+      const target = next[index];
+      if (!target) return prev;
+
+      const requestedQuantity = Math.max(1, target.quantity + delta);
+      if (target.type !== 'medication') {
+        next[index] = { ...target, quantity: requestedQuantity };
+        return next;
+      }
+
+      const medicationId = target.logId ?? null;
+      const catalogItem = medicationCatalog.find((item) => item.medication_id === medicationId);
+      const availableStock = catalogItem?.total_stock ?? 0;
+
+      if (availableStock <= 0) {
+        window.alert(`Insufficient stock for ${target.name}.`);
+        next[index] = { ...target, quantity: 1 };
+        return next;
+      }
+
+      if (requestedQuantity > availableStock) {
+        window.alert(`Insufficient stock for ${target.name}. Available: ${availableStock}`);
+        next[index] = { ...target, quantity: availableStock };
+        return next;
+      }
+
+      next[index] = { ...target, quantity: requestedQuantity };
+      return next;
+    });
+  }
+
+  function removeService(index: number) {
+    setServices((prev) => prev.filter((_, idx) => idx !== index));
+  }
+
+  async function handleSubmitBill() {
+    try {
+      if (!isEditingExisting) {
+        const patientId = parsePositiveInt(patientIdInput) ?? undefined;
+        if (!patientId) {
+          throw new Error('Valid numeric Patient ID is required.');
+        }
+        if (!services.length) {
+          throw new Error('Add at least one service or medication before creating a bill.');
+        }
+
+        const status = normalizeBillStatus(billStatusInput);
+        const generatedIds = toAutoIds(status, billingRecords);
+        const id = billIdInput.trim() || generatedIds.billId;
+        const patient = patientNameInput.trim() || 'Unknown Patient';
+        const date = visitDateInput.trim() || new Date().toISOString().slice(0, 10);
+        const totalAmount = `P${Math.round(total).toLocaleString()}`;
+        const normalizedItems = services.map((service) => ({
+          name: service.name,
+          quantity: service.quantity,
+          unitPrice: service.unitPrice,
+          serviceId: service.serviceId ?? null,
+          logId: service.logId ?? null,
+        }));
+
+        await addBill({
+          id,
+          patient,
+          date,
+          total: totalAmount,
+          status,
+          patientId,
+          discountAmount: Number(discount.toFixed(2)),
+          taxAmount: Number(tax.toFixed(2)),
+          items: normalizedItems,
+        });
+      }
+
+      setModal('success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unable to create bill.';
+      window.alert(message);
+    }
   }
 
   const isEditingExisting = modal === 'view';
@@ -297,7 +485,6 @@ export default function BillingRecords() {
     setBillStatusInput(value);
     const ids = toAutoIds(value, billingRecords);
     setBillIdInput(ids.billId);
-    setPatientIdInput(ids.patientId);
   }
 
   return (
@@ -344,7 +531,7 @@ export default function BillingRecords() {
               <button
                 type="button"
                 onClick={openCreateModal}
-                className="flex h-10 items-center gap-1.5 rounded-xl bg-green-500 px-3.5 text-sm font-semibold text-white"
+                className="flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl bg-green-500 px-3.5 text-sm font-semibold text-white transition-colors hover:bg-green-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-300"
               >
                 <PlusCircle size={16} />
                 Create New Bill
@@ -467,7 +654,12 @@ export default function BillingRecords() {
                       {isEditingExisting ? (
                         <p className="font-medium text-gray-800">{patientIdInput}</p>
                       ) : (
-                        <input value={patientIdInput} readOnly className="h-8 w-full rounded border border-gray-300 bg-gray-200 px-2 text-gray-700" />
+                        <input
+                          value={patientIdInput}
+                          onChange={(e) => setPatientIdInput(e.target.value)}
+                          className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-gray-700"
+                          placeholder="Enter ID"
+                        />
                       )}
 
                       <label className="block pt-1 text-xs text-gray-600">Patient Name</label>
@@ -519,15 +711,61 @@ export default function BillingRecords() {
                         <th className="py-1 text-left font-medium">Quantity</th>
                         <th className="py-1 text-left font-medium">Unit Price</th>
                         <th className="py-1 text-left font-medium">Subtotal</th>
+                        {!isEditingExisting && <th className="py-1 text-right font-medium">Action</th>}
                       </tr>
                     </thead>
                     <tbody>
                       {services.map((service, idx) => (
                         <tr key={`${service.name}-${idx}`} className="border-b border-gray-300 text-gray-800">
                           <td className="py-1.5">{service.name}</td>
-                          <td className="py-1.5">{service.quantity}</td>
+                          <td className="py-1.5">
+                            {isEditingExisting ? (
+                              service.quantity
+                            ) : (
+                              <div className="inline-flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => changeServiceQuantity(idx, -1)}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded border border-gray-300 bg-gray-200 text-gray-700 hover:bg-gray-300"
+                                  aria-label={`Decrease quantity for ${service.name}`}
+                                  title="Decrease quantity"
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={service.quantity}
+                                  onChange={(e) => updateServiceQuantity(idx, e.target.value)}
+                                  className="h-7 w-16 rounded border border-gray-300 bg-transparent px-2 text-center"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => changeServiceQuantity(idx, 1)}
+                                  className="inline-flex h-7 w-7 items-center justify-center rounded border border-gray-300 bg-gray-200 text-gray-700 hover:bg-gray-300"
+                                  aria-label={`Increase quantity for ${service.name}`}
+                                  title="Increase quantity"
+                                >
+                                  +
+                                </button>
+                              </div>
+                            )}
+                          </td>
                           <td className="py-1.5">{money(service.unitPrice)}</td>
                           <td className="py-1.5">{money(service.quantity * service.unitPrice)}</td>
+                          {!isEditingExisting && (
+                            <td className="py-1.5 text-right">
+                              <button
+                                type="button"
+                                onClick={() => removeService(idx)}
+                                className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-300 text-gray-700 hover:bg-red-100 hover:text-red-600"
+                                aria-label={`Remove ${service.name}`}
+                                title={`Remove ${service.name}`}
+                              >
+                                <X size={12} />
+                              </button>
+                            </td>
+                          )}
                         </tr>
                       ))}
                       {services.length === 0 && (
@@ -536,6 +774,7 @@ export default function BillingRecords() {
                           <td />
                           <td />
                           <td />
+                          {!isEditingExisting && <td />}
                         </tr>
                       )}
                     </tbody>
@@ -574,7 +813,7 @@ export default function BillingRecords() {
                             <button
                               key={item.name}
                               type="button"
-                              onClick={() => addService(item.name, item.unitPrice, 1)}
+                              onClick={() => addService(item.service_id, item.name, item.unitPrice, 1)}
                               className="block w-full px-2 py-0.5 text-left hover:bg-blue-600 hover:text-white"
                             >
                               {item.name}
@@ -595,12 +834,12 @@ export default function BillingRecords() {
                         <div className="mt-2 max-h-40 overflow-auto text-sm">
                           {filteredMedicationCatalog.map((item) => (
                             <button
-                              key={item.name}
+                              key={item.medication_id}
                               type="button"
-                              onClick={() => addService(item.name, item.unitPrice, item.name.includes('Amoxicillin') ? 10 : 1)}
+                              onClick={() => addMedication(item, resolveMedicationUnitPrice(item.medication_name), 1)}
                               className="block w-full px-2 py-0.5 text-left hover:bg-blue-600 hover:text-white"
                             >
-                              {item.name}
+                              {item.medication_name} ({item.total_stock} in stock)
                             </button>
                           ))}
                         </div>
@@ -609,6 +848,17 @@ export default function BillingRecords() {
                   </div>
 
                   <div className="mt-6 rounded-xl bg-gray-300 p-4 text-sm">
+                    {!isEditingExisting && (
+                      <label className="mb-3 flex items-center gap-2 text-xs font-semibold text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={isSeniorCitizen}
+                          onChange={(e) => setIsSeniorCitizen(e.target.checked)}
+                          className="h-4 w-4 rounded border-gray-400"
+                        />
+                        Senior Citizen (20% discount, VAT exempt)
+                      </label>
+                    )}
                     <div className="space-y-2">
                       <div className="flex items-center justify-between font-semibold">
                         <span>Subtotal</span>
@@ -634,7 +884,7 @@ export default function BillingRecords() {
                     onClick={handleSubmitBill}
                     className="mt-4 h-9 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white"
                   >
-                    {isEditingExisting ? 'Save Changes' : 'Create Bill'}
+                    {isEditingExisting ? 'Save Changes' : 'Create New Bill'}
                   </button>
                 </div>
               </div>
