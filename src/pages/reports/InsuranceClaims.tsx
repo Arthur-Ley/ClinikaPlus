@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Search,
@@ -16,9 +16,10 @@ import {
 } from 'lucide-react';
 import Pagination from '../../components/ui/Pagination.tsx';
 
-type ClaimStatus = 'Pending' | 'Approved' | 'Paid' | 'Rejected' | 'For Verification';
+type ClaimStatus = 'Pending' | 'Submitted' | 'Approved' | 'Paid' | 'Rejected';
 
 type InsuranceClaim = {
+  claimDbId: number | null;
   claimId: string;
   patientName: string;
   insuranceProvider: string;
@@ -52,17 +53,38 @@ type ClaimDetailData = {
   };
 };
 
-const claims: InsuranceClaim[] = [
-  { claimId: 'CLM-0012', patientName: 'Maria Santos', insuranceProvider: 'PhilHealth', policyNo: 'PH-45892173', amount: 8500, status: 'Pending', dateFiled: '2026-02-10' },
-  { claimId: 'CLM-0013', patientName: 'John Dela Cruz', insuranceProvider: 'Maxicare', policyNo: 'MX-77451209', amount: 15200, status: 'Approved', dateFiled: '2026-02-11' },
-  { claimId: 'CLM-0014', patientName: 'Angela Reyes', insuranceProvider: 'Intellicare', policyNo: 'IC-33459021', amount: 6800, status: 'Paid', dateFiled: '2026-02-09' },
-  { claimId: 'CLM-0015', patientName: 'Robert Garcia', insuranceProvider: 'PhilCare', policyNo: 'PC-1123908', amount: 12450, status: 'Rejected', dateFiled: '2026-02-08' },
-  { claimId: 'CLM-0016', patientName: 'Arrianerose Flores', insuranceProvider: 'PhilHealth', policyNo: 'PH-99342017', amount: 9300, status: 'Approved', dateFiled: '2026-07-30' },
-  { claimId: 'CLM-0017', patientName: 'John Daryl Paquibulan', insuranceProvider: 'Maxicare', policyNo: 'MX-55012984', amount: 4750, status: 'Pending', dateFiled: '2026-02-14' },
-  { claimId: 'CLM-0018', patientName: 'Dominic Sarcia', insuranceProvider: 'Intellicare', policyNo: 'IC-77431255', amount: 18900, status: 'For Verification', dateFiled: '2026-02-14' },
-  { claimId: 'CLM-0019', patientName: 'Michael Torres', insuranceProvider: 'PhilCare', policyNo: 'PC-66278103', amount: 7600, status: 'For Verification', dateFiled: '2026-02-14' },
-  { claimId: 'CLM-0020', patientName: 'Katherine Dela Pena', insuranceProvider: 'Maxicare', policyNo: 'MX-65617924', amount: 5950, status: 'Paid', dateFiled: '2026-02-16' },
-];
+type ClaimApiRow = {
+  claim_id: number;
+  claim_code?: string;
+  claimed_amount?: number | string;
+  status?: string;
+  claim_date?: string;
+  patient_name?: string;
+  insurance_provider?: string;
+  policy_no?: string;
+};
+
+type CreateClaimForm = {
+  patientName: string;
+  insuranceProvider: string;
+  policyNumber: string;
+  claimAmount: string;
+  dateOfService: string;
+  diagnosis: string;
+  treatmentProvided: string;
+  supportingDocuments: string;
+};
+
+const initialCreateClaimForm: CreateClaimForm = {
+  patientName: '',
+  insuranceProvider: '',
+  policyNumber: '',
+  claimAmount: '',
+  dateOfService: '',
+  diagnosis: '',
+  treatmentProvided: '',
+  supportingDocuments: '',
+};
 
 const claimDetails: Record<string, ClaimDetailData> = {
   'CLM-0012': {
@@ -116,25 +138,25 @@ function statusPill(status: ClaimStatus) {
   switch (status) {
     case 'Pending':
       return 'bg-amber-200 text-amber-600';
+    case 'Submitted':
+      return 'bg-indigo-200 text-indigo-700';
     case 'Approved':
       return 'bg-green-200 text-green-600';
     case 'Paid':
       return 'bg-blue-200 text-blue-600';
     case 'Rejected':
       return 'bg-red-200 text-red-600';
-    case 'For Verification':
-      return 'bg-blue-200 text-blue-600';
     default:
       return 'bg-gray-200 text-gray-700';
   }
 }
 
 function claimActions(status: ClaimStatus) {
-  if (status === 'Pending') return ['View', 'Approve', 'Reject'];
+  if (status === 'Pending') return ['View', 'Submit', 'Approve', 'Reject'];
   if (status === 'Approved') return ['View', 'Collect Payment'];
-  if (status === 'Paid') return ['View', 'Receipt'];
-  if (status === 'Rejected') return ['View', 'Archive'];
-  return ['View', 'Edit', 'Approve', 'Reject'];
+  if (status === 'Paid') return ['View'];
+  if (status === 'Rejected') return ['View'];
+  return ['View', 'Approve', 'Reject'];
 }
 
 function toPeso(amount: number) {
@@ -148,10 +170,10 @@ function formatLongDate(dateStr: string) {
 }
 
 function modalFooterActions(status: ClaimStatus) {
-  if (status === 'Pending' || status === 'For Verification') return ['Close', 'Reject', 'Approve'];
+  if (status === 'Pending') return ['Close', 'Submit', 'Reject', 'Approve'];
+  if (status === 'Submitted') return ['Close', 'Reject', 'Approve'];
   if (status === 'Approved') return ['Close', 'Collect Payment'];
-  if (status === 'Rejected') return ['Close', 'Archive'];
-  return ['Close', 'View Receipt', 'Archive'];
+  return ['Close'];
 }
 
 function matchesPeriod(dateFiled: string, period: PeriodFilter) {
@@ -173,6 +195,11 @@ function matchesPeriod(dateFiled: string, period: PeriodFilter) {
 }
 
 export default function InsuranceClaims() {
+  const [claims, setClaims] = useState<InsuranceClaim[]>([]);
+  const [claimsError, setClaimsError] = useState('');
+  const [isSubmittingClaim, setIsSubmittingClaim] = useState(false);
+  const [createClaimError, setCreateClaimError] = useState('');
+  const [createClaimForm, setCreateClaimForm] = useState<CreateClaimForm>(initialCreateClaimForm);
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState<ClaimStatus | 'all'>('all');
@@ -181,6 +208,38 @@ export default function InsuranceClaims() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [activeClaim, setActiveClaim] = useState<InsuranceClaim | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
+
+  const loadClaims = useCallback(async () => {
+    try {
+      setClaimsError('');
+      const response = await fetch('/api/claims');
+      if (!response.ok) {
+        throw new Error(`Failed to load claims (${response.status})`);
+      }
+
+      const raw = (await response.json()) as ClaimApiRow[];
+      const mapped: InsuranceClaim[] = (Array.isArray(raw) ? raw : []).map((row) => ({
+        claimDbId: Number.isInteger(row.claim_id) ? row.claim_id : null,
+        claimId: row.claim_code || `CLM-${String(row.claim_id || '').padStart(4, '0')}`,
+        patientName: row.patient_name || 'N/A',
+        insuranceProvider: row.insurance_provider || 'N/A',
+        policyNo: row.policy_no || 'N/A',
+        amount: Number(row.claimed_amount || 0),
+        status: (row.status as ClaimStatus) || 'Pending',
+        dateFiled: row.claim_date || '',
+      }));
+
+      setClaims(mapped);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load claims';
+      setClaimsError(message);
+      setClaims([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadClaims();
+  }, [loadClaims]);
 
   const filteredClaims = useMemo(() => {
     const normalized = searchTerm.trim().toLowerCase();
@@ -192,12 +251,13 @@ export default function InsuranceClaims() {
         claim.patientName.toLowerCase().includes(normalized) ||
         claim.policyNo.toLowerCase().includes(normalized) ||
         claim.insuranceProvider.toLowerCase().includes(normalized);
-      const matchesCategory = categoryFilter === 'all' || claim.insuranceProvider === categoryFilter;
+      const matchesCategory =
+        categoryFilter === 'all' || claim.insuranceProvider.toLowerCase() === categoryFilter.toLowerCase();
       const matchesStatus = statusFilter === 'all' || claim.status === statusFilter;
       const matchesDate = matchesPeriod(claim.dateFiled, periodFilter);
       return matchesSearch && matchesCategory && matchesStatus && matchesDate;
     });
-  }, [searchTerm, categoryFilter, statusFilter, periodFilter]);
+  }, [claims, searchTerm, categoryFilter, statusFilter, periodFilter]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -212,9 +272,13 @@ export default function InsuranceClaims() {
   }, [currentPage, totalPages]);
 
   const visibleClaims = filteredClaims.slice((currentPage - 1) * 5, currentPage * 5);
+  const providerOptions = useMemo(
+    () => [...new Set(claims.map((claim) => claim.insuranceProvider).filter((name) => name && name !== 'N/A'))].sort(),
+    [claims],
+  );
   const activeClaimDetails = activeClaim ? claimDetails[activeClaim.claimId] : undefined;
   const summaryCards = useMemo(() => {
-    const pendingClaims = filteredClaims.filter((claim) => claim.status === 'Pending' || claim.status === 'For Verification');
+    const pendingClaims = filteredClaims.filter((claim) => claim.status === 'Pending');
     const approvedClaims = filteredClaims.filter((claim) => claim.status === 'Approved');
     const paidClaims = filteredClaims.filter((claim) => claim.status === 'Paid');
     const totalCollected = paidClaims.reduce((sum, claim) => sum + claim.amount, 0);
@@ -247,6 +311,132 @@ export default function InsuranceClaims() {
     ];
   }, [filteredClaims]);
 
+  async function handleCreateClaimSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCreateClaimError('');
+
+    const claimedAmount = Number(createClaimForm.claimAmount);
+
+    if (!createClaimForm.patientName.trim()) {
+      setCreateClaimError('Patient Name is required.');
+      return;
+    }
+    if (!createClaimForm.insuranceProvider.trim()) {
+      setCreateClaimError('Insurance Provider is required.');
+      return;
+    }
+    if (!createClaimForm.policyNumber.trim()) {
+      setCreateClaimError('Policy Number is required.');
+      return;
+    }
+    if (!Number.isFinite(claimedAmount) || claimedAmount <= 0) {
+      setCreateClaimError('Claim Amount must be greater than 0.');
+      return;
+    }
+
+    try {
+      setIsSubmittingClaim(true);
+      const createResponse = await fetch('/api/claims', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          patient_name: createClaimForm.patientName.trim(),
+          insurance_provider: createClaimForm.insuranceProvider.trim(),
+          policy_number: createClaimForm.policyNumber.trim(),
+          claimed_amount: claimedAmount,
+          date_of_service: createClaimForm.dateOfService || undefined,
+          diagnosis: createClaimForm.diagnosis || undefined,
+          treatment_provided: createClaimForm.treatmentProvided || undefined,
+          remarks:
+            [
+              createClaimForm.diagnosis,
+              createClaimForm.treatmentProvided,
+              createClaimForm.supportingDocuments ? `Documents: ${createClaimForm.supportingDocuments}` : '',
+            ]
+              .filter(Boolean)
+              .join(' | ') || undefined,
+        }),
+      });
+
+      if (!createResponse.ok) {
+        const errorBody = await createResponse.json().catch(() => null);
+        throw new Error(errorBody?.error || errorBody?.message || `Create claim failed (${createResponse.status})`);
+      }
+
+      const created = (await createResponse.json()) as { claim_id?: number };
+      if (!created?.claim_id) {
+        throw new Error('Claim created but claim_id is missing in response.');
+      }
+
+      setCreateClaimForm(initialCreateClaimForm);
+      setIsCreateModalOpen(false);
+      await loadClaims();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to create and submit claim.';
+      setCreateClaimError(message);
+    } finally {
+      setIsSubmittingClaim(false);
+    }
+  }
+
+  async function handleClaimDecision(claim: InsuranceClaim, decision: 'submit' | 'approve' | 'reject' | 'pay') {
+    if (!claim.claimDbId) {
+      setClaimsError('Claim ID is missing, cannot process this action.');
+      return;
+    }
+
+    try {
+      setClaimsError('');
+      const endpoint = decision === 'submit' ? 'submit' : decision === 'approve' ? 'approve' : decision === 'pay' ? 'pay' : 'reject';
+      const body =
+        decision === 'submit'
+          ? {}
+          : decision === 'approve'
+          ? { approved_amount: claim.amount }
+          : decision === 'pay'
+          ? { remarks: 'Payment collected from claims module' }
+          : { remarks: 'Rejected from claims module' };
+      const response = await fetch(`/api/claims/${claim.claimDbId}/${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null);
+        throw new Error(errorBody?.error || errorBody?.message || `${decision} failed (${response.status})`);
+      }
+
+      setOpenMenuId(null);
+      setActiveClaim(null);
+      await loadClaims();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `Failed to ${decision} claim.`;
+      setClaimsError(message);
+    }
+  }
+
+  async function handleClaimAction(action: string, claim: InsuranceClaim) {
+    if (action === 'Submit') {
+      await handleClaimDecision(claim, 'submit');
+      return;
+    }
+    if (action === 'Approve') {
+      await handleClaimDecision(claim, 'approve');
+      return;
+    }
+    if (action === 'Reject') {
+      await handleClaimDecision(claim, 'reject');
+      return;
+    }
+    if (action === 'Collect Payment') {
+      await handleClaimDecision(claim, 'pay');
+      return;
+    }
+    setOpenMenuId(null);
+    setActiveClaim(claim);
+  }
+
   return (
     <div className="space-y-5">
       <h1 className="text-3xl font-bold tracking-tight text-gray-800">Reports & Insurance | Insurance Claims</h1>
@@ -271,6 +461,9 @@ export default function InsuranceClaims() {
         </div>
 
         <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
+          {claimsError && (
+            <p className="mb-3 rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700">{claimsError}</p>
+          )}
           <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
             <div className="relative w-full xl:min-w-0 xl:flex-1 xl:max-w-2xl">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={16} />
@@ -299,10 +492,11 @@ export default function InsuranceClaims() {
                   className="h-10 appearance-none rounded-lg border border-gray-300 bg-gray-100 pl-3 pr-9 text-sm font-medium text-gray-600 outline-none focus:ring-2 focus:ring-blue-300"
                 >
                   <option value="all">All Categories</option>
-                  <option value="PhilHealth">PhilHealth</option>
-                  <option value="Maxicare">Maxicare</option>
-                  <option value="Intellicare">Intellicare</option>
-                  <option value="PhilCare">PhilCare</option>
+                  {providerOptions.map((provider) => (
+                    <option key={provider} value={provider}>
+                      {provider}
+                    </option>
+                  ))}
                 </select>
                 <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-500" />
               </div>
@@ -315,10 +509,10 @@ export default function InsuranceClaims() {
                 >
                   <option value="all">All Status</option>
                   <option value="Pending">Pending</option>
+                  <option value="Submitted">Submitted</option>
                   <option value="Approved">Approved</option>
                   <option value="Paid">Paid</option>
                   <option value="Rejected">Rejected</option>
-                  <option value="For Verification">For Verification</option>
                 </select>
                 <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-500" />
               </div>
@@ -392,8 +586,7 @@ export default function InsuranceClaims() {
                                 idx === 0 ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-100'
                               }`}
                               onClick={() => {
-                                setOpenMenuId(null);
-                                setActiveClaim(claim);
+                                handleClaimAction(action, claim);
                               }}
                             >
                               {action}
@@ -521,11 +714,30 @@ export default function InsuranceClaims() {
                 <button
                   key={action}
                   type="button"
-                  onClick={() => setActiveClaim(null)}
+                  onClick={async () => {
+                    if (!activeClaim) return;
+                    if (action === 'Approve') {
+                      await handleClaimDecision(activeClaim, 'approve');
+                      return;
+                    }
+                    if (action === 'Submit') {
+                      await handleClaimDecision(activeClaim, 'submit');
+                      return;
+                    }
+                    if (action === 'Reject') {
+                      await handleClaimDecision(activeClaim, 'reject');
+                      return;
+                    }
+                    if (action === 'Collect Payment') {
+                      await handleClaimDecision(activeClaim, 'pay');
+                      return;
+                    }
+                    setActiveClaim(null);
+                  }}
                   className={`h-9 rounded-lg px-4 text-sm font-semibold ${
                     action === 'Close'
                       ? 'bg-gray-300 text-gray-700'
-                      : action === 'Reject' || action === 'Archive'
+                      : action === 'Reject'
                       ? 'bg-red-500 text-white'
                       : 'bg-blue-600 text-white'
                   }`}
@@ -540,7 +752,7 @@ export default function InsuranceClaims() {
 
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]">
-          <div className="w-full max-w-3xl rounded-2xl bg-gray-100 shadow-xl border border-gray-300 p-5">
+          <form onSubmit={handleCreateClaimSubmit} className="w-full max-w-3xl rounded-2xl bg-gray-100 shadow-xl border border-gray-300 p-5">
             <div className="flex items-center justify-between border-b border-gray-300 pb-3">
               <h2 className="text-2xl font-semibold text-gray-600">Create Insurance Claim</h2>
               <button
@@ -561,7 +773,11 @@ export default function InsuranceClaims() {
                   </h3>
                   <div className="space-y-2.5">
                     <label className="block text-xs font-medium text-gray-700">Patient Name</label>
-                    <input className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm" />
+                    <input
+                      value={createClaimForm.patientName}
+                      onChange={(e) => setCreateClaimForm((prev) => ({ ...prev, patientName: e.target.value }))}
+                      className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm"
+                    />
                     <label className="block text-xs font-medium text-gray-700">Contact Number</label>
                     <input className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm" />
                     <label className="block text-xs font-medium text-gray-700">Email Address</label>
@@ -576,9 +792,17 @@ export default function InsuranceClaims() {
                   </h3>
                   <div className="space-y-2.5">
                     <label className="block text-xs font-medium text-gray-700">Insurance Provider</label>
-                    <input className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm" />
+                    <input
+                      value={createClaimForm.insuranceProvider}
+                      onChange={(e) => setCreateClaimForm((prev) => ({ ...prev, insuranceProvider: e.target.value }))}
+                      className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm"
+                    />
                     <label className="block text-xs font-medium text-gray-700">Policy Number</label>
-                    <input className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm" />
+                    <input
+                      value={createClaimForm.policyNumber}
+                      onChange={(e) => setCreateClaimForm((prev) => ({ ...prev, policyNumber: e.target.value }))}
+                      className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm"
+                    />
                     <label className="block text-xs font-medium text-gray-700">Coverage Type</label>
                     <input className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm" />
                   </div>
@@ -593,27 +817,57 @@ export default function InsuranceClaims() {
                   </h3>
                   <div className="space-y-2.5">
                     <label className="block text-xs font-medium text-gray-700">Diagnosis</label>
-                    <input className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm" />
+                    <input
+                      value={createClaimForm.diagnosis}
+                      onChange={(e) => setCreateClaimForm((prev) => ({ ...prev, diagnosis: e.target.value }))}
+                      className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm"
+                    />
                     <label className="block text-xs font-medium text-gray-700">Treatment Provided</label>
-                    <input className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm" />
+                    <input
+                      value={createClaimForm.treatmentProvided}
+                      onChange={(e) => setCreateClaimForm((prev) => ({ ...prev, treatmentProvided: e.target.value }))}
+                      className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm"
+                    />
                     <label className="block text-xs font-medium text-gray-700">Claim Amount</label>
-                    <input className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm" />
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={createClaimForm.claimAmount}
+                      onChange={(e) => setCreateClaimForm((prev) => ({ ...prev, claimAmount: e.target.value }))}
+                      className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm"
+                    />
                     <label className="block text-xs font-medium text-gray-700">Date of Service</label>
-                    <input className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm" />
+                    <input
+                      type="date"
+                      value={createClaimForm.dateOfService}
+                      onChange={(e) => setCreateClaimForm((prev) => ({ ...prev, dateOfService: e.target.value }))}
+                      className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm"
+                    />
                     <label className="block text-xs font-medium text-gray-700">Upload Supporting Documents</label>
                     <div className="flex items-center gap-2">
                       <Link2 size={16} className="text-gray-500" />
-                      <input className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm" />
+                      <input
+                        value={createClaimForm.supportingDocuments}
+                        onChange={(e) => setCreateClaimForm((prev) => ({ ...prev, supportingDocuments: e.target.value }))}
+                        placeholder="N/A"
+                        className="h-8 w-full rounded border border-gray-300 bg-transparent px-2 text-sm"
+                      />
                     </div>
                   </div>
                 </div>
 
-                <button type="button" className="h-9 w-full rounded-lg bg-blue-600 text-white text-sm font-semibold">
-                  Submit Claim
+                {createClaimError && <p className="text-xs font-medium text-red-600">{createClaimError}</p>}
+                <button
+                  type="submit"
+                  disabled={isSubmittingClaim}
+                  className="h-9 w-full rounded-lg bg-blue-600 text-white text-sm font-semibold disabled:opacity-60"
+                >
+                  {isSubmittingClaim ? 'Creating...' : 'Create Claim'}
                 </button>
               </div>
             </div>
-          </div>
+          </form>
         </div>
       )}
           </>,

@@ -1,7 +1,9 @@
 export function errorHandler(err, _req, res, _next) {
   console.error(err);
 
-  return res.status(500).json({
+  const status = Number.isInteger(err?.status) ? err.status : 500;
+
+  return res.status(status).json({
     error: err?.message || "Internal server error",
   });
 }
