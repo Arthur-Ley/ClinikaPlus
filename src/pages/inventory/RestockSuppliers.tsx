@@ -68,7 +68,7 @@ type SupplierApiRow = {
   status: string;
   is_preferred: boolean;
 };
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 function formatDateLabel(value: string) {
   const parsed = new Date(value);

@@ -75,7 +75,7 @@ type MedicationStockApiItem = {
 
 const formOptions = ['Tablet', 'Capsule', 'Pen', 'Syrup', 'Inhaler', 'Vial'] as const;
 const unitOptions = ['pcs', 'pens', 'vials', 'bottles', 'inhalers', 'sachets'] as const;
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const DEFAULT_PAGE_SIZE = 5;
 
 function normalizeStatus(value: string): InventoryStatus {

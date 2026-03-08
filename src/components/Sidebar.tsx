@@ -33,7 +33,7 @@ type RestockRequestApiItem = {
   status: 'Pending' | 'Completed' | 'Cancelled';
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 function CountBadge({ count, active }: { count: BadgeCount; active?: boolean }) {
   if (count <= 0) return null;

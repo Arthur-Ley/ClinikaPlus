@@ -73,7 +73,7 @@ type RestockCreateApiResponse = {
   };
 };
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const NEEDED_BY_PREFIX = 'Needed By:';
 export const RESTOCK_REQUESTS_CHANGED_EVENT = 'restock-requests-changed';
 
