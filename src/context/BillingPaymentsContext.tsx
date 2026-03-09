@@ -1,5 +1,6 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { billingRecords as initialBillingRecords, paymentQueue as initialPaymentQueue } from '../data/mockData';
+import { BillingPaymentsContext } from './BillingPaymentsContextObject.ts';
 
 export type BillStatus = 'Pending' | 'Paid' | 'Cancelled';
 export type PaymentStatus = 'Pending' | 'Paid' | 'Processing';
@@ -56,7 +57,7 @@ type SetPaymentProcessingInput = {
   method: string;
 };
 
-type BillingPaymentsContextValue = {
+export type BillingPaymentsContextValue = {
   billingRecords: BillRecord[];
   paymentQueue: PaymentQueueRecord[];
   addBill: (bill: NewBillInput) => Promise<void>;
@@ -81,8 +82,7 @@ type BillsResponse = {
   items?: BackendBill[];
 };
 
-const BillingPaymentsContext = createContext<BillingPaymentsContextValue | undefined>(undefined);
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 function parseAmount(total: string) {
   const parsed = Number(total.replace(/[^\d.-]/g, ''));
@@ -250,7 +250,7 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
     () => preparedInitialData.paymentQueue,
   );
 
-  async function refreshBillingData() {
+  const refreshBillingData = useCallback(async () => {
     const response = await fetch(`${API_BASE_URL}/billing/bills?page=1&page_size=100`);
     if (!response.ok) {
       throw new Error(await parseErrorMessage(response));
@@ -264,7 +264,7 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
       setBillingRecords(mapped.billing);
       setPaymentQueue(mapped.payment);
     }
-  }
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -291,7 +291,7 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  async function addBill(bill: NewBillInput) {
+  const addBill = useCallback(async (bill: NewBillInput) => {
     if (isFrancoJallorina(bill.patient)) {
       return;
     }
@@ -334,9 +334,9 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
     }
 
     await refreshBillingData();
-  }
+  }, [refreshBillingData]);
 
-  function updateBill(id: string, updates: UpdateBillInput) {
+  const updateBill = useCallback((id: string, updates: UpdateBillInput) => {
     let updatedBill: BillRecord | null = null;
 
     setBillingRecords((prev) =>
@@ -361,9 +361,9 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
         };
       }),
     );
-  }
+  }, []);
 
-  async function setPaymentProcessing(input: SetPaymentProcessingInput) {
+  const setPaymentProcessing = useCallback(async (input: SetPaymentProcessingInput) => {
     setPaymentQueue((prev) =>
       prev.map((row) => {
         if (row.id !== input.id) return row;
@@ -374,9 +374,9 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
         };
       }),
     );
-  }
+  }, []);
 
-  async function markPaymentPaid(input: MarkPaymentPaidInput) {
+  const markPaymentPaid = useCallback(async (input: MarkPaymentPaidInput) => {
     const row = paymentQueue.find((item) => item.id === input.id);
     if (!row) {
       throw new Error('Payment record not found.');
@@ -428,7 +428,7 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
         };
       }),
     );
-  }
+  }, [paymentQueue, refreshBillingData]);
 
   const value = useMemo(
     () => ({
@@ -439,16 +439,8 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
       markPaymentPaid,
       setPaymentProcessing,
     }),
-    [billingRecords, paymentQueue],
+    [billingRecords, paymentQueue, addBill, updateBill, markPaymentPaid, setPaymentProcessing],
   );
 
   return <BillingPaymentsContext.Provider value={value}>{children}</BillingPaymentsContext.Provider>;
-}
-
-export function useBillingPayments() {
-  const context = useContext(BillingPaymentsContext);
-  if (!context) {
-    throw new Error('useBillingPayments must be used within BillingPaymentsProvider');
-  }
-  return context;
 }

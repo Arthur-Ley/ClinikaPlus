@@ -1,4 +1,4 @@
-import { useMemo, type ComponentType } from 'react';
+import { useEffect, useMemo, useState, type ComponentType } from 'react';
 import {
   ArrowLeftRight,
   CircleDollarSign,
@@ -9,7 +9,7 @@ import {
   PieChart,
   BarChartHorizontal,
 } from 'lucide-react';
-import { useBillingPayments } from '../../context/BillingPaymentsContext.tsx';
+import { useBillingPayments } from '../../context/useBillingPayments.ts';
 
 type RevenueCard = {
   title: string;
@@ -23,6 +23,20 @@ type ChartPoint = {
   label: string;
   value: number;
 };
+
+type BillingAnalytics = {
+  total_pending_bills: number;
+  total_paid_bills: number;
+  total_revenue: number;
+  total_outstanding_balance: number;
+  average_bill_amount: number;
+};
+
+type BillingAnalyticsResponse = {
+  analytics?: BillingAnalytics;
+};
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 function formatMoney(value: number) {
   return `PHP ${Math.round(value).toLocaleString()}`;
@@ -212,6 +226,7 @@ function RevenueByServiceChart({ data }: { data: ChartPoint[] }) {
 
 export default function RevenueReports() {
   const { paymentQueue, billingRecords } = useBillingPayments();
+  const [analytics, setAnalytics] = useState<BillingAnalytics | null>(null);
 
   const paidPayments = useMemo(
     () => paymentQueue.filter((row) => row.status === 'Paid' && row.amount > 0),
@@ -223,12 +238,39 @@ export default function RevenueReports() {
     [billingRecords],
   );
 
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/billing/dashboard/analytics`);
+        if (!response.ok) return;
+        const payload = (await response.json()) as BillingAnalyticsResponse;
+        if (!active || !payload.analytics) return;
+        setAnalytics(payload.analytics);
+      } catch {
+        // Keep client-side computed fallback if analytics endpoint is unavailable.
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const cards = useMemo<RevenueCard[]>(() => {
-    const totalRevenue = paidPayments.reduce((sum, row) => sum + row.amount, 0);
-    const outstanding = paymentQueue
+    const computedTotalRevenue = paidPayments.reduce((sum, row) => sum + row.amount, 0);
+    const computedOutstanding = paymentQueue
       .filter((row) => row.status !== 'Paid')
       .reduce((sum, row) => sum + row.amount, 0);
-    const avgPayment = paidPayments.length > 0 ? totalRevenue / paidPayments.length : 0;
+    const computedAverage = paidPayments.length > 0 ? computedTotalRevenue / paidPayments.length : 0;
+
+    const totalRevenue = analytics?.total_revenue ?? computedTotalRevenue;
+    const outstanding = analytics?.total_outstanding_balance ?? computedOutstanding;
+    const avgPayment = analytics?.average_bill_amount ?? computedAverage;
+    const totalTransactions = analytics
+      ? analytics.total_paid_bills + analytics.total_pending_bills
+      : paymentQueue.length;
 
     return [
       {
@@ -240,7 +282,7 @@ export default function RevenueReports() {
       },
       {
         title: 'Total Transactions',
-        value: String(paymentQueue.length),
+        value: String(totalTransactions),
         chipClass: 'bg-blue-600',
         valueClass: 'text-gray-800',
         icon: ArrowLeftRight,
@@ -260,7 +302,7 @@ export default function RevenueReports() {
         icon: Coins,
       },
     ];
-  }, [paymentQueue, paidPayments]);
+  }, [analytics, paymentQueue, paidPayments]);
 
   const revenueByMonth = useMemo<ChartPoint[]>(() => {
     const grouped = paidPayments.reduce<Record<string, number>>((acc, row) => {

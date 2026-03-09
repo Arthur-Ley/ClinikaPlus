@@ -17,7 +17,8 @@ import {
   MinusCircle,
 } from 'lucide-react';
 import Pagination from '../../components/ui/Pagination.tsx';
-import { useBillingPayments } from '../../context/BillingPaymentsContext.tsx';
+import { useBillingPayments } from '../../context/useBillingPayments.ts';
+import { useNavigate } from 'react-router-dom';
 
 type PaymentStatus = 'Pending' | 'Paid' | 'Processing';
 
@@ -60,6 +61,7 @@ function formatDateForTable(value: string) {
 }
 
 export default function Payments() {
+  const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState('');
   const { paymentQueue, markPaymentPaid, setPaymentProcessing } = useBillingPayments();
   const [paymentFilter, setPaymentFilter] = useState<PaymentFilter>('all');
@@ -160,6 +162,18 @@ export default function Payments() {
   function openReceiptModal(row: PaymentRow) {
     setSelectedRow(row);
     setModal('receipt');
+  }
+
+  function openProcessingView(row: PaymentRow) {
+    setSelectedRow(row);
+    const mappedMethod: PaymentMethod =
+      row.method === 'GCash' || row.method === 'Maya' || row.method === 'Cash' ? row.method : 'Cash';
+    setSelectedMethod(mappedMethod);
+    if (mappedMethod === 'Cash') {
+      setModal('cash');
+      return;
+    }
+    setModal('gcash');
   }
 
   function closeAllModals() {
@@ -327,7 +341,11 @@ export default function Payments() {
                           Receipt
                         </button>
                       )}
-                      {row.status === 'Processing' && <button type="button" className="font-semibold text-blue-500">View</button>}
+                      {row.status === 'Processing' && (
+                        <button type="button" onClick={() => openProcessingView(row)} className="font-semibold text-blue-500">
+                          View
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -365,7 +383,7 @@ export default function Payments() {
                     <div>
                       <p className="font-bold">{selectedRow.id}</p>
                       <p className="font-semibold text-gray-600">Bill ID</p>
-                      <button className="font-semibold text-blue-600">View Bill</button>
+                      <button type="button" onClick={() => navigate('/billing/records')} className="font-semibold text-blue-600">View Bill</button>
                     </div>
                     <div>
                       <p className="font-bold">{formatMoney(selectedRow.amount)}</p>

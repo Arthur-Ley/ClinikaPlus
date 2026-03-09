@@ -95,15 +95,6 @@ export default function Header() {
   }, [rawQuery]);
 
   useEffect(() => {
-    if (!debouncedQuery) {
-      setIsOpen(false);
-      setHighlightedIndex(-1);
-      return;
-    }
-    setIsOpen(true);
-  }, [debouncedQuery]);
-
-  useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
       if (!rootRef.current?.contains(event.target as Node)) {
         setIsOpen(false);
@@ -228,18 +219,11 @@ export default function Header() {
   const visibleNavigation = navigationMatches.slice(0, 5);
   const visibleInventory = inventoryMatches.slice(0, 5);
   const selectableResults = useMemo(() => [...visibleNavigation, ...visibleInventory], [visibleNavigation, visibleInventory]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    if (selectableResults.length === 0) {
-      setHighlightedIndex(-1);
-      return;
-    }
-    setHighlightedIndex((prev) => {
-      if (prev < 0 || prev >= selectableResults.length) return 0;
-      return prev;
-    });
-  }, [isOpen, selectableResults]);
+  const effectiveHighlightedIndex = selectableResults.length === 0
+    ? -1
+    : highlightedIndex < 0 || highlightedIndex >= selectableResults.length
+      ? 0
+      : highlightedIndex;
 
   function navigateTo(path: string, query?: string) {
     const targetPath = path;
@@ -304,8 +288,8 @@ export default function Header() {
 
     if (event.key === 'Enter') {
       event.preventDefault();
-      if (highlightedIndex < 0 || highlightedIndex >= selectableResults.length) return;
-      const selected = selectableResults[highlightedIndex];
+      if (effectiveHighlightedIndex < 0 || effectiveHighlightedIndex >= selectableResults.length) return;
+      const selected = selectableResults[effectiveHighlightedIndex];
       navigateTo(selected.path, selected.query);
       return;
     }
@@ -333,9 +317,19 @@ export default function Header() {
           <input
             type="text"
             value={rawQuery}
-            onChange={(event) => setRawQuery(event.target.value)}
+            onChange={(event) => {
+              const nextValue = event.target.value;
+              setRawQuery(nextValue);
+              if (!nextValue.trim()) {
+                setDebouncedQuery('');
+                setIsOpen(false);
+                setHighlightedIndex(-1);
+              } else {
+                setIsOpen(true);
+              }
+            }}
             onFocus={() => {
-              if (debouncedQuery) setIsOpen(true);
+              if (debouncedQuery || rawQuery.trim()) setIsOpen(true);
             }}
             onKeyDown={onInputKeyDown}
             placeholder="Search pages, medications, alerts, requests, suppliers"
@@ -376,7 +370,7 @@ export default function Header() {
                       <div className="space-y-1">
                         {visibleNavigation.map((result) => {
                           const globalIndex = selectableResults.findIndex((item) => item.id === result.id);
-                          const active = highlightedIndex === globalIndex;
+                          const active = effectiveHighlightedIndex === globalIndex;
                           return (
                             <button
                               key={result.id}
@@ -409,7 +403,7 @@ export default function Header() {
                       <div className="space-y-1">
                         {visibleInventory.map((result, index) => {
                           const globalIndex = selectableResults.findIndex((item) => item.id === result.id);
-                          const active = highlightedIndex === globalIndex;
+                          const active = effectiveHighlightedIndex === globalIndex;
                           const previous = visibleInventory[index - 1];
                           const showEntityDivider = previous?.entityType !== result.entityType;
                           return (
@@ -452,7 +446,7 @@ export default function Header() {
             </div>
           )}
         </div>
-        <button type="button" className="text-blue-600 shrink-0">
+        <button type="button" className="text-blue-600" onClick={() => navigate('/settings')} aria-label="Open settings">
           <CircleUserRound size={26} />
         </button>
       </div>

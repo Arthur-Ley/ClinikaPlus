@@ -10,6 +10,7 @@ import BillingRecords from './pages/billing/BillingRecords';
 import Payments from './pages/billing/Payments';
 import RevenueReports from './pages/reports/RevenueReports';
 import InsuranceClaims from './pages/reports/InsuranceClaims';
+import Settings from './pages/Settings';
 
 const router = createBrowserRouter([
   {
@@ -33,6 +34,7 @@ const router = createBrowserRouter([
       { path: 'revenue', element: <RevenueReports /> },
       { path: 'reports/claims', element: <InsuranceClaims /> },
       { path: 'insurance-claims', element: <InsuranceClaims /> },
+      { path: 'settings', element: <Settings /> },
     ],
   },
 ]);

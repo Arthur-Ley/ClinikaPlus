@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useLocation } from 'react-router-dom';
 import Button from '../../components/ui/Button.tsx';
 import Pagination from '../../components/ui/Pagination.tsx';
@@ -217,7 +217,7 @@ export default function CurrentStocks() {
     supplierId: '',
   });
 
-  async function loadMedicationStocks() {
+  const loadMedicationStocks = useCallback(async () => {
     setIsLoadingStocks(true);
     setStocksError('');
 
@@ -246,21 +246,21 @@ export default function CurrentStocks() {
       }));
 
       setItems(normalized);
-      if (selectedItem) {
-        const refreshed = normalized.find((row) => row.id === selectedItem.id) || null;
-        setSelectedItem(refreshed);
-      }
+      setSelectedItem((prev) => {
+        if (!prev) return prev;
+        return normalized.find((row) => row.id === prev.id) || null;
+      });
     } catch (error) {
       setStocksError(error instanceof Error ? error.message : 'Failed to load medications.');
       setItems([]);
     } finally {
       setIsLoadingStocks(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
-    loadMedicationStocks();
-  }, []);
+    void loadMedicationStocks();
+  }, [loadMedicationStocks]);
 
   const filteredItems = useMemo(() => {
     return items
@@ -758,14 +758,7 @@ export default function CurrentStocks() {
                 Medication Details
               </h2>
               <div className="flex items-center gap-1.5">
-                <button type="button" onClick={() => {
-                  if (isSavingMedicationEdit) return;
-                  if (isEditingMedication) {
-                    cancelEditingMedication();
-                    return;
-                  }
-                  startEditingMedication();
-                }} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700">
+                <button type="button" onClick={startEditingMedication} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700">
                   <Pencil size={14} />
                 </button>
                 <button type="button" onClick={() => {

@@ -85,6 +85,7 @@ const initialCreateClaimForm: CreateClaimForm = {
   treatmentProvided: '',
   supportingDocuments: '',
 };
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 const claimDetails: Record<string, ClaimDetailData> = {
   'CLM-0012': {
@@ -169,6 +170,10 @@ function formatLongDate(dateStr: string) {
   return date.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
 }
 
+function isExternalDocumentLink(value: string) {
+  return /^https?:\/\//i.test(value.trim());
+}
+
 function modalFooterActions(status: ClaimStatus) {
   if (status === 'Pending') return ['Close', 'Submit', 'Reject', 'Approve'];
   if (status === 'Submitted') return ['Close', 'Reject', 'Approve'];
@@ -212,7 +217,7 @@ export default function InsuranceClaims() {
   const loadClaims = useCallback(async () => {
     try {
       setClaimsError('');
-      const response = await fetch('/api/claims');
+      const response = await fetch(`${API_BASE_URL}/claims`);
       if (!response.ok) {
         throw new Error(`Failed to load claims (${response.status})`);
       }
@@ -336,7 +341,7 @@ export default function InsuranceClaims() {
 
     try {
       setIsSubmittingClaim(true);
-      const createResponse = await fetch('/api/claims', {
+      const createResponse = await fetch(`${API_BASE_URL}/claims`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -396,7 +401,7 @@ export default function InsuranceClaims() {
           : decision === 'pay'
           ? { remarks: 'Payment collected from claims module' }
           : { remarks: 'Rejected from claims module' };
-      const response = await fetch(`/api/claims/${claim.claimDbId}/${endpoint}`, {
+      const response = await fetch(`${API_BASE_URL}/claims/${claim.claimDbId}/${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -435,6 +440,13 @@ export default function InsuranceClaims() {
     }
     setOpenMenuId(null);
     setActiveClaim(claim);
+  }
+
+  function handleViewClaimDocument(documentLabel: string) {
+    const trimmed = documentLabel.trim();
+    if (isExternalDocumentLink(trimmed)) {
+      window.open(trimmed, '_blank', 'noopener,noreferrer');
+    }
   }
 
   return (
@@ -667,7 +679,15 @@ export default function InsuranceClaims() {
                     {activeClaimDetails.documents.map((doc) => (
                       <div key={doc} className="flex items-center justify-between rounded-md bg-gray-200 px-3 py-1.5">
                         <span>{doc}</span>
-                        <button type="button" className="text-xs font-semibold text-blue-600 hover:text-blue-700">View</button>
+                        <button
+                          type="button"
+                          disabled={!isExternalDocumentLink(doc)}
+                          onClick={() => handleViewClaimDocument(doc)}
+                          className="text-xs font-semibold text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:text-gray-400"
+                          title={isExternalDocumentLink(doc) ? 'Open document' : 'No linked document URL'}
+                        >
+                          View
+                        </button>
                       </div>
                     ))}
                   </div>

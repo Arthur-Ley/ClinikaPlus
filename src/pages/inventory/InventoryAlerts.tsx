@@ -369,12 +369,18 @@ export default function InventoryAlerts() {
     }, 120);
   }, [focusAlertMedicationId, filteredAlerts]);
 
+  function defaultNeededByDate() {
+    const date = new Date();
+    date.setDate(date.getDate() + 7);
+    return date.toISOString().slice(0, 10);
+  }
+
   function openCreateRestockRequest(alert: InventoryAlert) {
     setRestockTarget(alert);
     setRestockDetails({
       supplier: getMedicationMetaFromAlert(alert).supplier,
       quantity: String(alert.suggestedRestock),
-      neededBy: '2026-03-01',
+      neededBy: defaultNeededByDate(),
       notes: '',
     });
     setRestockErrors({
@@ -391,6 +397,14 @@ export default function InventoryAlerts() {
       quantity: '',
       neededBy: '',
     });
+  }
+
+  function openRestockFromSelectedItem() {
+    if (!selectedItem) return;
+    const matchedAlert = alerts.find((alert) => alert.id === selectedItem.id);
+    if (!matchedAlert) return;
+    setSelectedItem(null);
+    openCreateRestockRequest(matchedAlert);
   }
 
   function getMedicationMetaFromAlert(alert: InventoryAlert) {
@@ -637,7 +651,7 @@ export default function InventoryAlerts() {
                 Medication Details
               </h2>
               <div className="flex items-center gap-1.5">
-                <button type="button" className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700">
+                <button type="button" onClick={openRestockFromSelectedItem} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700">
                   <Pencil size={14} />
                 </button>
                 <button type="button" onClick={() => setSelectedItem(null)} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700">

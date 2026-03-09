@@ -196,6 +196,7 @@ export function GlobalSearchDataProvider({ children }: { children: ReactNode }) 
   return <GlobalSearchDataContext.Provider value={value}>{children}</GlobalSearchDataContext.Provider>;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useGlobalSearchData() {
   const context = useContext(GlobalSearchDataContext);
   if (!context) {
