@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, BellRing, Truck, HandCoins, Boxes, TrendingUp } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 type Tone = 'critical' | 'warning';
@@ -393,7 +392,14 @@ export default function Dashboard() {
               <div>
                 <div className="inline-block rounded-full bg-blue-600 px-3 py-1 text-white text-xs mb-2">Next Supply Delivery</div>
                 <div className="space-y-1 text-sm">
-                  <p>{nextSupply ? `${nextSupply.supplier_name} - ${formatDeliveryDate(nextSupply.date)}` : 'No pending deliveries'}</p>
+                  {nextSupply?.date ? (
+                    <>
+                      <p>{nextSupply.supplier_name}</p>
+                      <p>{formatDeliveryDate(nextSupply.date)}</p>
+                    </>
+                  ) : (
+                    <p>Pending supplier confirmation</p>
+                  )}
                 </div>
               </div>
             </div>

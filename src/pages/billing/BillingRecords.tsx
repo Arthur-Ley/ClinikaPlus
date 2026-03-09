@@ -15,7 +15,8 @@ import {
   CalendarDays,
 } from 'lucide-react';
 import Pagination from '../../components/ui/Pagination.tsx';
-import { useBillingPayments, type BillStatus } from '../../context/BillingPaymentsContext.tsx';
+import { type BillStatus } from '../../context/BillingPaymentsContext.tsx';
+import { useBillingPayments } from '../../context/useBillingPayments.ts';
 
 type BillRow = {
   id: string;
@@ -88,7 +89,7 @@ const existingBillServices: ServiceItem[] = [
 ];
 
 const PAGE_SIZE = 5;
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const VAT_RATE = 0.12;
 const SENIOR_DISCOUNT_RATE = 0.2;
 

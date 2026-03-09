@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Package,
@@ -127,6 +127,7 @@ function Group({
 
 export default function Sidebar() {
   const { pathname } = useLocation();
+  const navigate = useNavigate();
   const [inventoryAlertCount, setInventoryAlertCount] = useState(0);
 
   const inventoryActive = pathname.startsWith('/inventory');
@@ -165,6 +166,21 @@ export default function Sidebar() {
     };
   }, [pathname]);
 
+  function handleOpenSettings() {
+    navigate('/settings');
+  }
+
+  function handleLogout() {
+    try {
+      window.sessionStorage.clear();
+      window.localStorage.removeItem('auth');
+      window.localStorage.removeItem('token');
+    } catch {
+      // No-op for restricted storage environments.
+    }
+    navigate('/dashboard');
+  }
+
   return (
     <aside className="relative z-30 w-[250px] bg-[#F5F7FA] flex flex-col h-full px-5 py-5">
       <div className="flex items-center gap-2.5 text-blue-600 mb-7">
@@ -202,11 +218,11 @@ export default function Sidebar() {
       <div className="mt-auto pt-6">
         <div className="text-lg font-bold text-gray-500 mb-2">Others</div>
         <div className="space-y-2">
-          <button type="button" className="w-full flex items-center gap-2.5 px-3 py-2 text-base font-semibold text-gray-800 text-left rounded-lg hover:bg-gray-200 transition">
+          <button type="button" onClick={handleOpenSettings} className="w-full flex items-center gap-2.5 px-3 py-2 text-base font-semibold text-gray-800 text-left rounded-lg hover:bg-gray-200 transition">
             <Settings size={18} />
             Settings
           </button>
-          <button type="button" className="w-full flex items-center gap-2.5 px-3 py-2 text-base font-semibold text-gray-800 text-left rounded-lg hover:bg-gray-200 transition">
+          <button type="button" onClick={handleLogout} className="w-full flex items-center gap-2.5 px-3 py-2 text-base font-semibold text-gray-800 text-left rounded-lg hover:bg-gray-200 transition">
             <LogOut size={18} />
             Logout
           </button>
