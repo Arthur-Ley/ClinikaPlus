@@ -21,6 +21,7 @@ type OverviewResponse = {
     tone: Tone;
   }>;
   inventory_highlights: Array<{
+    medication_key: string;
     medication_name: string;
     stock: number;
     unit: string;
@@ -28,6 +29,11 @@ type OverviewResponse = {
     expiry_label: string;
   }>;
   near_expiry_batches: number;
+  near_expiry_items: Array<{
+    medication_key: string;
+    medication_name: string;
+    expiry_label: string;
+  }>;
   restocking_overview: {
     suggested_orders: Array<{
       medication_name: string;
@@ -74,6 +80,77 @@ function cashToneColor(status: string) {
   return 'bg-green-500';
 }
 
+function OverviewSkeleton() {
+  return (
+    <>
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 animate-pulse">
+        {[1, 2, 3].map((card) => (
+          <div key={card} className="rounded-2xl border border-gray-200 bg-gray-100 p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="h-5 w-40 rounded bg-gray-300" />
+              <div className="h-8 w-8 rounded-xl bg-gray-300" />
+            </div>
+            <div className="h-10 w-32 rounded bg-gray-300" />
+            <div className="my-4 h-2 w-full rounded bg-gray-300" />
+            <div className="h-4 w-36 rounded bg-gray-300" />
+          </div>
+        ))}
+      </div>
+
+      <div className="rounded-2xl bg-gray-100 p-5 grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4 animate-pulse">
+        <div className="flex flex-col items-center justify-center gap-3">
+          <div className="h-8 w-44 rounded bg-gray-300" />
+          <div className="h-4 w-20 rounded bg-gray-300" />
+        </div>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          {[1, 2, 3, 4].map((item) => (
+            <div key={item} className="rounded-xl border border-gray-300 bg-gray-50 p-3">
+              <div className="h-4 w-20 rounded bg-gray-300" />
+              <div className="mt-2 h-3 w-full rounded bg-gray-300" />
+              <div className="mt-1 h-3 w-5/6 rounded bg-gray-300" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_1fr] gap-4 animate-pulse">
+        <div className="rounded-2xl bg-gray-100 p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <div className="h-6 w-52 rounded bg-gray-300" />
+            <div className="h-4 w-14 rounded bg-gray-300" />
+          </div>
+          <div className="space-y-2">
+            <div className="h-8 w-full rounded-xl bg-gray-300" />
+            <div className="h-8 w-full rounded-xl bg-gray-300" />
+            <div className="h-8 w-full rounded-xl bg-gray-300" />
+            <div className="h-8 w-full rounded-xl bg-gray-300" />
+            <div className="h-8 w-full rounded-xl bg-gray-300" />
+          </div>
+          <div className="mt-2 h-9 w-full rounded-xl bg-gray-300" />
+        </div>
+
+        <div className="space-y-4">
+          <div className="rounded-2xl bg-gray-100 p-5">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="h-20 rounded bg-gray-300" />
+              <div className="h-20 rounded bg-gray-300" />
+              <div className="h-20 rounded bg-gray-300" />
+            </div>
+          </div>
+          <div className="rounded-2xl bg-gray-100 p-5">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="h-20 rounded bg-gray-300" />
+              <div className="h-20 rounded bg-gray-300" />
+              <div className="h-20 rounded bg-gray-300" />
+              <div className="h-20 rounded bg-gray-300" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
@@ -113,6 +190,7 @@ export default function Dashboard() {
   const inventoryRows = overview?.inventory_highlights || [];
   const suggestedOrders = overview?.restocking_overview?.suggested_orders || [];
   const nextSupply = overview?.restocking_overview?.next_supply_delivery || null;
+  const nearExpiryItems = overview?.near_expiry_items || [];
 
   const summary = useMemo(() => {
     return {
@@ -134,11 +212,13 @@ export default function Dashboard() {
       <h1 className="text-3xl font-bold tracking-tight text-gray-800">Overview</h1>
 
       <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
-        {isLoading && <div className="rounded-xl border border-gray-200 bg-gray-100 p-3 text-sm text-gray-600">Loading overview data...</div>}
+        {isLoading && !overview && <OverviewSkeleton />}
         {!isLoading && loadError && (
           <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{loadError}</div>
         )}
 
+        {!isLoading && (
+        <>
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
           <div className="rounded-2xl border border-gray-200 bg-gray-100 p-5">
             <div className="flex items-start justify-between mb-4">
@@ -239,8 +319,22 @@ export default function Dashboard() {
                   </tr>
                 )}
                 {inventoryRows.map((row) => (
-                  <tr key={row.medication_name} className="bg-gray-300/70 text-gray-800">
-                    <td className="px-3 py-2 rounded-l-xl font-semibold">{row.medication_name}</td>
+                  <tr
+                    key={row.medication_name}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() =>
+                      navigate(`/inventory?focusMedicationId=${encodeURIComponent(row.medication_key)}&openMedicationId=${encodeURIComponent(row.medication_key)}`)
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        navigate(`/inventory?focusMedicationId=${encodeURIComponent(row.medication_key)}&openMedicationId=${encodeURIComponent(row.medication_key)}`);
+                      }
+                    }}
+                    className="bg-gray-300/70 text-gray-800 cursor-pointer transition hover:bg-gray-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+                  >
+                    <td className="px-3 py-2 rounded-l-xl font-semibold text-[#2B2F33]">{row.medication_name}</td>
                     <td className="px-3 py-2 font-semibold">{row.stock} {row.unit}</td>
                     <td
                       className={`px-3 py-2 font-semibold ${
@@ -255,10 +349,21 @@ export default function Dashboard() {
               </tbody>
             </table>
 
-            <div className="mt-2 rounded-xl bg-gray-300 px-3 py-2 text-sm font-semibold text-gray-500 flex justify-between">
+            <button
+              type="button"
+              onClick={() => {
+                const target = nearExpiryItems[0];
+                if (!target) {
+                  navigate('/inventory');
+                  return;
+                }
+                navigate(`/inventory?focusMedicationId=${encodeURIComponent(target.medication_key)}&openMedicationId=${encodeURIComponent(target.medication_key)}`);
+              }}
+              className="mt-2 w-full rounded-xl bg-gray-300 px-3 py-2 text-sm font-semibold text-gray-500 flex justify-between items-center cursor-pointer transition hover:bg-gray-200/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+            >
               <span>Near-expiry batches:</span>
               <span>{summary.nearExpiryBatches} batches</span>
-            </div>
+            </button>
           </div>
 
           <div className="space-y-4">
@@ -324,6 +429,8 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+        </>
+        )}
       </section>
     </div>
   );

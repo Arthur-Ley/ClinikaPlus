@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, ChevronDown, X, Pencil, Pill, Search } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
 import Pagination from '../../components/ui/Pagination.tsx';
 import { createRestockRequest, loadRestockRequests, RESTOCK_REQUESTS_CHANGED_EVENT } from './restockRequestsStore.ts';
 
@@ -72,7 +73,48 @@ const severityColors = {
   warning: 'border-amber-300 bg-amber-50',
 };
 
+function InventoryAlertsSkeleton() {
+  return (
+    <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5 animate-pulse">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {[1, 2, 3].map((item) => (
+          <div key={item} className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
+            <div className="flex items-start justify-between">
+              <div className="h-5 w-36 rounded bg-gray-300" />
+              <div className="h-6 w-6 rounded-full bg-gray-300" />
+            </div>
+            <div className="mt-3 h-10 w-28 rounded bg-gray-300" />
+            <div className="mt-2 h-4 w-40 rounded bg-gray-300" />
+            <div className="mt-3 h-3 w-44 rounded bg-gray-300" />
+          </div>
+        ))}
+      </div>
+      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
+        <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="h-10 w-full rounded-lg bg-gray-300 md:w-72" />
+          <div className="flex gap-2">
+            <div className="h-10 w-24 rounded-lg bg-gray-300" />
+            <div className="h-10 w-28 rounded-lg bg-gray-300" />
+          </div>
+        </div>
+        <div className="grid min-h-[340px] content-start grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {[1, 2, 3, 4, 5, 6].map((item) => (
+            <div key={item} className="rounded-xl border border-gray-300 bg-gray-50 p-4">
+              <div className="h-4 w-44 rounded bg-gray-300" />
+              <div className="mt-2 h-3 w-full rounded bg-gray-300" />
+              <div className="mt-1 h-3 w-5/6 rounded bg-gray-300" />
+              <div className="mt-1 h-3 w-4/6 rounded bg-gray-300" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function InventoryAlerts() {
+  const location = useLocation();
+  const handledFocusIdRef = useRef('');
   const [items, setItems] = useState<InventoryRow[]>([]);
   const [alerts, setAlerts] = useState<InventoryAlert[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -288,6 +330,44 @@ export default function InventoryAlerts() {
   }, [currentPage, totalPages]);
 
   const pagedAlerts = filteredAlerts.slice((currentPage - 1) * ALERTS_PAGE_SIZE, currentPage * ALERTS_PAGE_SIZE);
+  const showInitialSkeleton = isLoading && alerts.length === 0 && items.length === 0 && !loadError;
+
+  const focusAlertMedicationId = useMemo(
+    () => new URLSearchParams(location.search).get('focusAlertMedicationId') || '',
+    [location.search],
+  );
+
+  useEffect(() => {
+    if (!focusAlertMedicationId || !alerts.length) return;
+    if (handledFocusIdRef.current === focusAlertMedicationId) return;
+
+    const target = alerts.find((alert) => alert.id === focusAlertMedicationId);
+    if (!target) return;
+
+    setSeverityFilter('');
+    setCategoryFilter('');
+    setSearchTerm(target.name);
+  }, [focusAlertMedicationId, alerts]);
+
+  useEffect(() => {
+    if (!focusAlertMedicationId || !filteredAlerts.length) return;
+    if (handledFocusIdRef.current === focusAlertMedicationId) return;
+
+    const targetIndex = filteredAlerts.findIndex((alert) => alert.id === focusAlertMedicationId);
+    if (targetIndex < 0) return;
+
+    const targetPage = Math.floor(targetIndex / ALERTS_PAGE_SIZE) + 1;
+    setCurrentPage(targetPage);
+
+    setTimeout(() => {
+      const selector = `[data-search-alert-id="${focusAlertMedicationId}"]`;
+      const node = document.querySelector(selector);
+      if (node instanceof HTMLElement) {
+        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        handledFocusIdRef.current = focusAlertMedicationId;
+      }
+    }, 120);
+  }, [focusAlertMedicationId, filteredAlerts]);
 
   function openCreateRestockRequest(alert: InventoryAlert) {
     setRestockTarget(alert);
@@ -393,6 +473,9 @@ export default function InventoryAlerts() {
     <div className="space-y-5">
       <h1 className="text-3xl font-bold tracking-tight text-gray-800">Inventory | Inventory Alerts</h1>
 
+      {showInitialSkeleton && <InventoryAlertsSkeleton />}
+
+      {!showInitialSkeleton && (
       <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
@@ -479,11 +562,14 @@ export default function InventoryAlerts() {
           </div>
 
           <div className="grid min-h-[340px] content-start grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {isLoading && (
-              <article className="rounded-xl border border-gray-300 bg-gray-50 p-4 text-sm text-gray-600 md:col-span-2 xl:col-span-3">
-                Loading medication alerts...
+            {isLoading && Array.from({ length: 6 }).map((_, index) => (
+              <article key={`alerts-skeleton-${index}`} className="rounded-xl border border-gray-300 bg-gray-50 p-4">
+                <div className="h-4 w-44 animate-pulse rounded bg-gray-300" />
+                <div className="mt-2 h-3 w-full animate-pulse rounded bg-gray-300" />
+                <div className="mt-1 h-3 w-5/6 animate-pulse rounded bg-gray-300" />
+                <div className="mt-1 h-3 w-4/6 animate-pulse rounded bg-gray-300" />
               </article>
-            )}
+            ))}
             {!isLoading && loadError && (
               <article className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 md:col-span-2 xl:col-span-3">
                 {loadError}
@@ -497,6 +583,7 @@ export default function InventoryAlerts() {
             {pagedAlerts.map((alert) => (
               <div
                 key={alert.id}
+                data-search-alert-id={alert.id}
                 className={`rounded-xl border p-4 ${severityColors[alert.severity as keyof typeof severityColors] || 'border-gray-300 bg-gray-50'}`}
               >
                 <p className={`text-sm font-semibold ${alert.severity === 'critical' ? 'text-red-500' : 'text-amber-600'}`}>
@@ -539,6 +626,7 @@ export default function InventoryAlerts() {
           </div>
         </div>
       </section>
+      )}
 
       {selectedItem && (
         <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setSelectedItem(null)}>
