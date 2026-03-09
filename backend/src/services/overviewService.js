@@ -35,12 +35,6 @@ function formatExpiryLabel(expiryDate) {
   return `${days} days`;
 }
 
-function statusRank(status) {
-  if (status === "Critical") return 0;
-  if (status === "Low") return 1;
-  return 2;
-}
-
 async function getRevenueToday() {
   const { data, error } = await supabase
     .from("tbl_payments")
@@ -122,12 +116,18 @@ export async function getOverviewData() {
   const inventoryHighlights = stocks
     .slice()
     .sort((a, b) => {
-      const byStatus = statusRank(a.status) - statusRank(b.status);
-      if (byStatus !== 0) return byStatus;
-      return Number(a.total_stock || 0) - Number(b.total_stock || 0);
+      const byStock = Number(a.total_stock || 0) - Number(b.total_stock || 0);
+      if (byStock !== 0) return byStock;
+
+      const leftExpiryDays = daysUntil(a.expiry_date);
+      const rightExpiryDays = daysUntil(b.expiry_date);
+      const leftRank = leftExpiryDays === null ? Number.POSITIVE_INFINITY : leftExpiryDays;
+      const rightRank = rightExpiryDays === null ? Number.POSITIVE_INFINITY : rightExpiryDays;
+      return leftRank - rightRank;
     })
     .slice(0, 5)
     .map((row) => ({
+      medication_key: `I-${String(row.medication_id).padStart(3, "0")}`,
       medication_name: row.medication_name,
       stock: Number(row.total_stock || 0),
       unit: row.unit,
@@ -140,6 +140,22 @@ export async function getOverviewData() {
     const days = daysUntil(row.expiry_date);
     return days !== null && days >= 0 && days <= 30;
   }).length;
+  const nearExpiryItems = stocks
+    .filter((row) => {
+      const days = daysUntil(row.expiry_date);
+      return days !== null && days >= 0 && days <= 30;
+    })
+    .sort((a, b) => {
+      const left = daysUntil(a.expiry_date) ?? Number.POSITIVE_INFINITY;
+      const right = daysUntil(b.expiry_date) ?? Number.POSITIVE_INFINITY;
+      return left - right;
+    })
+    .slice(0, 5)
+    .map((row) => ({
+      medication_key: `I-${String(row.medication_id).padStart(3, "0")}`,
+      medication_name: row.medication_name,
+      expiry_label: formatExpiryLabel(row.expiry_date),
+    }));
 
   const alertCards = alerts.slice(0, 4).map((alert) => ({
     title: alert.severity === "Critical" ? "Critical:" : "Warning:",
@@ -173,6 +189,7 @@ export async function getOverviewData() {
     alerts: alertCards,
     inventory_highlights: inventoryHighlights,
     near_expiry_batches: nearExpiryBatches,
+    near_expiry_items: nearExpiryItems,
     restocking_overview: {
       suggested_orders: computeSuggestedOrders(stocks),
       next_supply_delivery: nextSupply,
@@ -185,4 +202,3 @@ export async function getOverviewData() {
     },
   };
 }
-

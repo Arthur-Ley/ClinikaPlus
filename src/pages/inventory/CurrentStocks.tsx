@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useLocation } from 'react-router-dom';
 import Button from '../../components/ui/Button.tsx';
 import Pagination from '../../components/ui/Pagination.tsx';
 import { Plus, X, Search, ChevronDown, Boxes, AlertTriangle, PackageX, CheckCircle2, Pencil, Pill } from 'lucide-react';
+import { emitGlobalSearchRefresh } from '../../context/globalSearchEvents.ts';
  
 
 type InventoryStatus = 'Adequate' | 'Low' | 'Critical';
@@ -133,7 +135,48 @@ function expirySortRank(expiry: string) {
   return parsed.getTime();
 }
 
+function CurrentStocksSkeleton() {
+  return (
+    <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5 animate-pulse">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        {[1, 2, 3].map((item) => (
+          <article key={item} className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
+            <div className="flex items-start justify-between">
+              <div className="h-5 w-36 rounded bg-gray-300" />
+              <div className="h-6 w-6 rounded-full bg-gray-300" />
+            </div>
+            <div className="mt-3 h-10 w-32 rounded bg-gray-300" />
+            <div className="mt-2 h-4 w-40 rounded bg-gray-300" />
+            <div className="mt-2 h-3 w-48 rounded bg-gray-300" />
+          </article>
+        ))}
+      </div>
+      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
+        <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="h-10 w-full rounded-lg bg-gray-300 md:w-72" />
+          <div className="flex gap-2">
+            <div className="h-10 w-32 rounded-lg bg-gray-300" />
+            <div className="h-10 w-32 rounded-lg bg-gray-300" />
+            <div className="h-10 w-32 rounded-lg bg-gray-300" />
+          </div>
+        </div>
+        <div className="overflow-x-auto rounded-xl">
+          <div className="space-y-2">
+            <div className="h-9 w-full rounded bg-gray-300" />
+            <div className="h-9 w-full rounded bg-gray-300" />
+            <div className="h-9 w-full rounded bg-gray-300" />
+            <div className="h-9 w-full rounded bg-gray-300" />
+            <div className="h-9 w-full rounded bg-gray-300" />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function CurrentStocks() {
+  const location = useLocation();
+  const handledFocusIdRef = useRef('');
   const [items, setItems] = useState<InventoryRow[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedItem, setSelectedItem] = useState<InventoryRow | null>(null);
@@ -313,6 +356,50 @@ export default function CurrentStocks() {
     return categories;
   }, [items]);
 
+  const showInitialSkeleton = isLoadingStocks && items.length === 0 && !stocksError;
+
+  const focusMedicationId = useMemo(() => new URLSearchParams(location.search).get('focusMedicationId') || '', [location.search]);
+  const openMedicationId = useMemo(() => new URLSearchParams(location.search).get('openMedicationId') || '', [location.search]);
+
+  useEffect(() => {
+    if (!focusMedicationId || !items.length) return;
+    if (handledFocusIdRef.current === focusMedicationId) return;
+
+    const target = items.find((item) => item.id === focusMedicationId);
+    if (!target) return;
+
+    setFilterCategory('All Categories');
+    setFilterStatus('All Status');
+    setSearchTerm(target.name);
+  }, [focusMedicationId, items]);
+
+  useEffect(() => {
+    if (!focusMedicationId || !filteredItems.length) return;
+    if (handledFocusIdRef.current === focusMedicationId) return;
+
+    const targetIndex = filteredItems.findIndex((item) => item.id === focusMedicationId);
+    if (targetIndex < 0) return;
+
+    const targetPage = Math.floor(targetIndex / DEFAULT_PAGE_SIZE) + 1;
+    setCurrentPage(targetPage);
+
+    setTimeout(() => {
+      const selector = `[data-search-medication-id="${focusMedicationId}"]`;
+      const node = document.querySelector(selector);
+      if (node instanceof HTMLElement) {
+        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        handledFocusIdRef.current = focusMedicationId;
+      }
+    }, 120);
+  }, [focusMedicationId, filteredItems]);
+
+  useEffect(() => {
+    if (!openMedicationId || !items.length) return;
+    const target = items.find((item) => item.id === openMedicationId);
+    if (!target) return;
+    setSelectedItem(target);
+  }, [openMedicationId, items]);
+
   async function handleAddMedicationSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setIsSubmittingMedication(true);
@@ -360,6 +447,7 @@ export default function CurrentStocks() {
         supplierId: supplierDropdown[0] ? String(supplierDropdown[0].supplier_id) : '',
       });
       await loadMedicationStocks();
+      emitGlobalSearchRefresh();
       setCurrentPage(1);
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'Failed to create medication.');
@@ -449,6 +537,7 @@ export default function CurrentStocks() {
       }
 
       await loadMedicationStocks();
+      emitGlobalSearchRefresh();
       setIsEditingMedication(false);
     } catch (error) {
       setMedicationEditError(error instanceof Error ? error.message : 'Failed to update medication.');
@@ -462,6 +551,10 @@ export default function CurrentStocks() {
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold tracking-tight text-gray-800">Inventory | Current Stocks</h1>
       </div>
+
+      {showInitialSkeleton && <CurrentStocksSkeleton />}
+
+      {!showInitialSkeleton && (
 
       <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -589,13 +682,13 @@ export default function CurrentStocks() {
                 </tr>
               </thead>
               <tbody>
-                {isLoadingStocks && (
-                  <tr>
-                    <td colSpan={9} className="px-3 py-6 text-center text-sm text-gray-600">
-                      Loading medications from database...
+                {isLoadingStocks && Array.from({ length: 5 }).map((_, index) => (
+                  <tr key={`stocks-skeleton-${index}`} className="border-t border-gray-200">
+                    <td colSpan={9} className="px-2 py-1.5">
+                      <div className="h-8 w-full animate-pulse rounded bg-gray-200" />
                     </td>
                   </tr>
-                )}
+                ))}
                 {!isLoadingStocks && stocksError && (
                   <tr>
                     <td colSpan={9} className="px-3 py-6 text-center text-sm text-red-600">
@@ -611,7 +704,7 @@ export default function CurrentStocks() {
                   </tr>
                 )}
                 {!isLoadingStocks && !stocksError && pagedItems.map((item, idx) => (
-                  <tr key={item.id} className="border-t border-gray-200 hover:bg-gray-200/40">
+                  <tr key={item.id} data-search-medication-id={item.id} className="border-t border-gray-200 hover:bg-gray-200/40">
                     <td className="px-2 py-1.5 font-semibold text-gray-800">#{String(startIndex + idx + 1).padStart(3, '0')}</td>
                     <td className="px-2 py-1.5 text-gray-800 truncate" title={item.name}>{item.name}</td>
                     <td className="px-2 py-1.5 text-gray-700 truncate" title={item.category}>{item.category}</td>
@@ -651,6 +744,7 @@ export default function CurrentStocks() {
           </div>
         </div>
       </section>
+      )}
 
       {selectedItem && (
         <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => {

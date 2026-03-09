@@ -78,6 +78,7 @@ type RestockCreateApiResponse = {
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const NEEDED_BY_PREFIX = 'Needed By:';
 export const RESTOCK_REQUESTS_CHANGED_EVENT = 'restock-requests-changed';
+const GLOBAL_SEARCH_REFRESH_EVENT = 'global-search-refresh';
 const inFlightCreateByMedication = new Map<number, Promise<StoredRestockRequest>>();
 
 function parseNeededBy(notes: string) {
@@ -173,6 +174,7 @@ export async function createRestockRequest(input: CreateRestockRequestInput): Pr
     const createJson = (await response.json()) as RestockCreateApiResponse;
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent(RESTOCK_REQUESTS_CHANGED_EVENT));
+      window.dispatchEvent(new CustomEvent(GLOBAL_SEARCH_REFRESH_EVENT));
     }
     const items = await loadRestockRequests();
     const created = items.find((item) => item.requestId === createJson.request.request_id);
@@ -212,5 +214,6 @@ export async function updateRestockRequest(id: number, updates: UpdateRestockReq
   }
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(RESTOCK_REQUESTS_CHANGED_EVENT));
+    window.dispatchEvent(new CustomEvent(GLOBAL_SEARCH_REFRESH_EVENT));
   }
 }

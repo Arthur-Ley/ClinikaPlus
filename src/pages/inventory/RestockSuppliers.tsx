@@ -15,6 +15,8 @@ import {
   MapPin,
   ImagePlus,
   CheckCircle2,
+  Copy,
+  Check,
   ClipboardList,
   Shield,
   CircleDot,
@@ -27,6 +29,8 @@ import {
   type RestockRequestSeverity,
   type RestockRequestStatus,
 } from './restockRequestsStore.ts';
+import { useLocation } from 'react-router-dom';
+import { emitGlobalSearchRefresh } from '../../context/globalSearchEvents.ts';
 
 type RequestSeverity = RestockRequestSeverity;
 type RequestStatus = RestockRequestStatus;
@@ -92,7 +96,60 @@ function cardIconStyle(tone: 'blue' | 'amber') {
     : 'bg-amber-500/90 text-white';
 }
 
+function RestockSuppliersSkeleton() {
+  return (
+    <section className="flex flex-col gap-5 rounded-2xl bg-gray-300/80 p-5 animate-pulse">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+        {[1, 2, 3].map((item) => (
+          <article key={item} className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
+            <div className="flex items-start justify-between">
+              <div className="h-5 w-32 rounded bg-gray-300" />
+              <div className="h-6 w-6 rounded-full bg-gray-300" />
+            </div>
+            <div className="mt-3 h-10 w-28 rounded bg-gray-300" />
+            <div className="mt-2 h-4 w-40 rounded bg-gray-300" />
+            <div className="mt-2 h-3 w-36 rounded bg-gray-300" />
+          </article>
+        ))}
+      </div>
+
+      <div className="rounded-2xl bg-gray-100 p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="h-6 w-40 rounded bg-gray-300" />
+          <div className="flex gap-2">
+            <div className="h-10 w-28 rounded-lg bg-gray-300" />
+            <div className="h-10 w-32 rounded-lg bg-gray-300" />
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+          {[1, 2, 3].map((col) => (
+            <div key={col} className="rounded-xl border border-gray-300 bg-gray-50 p-3">
+              <div className="h-4 w-20 rounded bg-gray-300" />
+              <div className="mt-2 h-16 rounded bg-gray-300" />
+              <div className="mt-2 h-16 rounded bg-gray-300" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="h-6 w-40 rounded bg-gray-300" />
+          <div className="h-10 w-28 rounded-lg bg-gray-300" />
+        </div>
+        <div className="space-y-2">
+          <div className="h-9 w-full rounded bg-gray-300" />
+          <div className="h-9 w-full rounded bg-gray-300" />
+          <div className="h-9 w-full rounded bg-gray-300" />
+          <div className="h-9 w-full rounded bg-gray-300" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function RestockSuppliers() {
+  const location = useLocation();
   const [requestSeverityFilter, setRequestSeverityFilter] = useState('All Severity');
   const [requestCategoryFilter, setRequestCategoryFilter] = useState('All Categories');
   const [statusFilter, setStatusFilter] = useState('All Status');
@@ -137,6 +194,9 @@ export default function RestockSuppliers() {
   });
   const [newSupplierImageFile, setNewSupplierImageFile] = useState<File | null>(null);
   const [isSubmittingSupplier, setIsSubmittingSupplier] = useState(false);
+  const [isPhonePanelOpen, setIsPhonePanelOpen] = useState(false);
+  const [isPhoneCopied, setIsPhoneCopied] = useState(false);
+  const [focusHandledKey, setFocusHandledKey] = useState('');
 
   function resetNewSupplierForm() {
     setNewSupplier({
@@ -157,6 +217,24 @@ export default function RestockSuppliers() {
     setConfirmChecked(false);
     setNewSupplierImageFile(null);
     setIsSubmittingSupplier(false);
+  }
+
+  useEffect(() => {
+    if (modal !== 'viewSupplier') {
+      setIsPhonePanelOpen(false);
+      setIsPhoneCopied(false);
+    }
+  }, [modal]);
+
+  async function copySupplierPhone(phoneNumber: string) {
+    if (!phoneNumber.trim()) return;
+    try {
+      await navigator.clipboard.writeText(phoneNumber.trim());
+      setIsPhoneCopied(true);
+      window.setTimeout(() => setIsPhoneCopied(false), 1200);
+    } catch {
+      setIsPhoneCopied(false);
+    }
   }
 
   const syncRestockRequests = useCallback(async () => {
@@ -344,6 +422,44 @@ export default function RestockSuppliers() {
     });
   }, [alignedSuppliers, statusFilter]);
 
+  const focusRequestCode = useMemo(() => new URLSearchParams(location.search).get('focusRequestCode') || '', [location.search]);
+  const focusSupplierId = useMemo(() => new URLSearchParams(location.search).get('focusSupplierId') || '', [location.search]);
+
+  useEffect(() => {
+    if (!focusRequestCode) return;
+    if (focusHandledKey === `request:${focusRequestCode}`) return;
+
+    const target = restockRequests.find((request) => request.id === focusRequestCode);
+    if (!target) return;
+
+    setRequestSeverityFilter('All Severity');
+    setRequestCategoryFilter('All Categories');
+    setStatusFilter('All Status');
+
+    setTimeout(() => {
+      const node = document.querySelector(`[data-search-request-code="${focusRequestCode}"]`);
+      if (node instanceof HTMLElement) {
+        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setExpandedRequestId(focusRequestCode);
+        setFocusHandledKey(`request:${focusRequestCode}`);
+      }
+    }, 120);
+  }, [focusRequestCode, restockRequests, focusHandledKey]);
+
+  useEffect(() => {
+    if (!focusSupplierId) return;
+    if (focusHandledKey === `supplier:${focusSupplierId}`) return;
+
+    setStatusFilter('All Status');
+    setTimeout(() => {
+      const node = document.querySelector(`[data-search-supplier-id="${focusSupplierId}"]`);
+      if (node instanceof HTMLElement) {
+        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setFocusHandledKey(`supplier:${focusSupplierId}`);
+      }
+    }, 120);
+  }, [focusSupplierId, displayedSuppliers, focusHandledKey]);
+
   const selectedSupplierRequests = useMemo(() => {
     if (!selectedSupplier) return [];
     return restockRequests
@@ -353,6 +469,7 @@ export default function RestockSuppliers() {
       )
       .sort((a, b) => new Date(b.requestedOnIso).getTime() - new Date(a.requestedOnIso).getTime());
   }, [restockRequests, selectedSupplier]);
+  const showInitialSkeleton = isLoading && supplierRows.length === 0 && restockRequests.length === 0 && !loadError;
 
   const frequentSupplierMedications = useMemo(() => {
     const grouped = selectedSupplierRequests.reduce<Record<string, number>>((acc, request) => {
@@ -588,6 +705,7 @@ export default function RestockSuppliers() {
         };
       });
       setSupplierRows(refreshed);
+      emitGlobalSearchRefresh();
       setModal('success');
       resetNewSupplierForm();
     } catch (error) {
@@ -620,12 +738,10 @@ export default function RestockSuppliers() {
     <div className="space-y-5">
       <h1 className="text-3xl font-bold tracking-tight text-gray-800">Inventory | Restock and Suppliers</h1>
 
+      {showInitialSkeleton && <RestockSuppliersSkeleton />}
+
+      {!showInitialSkeleton && (
       <section className="flex flex-col gap-5 rounded-2xl bg-gray-300/80 p-5">
-        {isLoading && (
-          <article className="rounded-xl border border-gray-300 bg-gray-100 p-4 text-sm text-gray-600">
-            Loading medication and supplier data...
-          </article>
-        )}
         {!isLoading && loadError && (
           <article className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
             {loadError}
@@ -744,6 +860,7 @@ export default function RestockSuppliers() {
                     {requestsByStatus[status].map((request) => (
                       <article
                         key={request.id}
+                        data-search-request-code={request.id}
                         draggable={request.status === 'Pending'}
                         onDragStart={(event) => {
                           if (request.status !== 'Pending') return;
@@ -873,7 +990,7 @@ export default function RestockSuppliers() {
               </thead>
               <tbody>
                 {displayedSuppliers.map((supplier) => (
-                  <tr key={supplier.id} className="border-t border-gray-200 hover:bg-gray-200/40">
+                  <tr key={supplier.id} data-search-supplier-id={String(supplier.supplierId)} className="border-t border-gray-200 hover:bg-gray-200/40">
                     <td className="px-3 py-2 font-semibold text-gray-800">{supplier.id}</td>
                     <td className="px-3 py-2 text-gray-800">{supplier.name}</td>
                     <td className="px-3 py-2 text-gray-700">{supplier.totalRequests}</td>
@@ -905,6 +1022,7 @@ export default function RestockSuppliers() {
           </div>
         </div>
       </section>
+      )}
 
       {modal === 'add' && (
         <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
@@ -1226,19 +1344,69 @@ export default function RestockSuppliers() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-200 text-gray-600">
+              <div className="relative flex items-center gap-2">
+                <button
+                  type="button"
+                  title={selectedSupplier.contact?.trim() || 'No phone number available'}
+                  onClick={() => setIsPhonePanelOpen((prev) => !prev)}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-200 text-gray-600 transition hover:bg-gray-300 hover:text-gray-800"
+                >
                   <Phone className="h-3.5 w-3.5" />
-                </span>
-                <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-200 text-gray-600">
+                </button>
+                <button
+                  type="button"
+                  title={selectedSupplier.email?.trim() || 'No email address available'}
+                  onClick={() => {
+                    const email = selectedSupplier.email?.trim();
+                    if (!email) return;
+                    const gmailComposeUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(email)}`;
+                    window.open(gmailComposeUrl, '_blank', 'noopener,noreferrer');
+                  }}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-200 text-gray-600 transition hover:bg-gray-300 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={!selectedSupplier.email?.trim()}
+                >
                   <Mail className="h-3.5 w-3.5" />
-                </span>
-                <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-200 text-gray-600">
+                </button>
+                <button
+                  type="button"
+                  title={selectedSupplier.address?.trim() || 'No address available'}
+                  onClick={() => {
+                    const address = selectedSupplier.address?.trim();
+                    if (!address) return;
+                    const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+                    window.open(mapsUrl, '_blank', 'noopener,noreferrer');
+                  }}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-200 text-gray-600 transition hover:bg-gray-300 hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={!selectedSupplier.address?.trim()}
+                >
                   <MapPin className="h-3.5 w-3.5" />
-                </span>
+                </button>
                 <button type="button" onClick={() => setModal('none')} className="ml-1 inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600">
                   <X size={14} />
                 </button>
+
+                {isPhonePanelOpen && (
+                  <div className="absolute right-8 top-8 z-10 w-64 rounded-lg border border-gray-300 bg-white p-2.5 shadow-lg">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Phone Number</p>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        readOnly
+                        value={selectedSupplier.contact?.trim() || 'No phone number available'}
+                        className="h-8 w-full rounded-md border border-gray-300 bg-gray-50 px-2 text-xs text-gray-700"
+                        onFocus={(event) => event.currentTarget.select()}
+                      />
+                      <button
+                        type="button"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-gray-300 text-gray-600 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={() => copySupplierPhone(selectedSupplier.contact || '')}
+                        disabled={!selectedSupplier.contact?.trim()}
+                        title={selectedSupplier.contact?.trim() ? 'Copy phone number' : 'No phone number available'}
+                      >
+                        {isPhoneCopied ? <Check className="h-4 w-4 text-green-600" /> : <Copy className="h-4 w-4" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 
