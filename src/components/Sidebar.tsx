@@ -21,16 +21,8 @@ import { RESTOCK_REQUESTS_CHANGED_EVENT } from '../pages/inventory/restockReques
 type LinkIcon = React.ComponentType<{ size?: number; className?: string }>;
 type BadgeCount = number;
 
-type MedicationStockApiItem = {
+type InventoryAlertApiItem = {
   medication_id: number;
-  reorder_threshold: number;
-  total_stock: number;
-  status: 'Adequate' | 'Low' | 'Critical';
-};
-
-type RestockRequestApiItem = {
-  medication_id: number;
-  status: 'Pending' | 'Completed' | 'Cancelled';
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
@@ -141,46 +133,30 @@ export default function Sidebar() {
   const inventoryActive = pathname.startsWith('/inventory');
   const billingActive = pathname.startsWith('/billing');
   const reportsActive = pathname.startsWith('/reports');
-  const needsCountRefresh = useMemo(() => pathname.startsWith('/inventory'), [pathname]);
 
   useEffect(() => {
     let isMounted = true;
 
-    async function loadActionableInventoryAlertCount() {
+    async function loadInventoryAlertCount() {
       try {
-        const [medicationsRes, requestsRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/medications`),
-          fetch(`${API_BASE_URL}/restock-requests`),
-        ]);
-        if (!medicationsRes.ok || !requestsRes.ok) {
-          throw new Error('Failed to load inventory alert counters.');
+        const response = await fetch(`${API_BASE_URL}/inventory-alerts`);
+        if (!response.ok) {
+          throw new Error('Failed to load inventory alerts counter.');
         }
 
-        const medicationsJson = (await medicationsRes.json()) as { items: MedicationStockApiItem[] };
-        const requestsJson = (await requestsRes.json()) as { items: RestockRequestApiItem[] };
+        const json = (await response.json()) as { items: InventoryAlertApiItem[] };
+        const nextCount = (json.items || []).length;
 
-        const pendingMedicationIds = new Set(
-          (requestsJson.items || [])
-            .filter((request) => request.status === 'Pending')
-            .map((request) => request.medication_id),
-        );
-
-        const actionableCount = (medicationsJson.items || []).filter((item) => {
-          const isAlert = item.total_stock < item.reorder_threshold || item.status === 'Critical';
-          const hasPendingRequest = pendingMedicationIds.has(item.medication_id);
-          return isAlert && !hasPendingRequest;
-        }).length;
-
-        if (isMounted) setInventoryAlertCount(actionableCount);
+        if (isMounted) setInventoryAlertCount(nextCount);
       } catch {
         if (isMounted) setInventoryAlertCount(0);
       }
     }
 
-    loadActionableInventoryAlertCount();
+    loadInventoryAlertCount();
 
     function handleRequestChange() {
-      loadActionableInventoryAlertCount();
+      loadInventoryAlertCount();
     }
 
     window.addEventListener(RESTOCK_REQUESTS_CHANGED_EVENT, handleRequestChange);
@@ -188,7 +164,7 @@ export default function Sidebar() {
       isMounted = false;
       window.removeEventListener(RESTOCK_REQUESTS_CHANGED_EVENT, handleRequestChange);
     };
-  }, [needsCountRefresh]);
+  }, [pathname]);
 
   function handleOpenSettings() {
     navigate('/settings');

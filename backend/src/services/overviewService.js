@@ -84,6 +84,51 @@ function computeSuggestedOrders(stocks) {
     }));
 }
 
+function computeInventoryRiskLevel({ criticalCount, warningCount, totalStocks }) {
+  if (totalStocks <= 0) return "Stable";
+
+  const criticalRatio = criticalCount / totalStocks;
+  const atRiskRatio = (criticalCount + warningCount) / totalStocks;
+
+  if (
+    criticalCount >= 3 ||
+    criticalRatio >= 0.35 ||
+    (criticalCount >= 2 && warningCount >= 3)
+  ) {
+    return "Critical";
+  }
+
+  if (criticalCount > 0 || warningCount >= 2 || atRiskRatio >= 0.15) {
+    return "Warning";
+  }
+
+  return "Stable";
+}
+
+function computeCashFlowCondition(billing) {
+  const outstanding = Number(billing?.total_outstanding_balance || 0);
+  const pendingBills = Number(billing?.total_pending_bills || 0);
+  const totalRevenue = Number(billing?.total_revenue || 0);
+  const outstandingToRevenue = totalRevenue > 0 ? outstanding / totalRevenue : outstanding > 0 ? 1 : 0;
+
+  if (
+    pendingBills >= 15 ||
+    (pendingBills >= 8 && outstandingToRevenue >= 0.5) ||
+    outstanding >= 120000
+  ) {
+    return "Critical";
+  }
+
+  if (
+    outstanding > 0 &&
+    (pendingBills >= 3 || outstandingToRevenue >= 0.2 || outstanding >= 15000)
+  ) {
+    return "Warning";
+  }
+
+  return "Stable";
+}
+
 export async function getOverviewData() {
   const [stocksResult, alertsResult, restockResult, billingResult, claimsResult, revenueTodayResult, pendingPaymentsResult, totalTransactionsResult] =
     await Promise.allSettled([
@@ -108,10 +153,21 @@ export async function getOverviewData() {
 
   const criticalAlerts = alerts.filter((item) => item.severity === "Critical");
   const warningAlerts = alerts.filter((item) => item.severity !== "Critical");
+  const totalStocks = stocks.length;
+  const criticalCount = criticalAlerts.length;
+  const warningCount = warningAlerts.length;
 
-  const overallSystemRisk = criticalAlerts.length > 0 ? "Critical" : warningAlerts.length > 0 ? "Warning" : "Stable";
-  const inventoryStability = criticalAlerts.length > 0 || warningAlerts.length > 0 ? "At Risk" : "Stable";
-  const cashFlowCondition = Number(billing.total_outstanding_balance || 0) > 0 ? "At Risk" : "Stable";
+  const overallSystemRisk = computeInventoryRiskLevel({
+    criticalCount,
+    warningCount,
+    totalStocks,
+  });
+  const inventoryStability = computeInventoryRiskLevel({
+    criticalCount,
+    warningCount,
+    totalStocks,
+  });
+  const cashFlowCondition = computeCashFlowCondition(billing);
 
   const inventoryHighlights = stocks
     .slice()
@@ -181,7 +237,7 @@ export async function getOverviewData() {
   return {
     summary: {
       overall_system_risk: overallSystemRisk,
-      high_priority_issues: criticalAlerts.length,
+      high_priority_issues: criticalCount,
       inventory_stability: inventoryStability,
       cash_flow_condition: cashFlowCondition,
       outstanding_balance: Number(billing.total_outstanding_balance || 0),

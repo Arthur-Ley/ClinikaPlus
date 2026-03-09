@@ -70,12 +70,14 @@ function riskBarColor(risk: string) {
 }
 
 function statusToneColor(status: string) {
-  if (status === 'At Risk') return 'bg-amber-500';
+  if (status === 'Critical') return 'bg-red-500';
+  if (status === 'Warning' || status === 'At Risk') return 'bg-amber-500';
   return 'bg-green-500';
 }
 
 function cashToneColor(status: string) {
-  if (status === 'At Risk') return 'bg-amber-500';
+  if (status === 'Critical') return 'bg-red-500';
+  if (status === 'Warning' || status === 'At Risk') return 'bg-amber-500';
   return 'bg-green-500';
 }
 
