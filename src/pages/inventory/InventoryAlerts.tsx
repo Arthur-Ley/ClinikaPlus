@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, ChevronDown, X, Pencil, Pill, Search } from 'lucide-react';
 import Pagination from '../../components/ui/Pagination.tsx';
-import { createRestockRequest, loadRestockRequests } from './restockRequestsStore.ts';
+import { createRestockRequest, loadRestockRequests, RESTOCK_REQUESTS_CHANGED_EVENT } from './restockRequestsStore.ts';
 
 type Severity = 'critical' | 'warning';
 type InventoryStatus = 'Adequate' | 'Low' | 'Critical';
@@ -15,6 +15,19 @@ type InventoryAlert = {
   suggestedRestock: number;
   unit: string;
   severity: Severity;
+};
+
+type InventoryAlertApiItem = {
+  alert_id: number | null;
+  medication_id: number;
+  medication_key: string;
+  medication_name: string;
+  category_name: string;
+  total_stock: number;
+  reorder_threshold: number;
+  unit: string;
+  expiry_date: string | null;
+  severity: 'Critical' | 'Warning';
 };
 
 const ALERTS_PAGE_SIZE = 6;
@@ -61,6 +74,7 @@ const severityColors = {
 
 export default function InventoryAlerts() {
   const [items, setItems] = useState<InventoryRow[]>([]);
+  const [alerts, setAlerts] = useState<InventoryAlert[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [severityFilter, setSeverityFilter] = useState('');
@@ -81,54 +95,98 @@ export default function InventoryAlerts() {
     neededBy: '',
   });
   const [createdRequestIds, setCreatedRequestIds] = useState<Record<string, true>>({});
+  const [isSubmittingRestock, setIsSubmittingRestock] = useState(false);
   const [isRestockSuccessOpen, setIsRestockSuccessOpen] = useState(false);
 
-  useEffect(() => {
-    let isMounted = true;
+  const loadMedicationStocks = useCallback(async () => {
+    const response = await fetch(`${API_BASE_URL}/medications`);
+    if (!response.ok) {
+      throw new Error('Failed to load medications.');
+    }
+    const data = (await response.json()) as { items: MedicationStockApiItem[] };
+
+    const normalized: InventoryRow[] = (data.items || []).map((entry) => ({
+      id: `I-${String(entry.medication_id).padStart(3, '0')}`,
+      name: entry.medication_name,
+      category: entry.category_name,
+      batch: entry.batch_number || 'N/A',
+      stock: entry.total_stock ?? 0,
+      unit: entry.unit,
+      status: entry.status,
+      expiry: entry.expiry_date || 'N/A',
+      reorder: entry.reorder_threshold,
+      supplierId: entry.supplier_id ?? null,
+      supplier: entry.supplier_name || 'N/A',
+      form: entry.form || '',
+      strength: entry.strength || '',
+      lastUpdated: entry.last_updated || 'N/A',
+    }));
+    setItems(normalized);
+  }, []);
+
+  const loadInventoryAlerts = useCallback(async () => {
+    const response = await fetch(`${API_BASE_URL}/inventory-alerts`);
+    if (!response.ok) {
+      throw new Error('Failed to load inventory alerts.');
+    }
+    const data = (await response.json()) as { items: InventoryAlertApiItem[] };
+    const normalized: InventoryAlert[] = (data.items || []).map((entry) => ({
+      id: entry.medication_key,
+      name: entry.medication_name,
+      category: entry.category_name,
+      lowStock: entry.total_stock,
+      expiry: entry.expiry_date || 'N/A',
+      suggestedRestock: Math.max(entry.reorder_threshold - entry.total_stock, entry.reorder_threshold),
+      unit: entry.unit,
+      severity: entry.severity === 'Critical' ? 'critical' : 'warning',
+    }));
+    setAlerts(normalized);
+  }, []);
+
+  const loadPageData = useCallback(async () => {
     setIsLoading(true);
     setLoadError('');
+    try {
+      await Promise.all([loadMedicationStocks(), loadInventoryAlerts()]);
+    } catch (error) {
+      setItems([]);
+      setAlerts([]);
+      setLoadError(error instanceof Error ? error.message : 'Failed to load alerts.');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [loadMedicationStocks, loadInventoryAlerts]);
 
-    async function loadMedicationStocks() {
-      try {
-        const response = await fetch(`${API_BASE_URL}/medications`);
-        if (!response.ok) {
-          throw new Error('Failed to load medications.');
-        }
-        const data = (await response.json()) as { items: MedicationStockApiItem[] };
-        if (!isMounted) return;
+  useEffect(() => {
+    loadPageData();
+  }, [loadPageData]);
 
-        const normalized: InventoryRow[] = (data.items || []).map((entry) => ({
-          id: `I-${String(entry.medication_id).padStart(3, '0')}`,
-          name: entry.medication_name,
-          category: entry.category_name,
-          batch: entry.batch_number || 'N/A',
-          stock: entry.total_stock ?? 0,
-          unit: entry.unit,
-          status: entry.status,
-          expiry: entry.expiry_date || 'N/A',
-          reorder: entry.reorder_threshold,
-          supplierId: entry.supplier_id ?? null,
-          supplier: entry.supplier_name || 'N/A',
-          form: entry.form || '',
-          strength: entry.strength || '',
-          lastUpdated: entry.last_updated || 'N/A',
-        }));
-        setItems(normalized);
-      } catch (error) {
-        if (!isMounted) return;
-        setItems([]);
-        setLoadError(error instanceof Error ? error.message : 'Failed to load medications.');
-      } finally {
-        if (isMounted) setIsLoading(false);
-      }
+  useEffect(() => {
+    function handleRestockRequestsChanged() {
+      Promise.all([loadRestockRequests(), loadPageData()])
+        .then(([requests]) => {
+          const existingPendingByMedication = requests.reduce<Record<string, true>>((acc, request) => {
+            if (request.status === 'Pending') {
+              acc[request.medicationId] = true;
+            }
+            return acc;
+          }, {});
+          setCreatedRequestIds(existingPendingByMedication);
+        })
+        .catch(() => {
+          setCreatedRequestIds({});
+        });
     }
 
-    loadMedicationStocks();
-
+    if (typeof window !== 'undefined') {
+      window.addEventListener(RESTOCK_REQUESTS_CHANGED_EVENT, handleRestockRequestsChanged);
+    }
     return () => {
-      isMounted = false;
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(RESTOCK_REQUESTS_CHANGED_EVENT, handleRestockRequestsChanged);
+      }
     };
-  }, []);
+  }, [loadPageData]);
 
   useEffect(() => {
     let isMounted = true;
@@ -152,21 +210,6 @@ export default function InventoryAlerts() {
       isMounted = false;
     };
   }, []);
-
-  const alerts = useMemo<InventoryAlert[]>(() => {
-    return items
-      .filter((item) => item.stock < item.reorder || item.status === 'Critical')
-      .map((item) => ({
-        id: item.id,
-        name: item.name,
-        category: item.category,
-        lowStock: item.stock,
-        expiry: item.expiry,
-        suggestedRestock: Math.max(item.reorder - item.stock, item.reorder),
-        unit: item.unit,
-        severity: item.stock <= 0 || item.status === 'Critical' ? 'critical' : 'warning',
-      }));
-  }, [items]);
 
   const filteredAlerts = useMemo(() => {
     const severityRank: Record<Severity, number> = {
@@ -289,7 +332,7 @@ export default function InventoryAlerts() {
   }
 
   async function confirmRestockRequest() {
-    if (!restockTarget) return;
+    if (!restockTarget || isSubmittingRestock) return;
 
     const nextErrors = {
       supplier: restockDetails.supplier.trim() ? '' : 'Supplier is required.',
@@ -307,6 +350,7 @@ export default function InventoryAlerts() {
     const threshold = matchedItem ? matchedItem.reorder : restockTarget.suggestedRestock;
 
     try {
+      setIsSubmittingRestock(true);
       await createRestockRequest({
       medicationId: Number(restockTarget.id.replace('I-', '')),
       supplierId: matchedItem.supplierId,
@@ -330,6 +374,8 @@ export default function InventoryAlerts() {
         ...prev,
         supplier: error instanceof Error ? error.message : 'Failed to create restock request.',
       }));
+    } finally {
+      setIsSubmittingRestock(false);
     }
   }
 
@@ -432,7 +478,7 @@ export default function InventoryAlerts() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <div className="grid min-h-[340px] content-start grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {isLoading && (
               <article className="rounded-xl border border-gray-300 bg-gray-50 p-4 text-sm text-gray-600 md:col-span-2 xl:col-span-3">
                 Loading medication alerts...
@@ -442,6 +488,11 @@ export default function InventoryAlerts() {
               <article className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 md:col-span-2 xl:col-span-3">
                 {loadError}
               </article>
+            )}
+            {!isLoading && !loadError && pagedAlerts.length === 0 && (
+              <div className="flex items-center justify-center md:col-span-2 xl:col-span-3">
+                <span className="translate-y-3 text-xs text-gray-600">No current inventory alerts</span>
+              </div>
             )}
             {pagedAlerts.map((alert) => (
               <div
@@ -603,9 +654,10 @@ export default function InventoryAlerts() {
             <button
               type="button"
               onClick={confirmRestockRequest}
-              className="mt-4 h-10 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700"
+              className="mt-4 h-10 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isSubmittingRestock}
             >
-              Confirm Restock Request
+              {isSubmittingRestock ? 'Creating Request...' : 'Confirm Restock Request'}
             </button>
           </div>
         </div>

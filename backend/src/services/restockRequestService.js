@@ -11,6 +11,12 @@ function toDateOrNull(value) {
   return parsed.toISOString().slice(0, 10);
 }
 
+function deriveInventoryStatus(totalStock, reorderThreshold) {
+  if (totalStock <= 0) return "Critical";
+  if (totalStock < reorderThreshold) return "Low";
+  return "Adequate";
+}
+
 async function listRestockRequests() {
   const { data, error } = await supabase
     .from("tbl_restock_requests")
@@ -49,7 +55,7 @@ async function listRestockRequests() {
     suggested_quantity: row.suggested_quantity,
     requested_quantity: row.requested_quantity,
     requested_on: row.requested_on,
-    resolved_on: row.resolved_on,
+    resolved_on: row.resolved_on ?? null,
     status: row.status,
     notes: row.notes || "",
     created_at: row.created_at,
@@ -89,6 +95,14 @@ async function createRestockRequestFlow(input) {
 }
 
 async function updateRestockRequestFlow(requestId, updates) {
+  const { data: existingRequest, error: existingRequestError } = await supabase
+    .from("tbl_restock_requests")
+    .select("request_id, medication_id, requested_quantity, status")
+    .eq("request_id", requestId)
+    .single();
+
+  if (existingRequestError) throw existingRequestError;
+
   const updatePayload = {
     updated_at: new Date().toISOString(),
   };
@@ -109,6 +123,60 @@ async function updateRestockRequestFlow(requestId, updates) {
   }
   if (updates.notes !== undefined) {
     updatePayload.notes = updates.notes;
+  }
+
+  const isCompletingNow = existingRequest.status !== "Completed" && updates.status === "Completed";
+  if (isCompletingNow) {
+    const quantityToRestock = updates.requestedQuantity ?? existingRequest.requested_quantity ?? 0;
+
+    const { data: inventoryRow, error: inventoryFetchError } = await supabase
+      .from("tbl_inventory")
+      .select("inventory_id, total_stock")
+      .eq("medication_id", existingRequest.medication_id)
+      .maybeSingle();
+    if (inventoryFetchError) throw inventoryFetchError;
+
+    const { data: medicationRow, error: medicationFetchError } = await supabase
+      .from("tbl_medications")
+      .select("reorder_threshold")
+      .eq("medication_id", existingRequest.medication_id)
+      .single();
+    if (medicationFetchError) throw medicationFetchError;
+
+    const nextTotalStock = Number(inventoryRow?.total_stock || 0) + Number(quantityToRestock || 0);
+    const nextInventoryStatus = deriveInventoryStatus(nextTotalStock, Number(medicationRow?.reorder_threshold || 0));
+
+    if (inventoryRow?.inventory_id) {
+      const { data: updatedInventory, error: inventoryUpdateError } = await supabase
+        .from("tbl_inventory")
+        .update({
+          total_stock: nextTotalStock,
+          status: nextInventoryStatus,
+          last_updated: updatePayload.updated_at,
+        })
+        .eq("inventory_id", inventoryRow.inventory_id)
+        .select("inventory_id")
+        .single();
+      if (inventoryUpdateError) throw inventoryUpdateError;
+      if (!updatedInventory?.inventory_id) {
+        throw new Error("Failed to update inventory stock for completed restock request.");
+      }
+    } else {
+      const { data: insertedInventory, error: inventoryInsertError } = await supabase
+        .from("tbl_inventory")
+        .insert({
+          medication_id: existingRequest.medication_id,
+          total_stock: nextTotalStock,
+          status: nextInventoryStatus,
+          last_updated: updatePayload.updated_at,
+        })
+        .select("inventory_id")
+        .single();
+      if (inventoryInsertError) throw inventoryInsertError;
+      if (!insertedInventory?.inventory_id) {
+        throw new Error("Failed to create inventory stock for completed restock request.");
+      }
+    }
   }
 
   const { data, error } = await supabase

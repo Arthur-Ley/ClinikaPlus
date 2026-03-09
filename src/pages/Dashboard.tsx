@@ -1,45 +1,144 @@
+import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, BellRing, Truck, HandCoins, Boxes, TrendingUp } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-const alerts = [
-  {
-    title: 'Critical:',
-    message: 'Insulin stock at 3 units, immediate restocking required to avoid treatment disruption.',
-    tone: 'critical',
-  },
-  {
-    title: 'Warning:',
-    message: 'Amoxicillin batch expiring in 7 days, prioritize dispensing or initiate supplier return.',
-    tone: 'warning',
-  },
-  {
-    title: 'Warning:',
-    message: 'Amoxicillin batch expiring in 7 days, prioritize dispensing or initiate supplier return.',
-    tone: 'warning',
-  },
-  {
-    title: 'Warning:',
-    message: 'Amoxicillin batch expiring in 7 days, prioritize dispensing or initiate supplier return.',
-    tone: 'warning',
-  },
-];
+const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
-const inventoryRows = [
-  ['Paracetamol', '90 units', 'Adequate', '----'],
-  ['Amoxicillin', '12 units', 'Low', '7 days'],
-  ['Insulin', '3 units', 'Critical', '30 days'],
-  ['Buscopan', '5 units', 'Critical', '15 days'],
-  ['Multivitamin', '2 units', 'Critical', '10 days'],
-];
+type Tone = 'critical' | 'warning';
+type InventoryStatus = 'Adequate' | 'Low' | 'Critical';
+
+type OverviewResponse = {
+  summary: {
+    overall_system_risk: string;
+    high_priority_issues: number;
+    inventory_stability: string;
+    cash_flow_condition: string;
+    outstanding_balance: number;
+  };
+  alerts: Array<{
+    title: string;
+    message: string;
+    tone: Tone;
+  }>;
+  inventory_highlights: Array<{
+    medication_name: string;
+    stock: number;
+    unit: string;
+    status: InventoryStatus;
+    expiry_label: string;
+  }>;
+  near_expiry_batches: number;
+  restocking_overview: {
+    suggested_orders: Array<{
+      medication_name: string;
+      quantity: number;
+      unit: string;
+    }>;
+    next_supply_delivery: {
+      supplier_name: string;
+      date: string | null;
+    } | null;
+  };
+  financial_summary: {
+    revenue_today: number;
+    pending_payments: number;
+    total_transactions: number;
+    insurance_claims_in_progress: number;
+  };
+};
+
+function toPeso(value: number) {
+  return `P${Math.round(value).toLocaleString()}`;
+}
+
+function formatDeliveryDate(value: string | null) {
+  if (!value) return 'No schedule';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'No schedule';
+  return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function riskBarColor(risk: string) {
+  if (risk === 'Critical') return 'bg-red-500';
+  if (risk === 'Warning') return 'bg-amber-500';
+  return 'bg-green-500';
+}
+
+function statusToneColor(status: string) {
+  if (status === 'At Risk') return 'bg-amber-500';
+  return 'bg-green-500';
+}
+
+function cashToneColor(status: string) {
+  if (status === 'At Risk') return 'bg-amber-500';
+  return 'bg-green-500';
+}
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const [overview, setOverview] = useState<OverviewResponse | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadOverview() {
+      setIsLoading(true);
+      setLoadError('');
+      try {
+        const response = await fetch(`${API_BASE_URL}/overview`);
+        if (!response.ok) {
+          throw new Error('Failed to load overview data.');
+        }
+        const data = (await response.json()) as OverviewResponse;
+        if (isMounted) setOverview(data);
+      } catch (error) {
+        if (isMounted) {
+          setLoadError(error instanceof Error ? error.message : 'Failed to load overview data.');
+          setOverview(null);
+        }
+      } finally {
+        if (isMounted) setIsLoading(false);
+      }
+    }
+
+    loadOverview();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const alerts = overview?.alerts || [];
+  const inventoryRows = overview?.inventory_highlights || [];
+  const suggestedOrders = overview?.restocking_overview?.suggested_orders || [];
+  const nextSupply = overview?.restocking_overview?.next_supply_delivery || null;
+
+  const summary = useMemo(() => {
+    return {
+      overallRisk: overview?.summary.overall_system_risk || 'Stable',
+      highPriorityIssues: overview?.summary.high_priority_issues || 0,
+      inventoryStability: overview?.summary.inventory_stability || 'Stable',
+      cashFlowCondition: overview?.summary.cash_flow_condition || 'Stable',
+      outstandingBalance: overview?.summary.outstanding_balance || 0,
+      nearExpiryBatches: overview?.near_expiry_batches || 0,
+      revenueToday: overview?.financial_summary.revenue_today || 0,
+      pendingPayments: overview?.financial_summary.pending_payments || 0,
+      totalTransactions: overview?.financial_summary.total_transactions || 0,
+      insuranceInProgress: overview?.financial_summary.insurance_claims_in_progress || 0,
+    };
+  }, [overview]);
 
   return (
     <div className="space-y-5">
       <h1 className="text-3xl font-bold tracking-tight text-gray-800">Overview</h1>
 
       <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
+        {isLoading && <div className="rounded-xl border border-gray-200 bg-gray-100 p-3 text-sm text-gray-600">Loading overview data...</div>}
+        {!isLoading && loadError && (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{loadError}</div>
+        )}
+
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
           <div className="rounded-2xl border border-gray-200 bg-gray-100 p-5">
             <div className="flex items-start justify-between mb-4">
@@ -48,9 +147,9 @@ export default function Dashboard() {
                 <AlertTriangle size={17} />
               </span>
             </div>
-            <p className="text-4xl font-bold text-gray-800">Critical</p>
-            <div className="my-4 h-2 rounded-full bg-red-500" />
-            <p className="text-base font-semibold text-gray-700">3 high-priority issues</p>
+            <p className="text-4xl font-bold text-gray-800">{summary.overallRisk}</p>
+            <div className={`my-4 h-2 rounded-full ${riskBarColor(summary.overallRisk)}`} />
+            <p className="text-base font-semibold text-gray-700">{summary.highPriorityIssues} high-priority issues</p>
           </div>
 
           <div className="rounded-2xl border border-gray-200 bg-gray-100 p-5">
@@ -60,9 +159,9 @@ export default function Dashboard() {
                 <Boxes size={17} />
               </span>
             </div>
-            <p className="text-4xl font-bold text-gray-800">At Risk</p>
-            <div className="my-4 h-2 rounded-full bg-amber-500" />
-            <p className="text-base font-semibold text-gray-700">Recurrent low stock</p>
+            <p className="text-4xl font-bold text-gray-800">{summary.inventoryStability}</p>
+            <div className={`my-4 h-2 rounded-full ${statusToneColor(summary.inventoryStability)}`} />
+            <p className="text-base font-semibold text-gray-700">Near-expiry & low-stock risks tracked</p>
           </div>
 
           <div className="rounded-2xl border border-gray-200 bg-gray-100 p-5">
@@ -72,9 +171,9 @@ export default function Dashboard() {
                 <HandCoins size={17} />
               </span>
             </div>
-            <p className="text-4xl font-bold text-gray-800">Stable</p>
-            <div className="my-4 h-2 rounded-full bg-green-500" />
-            <p className="text-base font-semibold text-gray-700">P8,400 outstanding</p>
+            <p className="text-4xl font-bold text-gray-800">{summary.cashFlowCondition}</p>
+            <div className={`my-4 h-2 rounded-full ${cashToneColor(summary.cashFlowCondition)}`} />
+            <p className="text-base font-semibold text-gray-700">{toPeso(summary.outstandingBalance)} outstanding</p>
           </div>
         </div>
 
@@ -93,6 +192,9 @@ export default function Dashboard() {
             </button>
           </div>
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+            {alerts.length === 0 && (
+              <div className="p-3 text-center text-base font-semibold text-gray-600 xl:col-span-2">No active alerts.</div>
+            )}
             {alerts.map((item, index) => (
               <div
                 key={`${item.title}-${index}`}
@@ -131,18 +233,23 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
+                {inventoryRows.length === 0 && (
+                  <tr className="bg-gray-300/70 text-gray-700">
+                    <td className="px-3 py-2 rounded-xl" colSpan={4}>No inventory records available.</td>
+                  </tr>
+                )}
                 {inventoryRows.map((row) => (
-                  <tr key={row[0]} className="bg-gray-300/70 text-gray-800">
-                    <td className="px-3 py-2 rounded-l-xl font-semibold">{row[0]}</td>
-                    <td className="px-3 py-2 font-semibold">{row[1]}</td>
+                  <tr key={row.medication_name} className="bg-gray-300/70 text-gray-800">
+                    <td className="px-3 py-2 rounded-l-xl font-semibold">{row.medication_name}</td>
+                    <td className="px-3 py-2 font-semibold">{row.stock} {row.unit}</td>
                     <td
                       className={`px-3 py-2 font-semibold ${
-                        row[2] === 'Adequate' ? 'text-green-500' : row[2] === 'Low' ? 'text-amber-500' : 'text-red-500'
+                        row.status === 'Adequate' ? 'text-green-500' : row.status === 'Low' ? 'text-amber-500' : 'text-red-500'
                       }`}
                     >
-                      {row[2]}
+                      {row.status}
                     </td>
-                    <td className="px-3 py-2 rounded-r-xl font-semibold">{row[3]}</td>
+                    <td className="px-3 py-2 rounded-r-xl font-semibold">{row.expiry_label}</td>
                   </tr>
                 ))}
               </tbody>
@@ -150,7 +257,7 @@ export default function Dashboard() {
 
             <div className="mt-2 rounded-xl bg-gray-300 px-3 py-2 text-sm font-semibold text-gray-500 flex justify-between">
               <span>Near-expiry batches:</span>
-              <span>2 batches</span>
+              <span>{summary.nearExpiryBatches} batches</span>
             </div>
           </div>
 
@@ -170,16 +277,16 @@ export default function Dashboard() {
               <div>
                 <div className="inline-block rounded-full bg-blue-600 px-3 py-1 text-white text-xs mb-2">Suggested Orders</div>
                 <div className="space-y-1 text-sm">
-                  <p>Amoxicillin 50 units</p>
-                  <p>Insulin 20 units</p>
-                  <p>Buscopan 20 units</p>
-                  <p>Multivitamin 20 units</p>
+                  {suggestedOrders.length === 0 && <p>No suggested orders</p>}
+                  {suggestedOrders.map((order) => (
+                    <p key={order.medication_name}>{order.medication_name} {order.quantity} {order.unit}</p>
+                  ))}
                 </div>
               </div>
               <div>
                 <div className="inline-block rounded-full bg-blue-600 px-3 py-1 text-white text-xs mb-2">Next Supply Delivery</div>
                 <div className="space-y-1 text-sm">
-                  <p>MedSupplyCo - Jan 12</p>
+                  <p>{nextSupply ? `${nextSupply.supplier_name} - ${formatDeliveryDate(nextSupply.date)}` : 'No pending deliveries'}</p>
                 </div>
               </div>
             </div>
@@ -199,19 +306,19 @@ export default function Dashboard() {
               <div className="grid grid-cols-2 gap-4 text-sm font-semibold text-gray-700">
                 <div>
                   <p className="text-gray-500">Revenue Today</p>
-                  <p className="text-xl text-gray-800">P25,000</p>
+                  <p className="text-xl text-gray-800">{toPeso(summary.revenueToday)}</p>
                 </div>
                 <div>
                   <p className="text-gray-500">Pending Payments</p>
-                  <p className="text-xl text-gray-800">3</p>
+                  <p className="text-xl text-gray-800">{summary.pendingPayments}</p>
                 </div>
                 <div>
                   <p className="text-gray-500">Total Transactions</p>
-                  <p className="text-xl text-gray-800">47</p>
+                  <p className="text-xl text-gray-800">{summary.totalTransactions}</p>
                 </div>
                 <div>
                   <p className="text-gray-500">Insurance Claims in Progress</p>
-                  <p className="text-xl text-gray-800">6 records</p>
+                  <p className="text-xl text-gray-800">{summary.insuranceInProgress} records</p>
                 </div>
               </div>
             </div>
@@ -221,3 +328,4 @@ export default function Dashboard() {
     </div>
   );
 }
+

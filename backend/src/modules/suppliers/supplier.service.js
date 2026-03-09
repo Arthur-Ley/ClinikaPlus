@@ -1,41 +1,139 @@
-import db from "../../db/db.js";
+import { supabase } from "../../lib/supabase.js";
+
+function toTrimmedString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function toSupplierStatus(value) {
+  const normalized = toTrimmedString(value);
+  if (normalized === "Preferred" || normalized === "Active" || normalized === "Review") {
+    return normalized;
+  }
+  return "Active";
+}
 
 export async function getSuppliers() {
-  const result = await db.query("SELECT * FROM tbl_suppliers ORDER BY supplier_id");
-  return result.rows;
+  const { data, error } = await supabase
+    .from("tbl_suppliers")
+    .select(`
+      supplier_id,
+      supplier_name,
+      email_address,
+      contact_number,
+      address,
+      is_preferred,
+      status,
+      supplier_image,
+      created_at,
+      updated_at
+    `)
+    .order("supplier_id", { ascending: true });
+
+  if (error) throw error;
+  return data || [];
 }
 
 export async function createSupplier(payload) {
-  const { supplier_name, email_address, address } = payload;
+  const supplierName = toTrimmedString(payload?.supplier_name);
+  const emailAddress = toTrimmedString(payload?.email_address) || null;
+  const contactNumber = toTrimmedString(payload?.contact_number) || null;
+  const address = toTrimmedString(payload?.address) || null;
+  const supplierImage = toTrimmedString(payload?.supplier_image) || null;
+  const status = toSupplierStatus(payload?.status);
+  const isPreferred = status === "Preferred";
 
-  const result = await db.query(
-    `INSERT INTO tbl_suppliers
-     (supplier_name, email_address, address)
-     VALUES ($1, $2, $3)
-     RETURNING *`,
-    [supplier_name, email_address, address]
-  );
+  if (!supplierName) {
+    throw new Error("'supplier_name' is required.");
+  }
 
-  return result.rows[0];
+  const { data, error } = await supabase
+    .from("tbl_suppliers")
+    .insert({
+      supplier_name: supplierName,
+      email_address: emailAddress,
+      contact_number: contactNumber,
+      address,
+      status,
+      is_preferred: isPreferred,
+      supplier_image: supplierImage,
+      updated_at: new Date().toISOString(),
+    })
+    .select(`
+      supplier_id,
+      supplier_name,
+      email_address,
+      contact_number,
+      address,
+      is_preferred,
+      status,
+      supplier_image,
+      created_at,
+      updated_at
+    `)
+    .single();
+
+  if (error) throw error;
+  return data;
 }
 
 export async function updateSupplier(id, payload) {
-  const { supplier_name, email_address, address } = payload;
+  const supplierId = Number(id);
+  if (!Number.isInteger(supplierId) || supplierId <= 0) {
+    throw new Error("'id' must be a positive integer.");
+  }
 
-  const result = await db.query(
-    `UPDATE tbl_suppliers
-     SET supplier_name = $1,
-         email_address = $2,
-         address = $3,
-         updated_at = now()
-     WHERE supplier_id = $4
-     RETURNING *`,
-    [supplier_name, email_address, address, id]
-  );
+  const supplierName = toTrimmedString(payload?.supplier_name);
+  const emailAddress = toTrimmedString(payload?.email_address) || null;
+  const contactNumber = toTrimmedString(payload?.contact_number) || null;
+  const address = toTrimmedString(payload?.address) || null;
+  const supplierImage = toTrimmedString(payload?.supplier_image) || null;
+  const status = toSupplierStatus(payload?.status);
+  const isPreferred = status === "Preferred";
 
-  return result.rows[0];
+  if (!supplierName) {
+    throw new Error("'supplier_name' is required.");
+  }
+
+  const { data, error } = await supabase
+    .from("tbl_suppliers")
+    .update({
+      supplier_name: supplierName,
+      email_address: emailAddress,
+      contact_number: contactNumber,
+      address,
+      status,
+      is_preferred: isPreferred,
+      supplier_image: supplierImage,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("supplier_id", supplierId)
+    .select(`
+      supplier_id,
+      supplier_name,
+      email_address,
+      contact_number,
+      address,
+      is_preferred,
+      status,
+      supplier_image,
+      created_at,
+      updated_at
+    `)
+    .single();
+
+  if (error) throw error;
+  return data;
 }
 
 export async function deleteSupplier(id) {
-  await db.query("DELETE FROM tbl_suppliers WHERE supplier_id = $1", [id]);
+  const supplierId = Number(id);
+  if (!Number.isInteger(supplierId) || supplierId <= 0) {
+    throw new Error("'id' must be a positive integer.");
+  }
+
+  const { error } = await supabase
+    .from("tbl_suppliers")
+    .delete()
+    .eq("supplier_id", supplierId);
+  if (error) throw error;
 }

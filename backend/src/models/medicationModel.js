@@ -10,6 +10,14 @@ function toPositiveInt(value) {
   return parsed;
 }
 
+function toNonNegativeInt(value) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    return null;
+  }
+  return parsed;
+}
+
 export function validateCreateMedicationInput(payload) {
   const medicationName = toTrimmedString(payload?.medication_name);
   const form = toTrimmedString(payload?.form);
@@ -68,3 +76,45 @@ export function validateCreateMedicationInput(payload) {
   };
 }
 
+export function validateUpdateMedicationInput(payload) {
+  const medicationName = toTrimmedString(payload?.medication_name);
+  const categoryName = toTrimmedString(payload?.category_name);
+  const form = toTrimmedString(payload?.form);
+  const strength = toTrimmedString(payload?.strength);
+  const supplierName = toTrimmedString(payload?.supplier_name);
+
+  const totalStock = toNonNegativeInt(payload?.total_stock);
+  const reorderThreshold = toNonNegativeInt(payload?.reorder_threshold);
+
+  if (!medicationName) {
+    return { ok: false, message: "'medication_name' is required." };
+  }
+  if (!categoryName) {
+    return { ok: false, message: "'category_name' is required." };
+  }
+  if (!form) {
+    return { ok: false, message: "'form' is required." };
+  }
+  if (totalStock === null) {
+    return { ok: false, message: "'total_stock' must be an integer greater than or equal to 0." };
+  }
+  if (reorderThreshold === null) {
+    return { ok: false, message: "'reorder_threshold' must be an integer greater than or equal to 0." };
+  }
+  if (!supplierName) {
+    return { ok: false, message: "'supplier_name' is required." };
+  }
+
+  return {
+    ok: true,
+    data: {
+      medicationName,
+      categoryName,
+      form,
+      strength: strength || null,
+      totalStock,
+      reorderThreshold,
+      supplierName,
+    },
+  };
+}

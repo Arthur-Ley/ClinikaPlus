@@ -13,6 +13,7 @@ export type StoredRestockRequest = {
   currentStock: number;
   threshold: number;
   requestedOnIso: string;
+  resolvedAtIso: string | null;
   supplierId: number;
   supplier: string;
   status: RestockRequestStatus;
@@ -53,6 +54,7 @@ type RestockApiItem = {
   requested_quantity: number;
   requested_on: string;
   resolved_on: string | null;
+  resolved_at?: string | null;
   status: RestockRequestStatus;
   notes: string;
   medication_name: string;
@@ -76,6 +78,7 @@ type RestockCreateApiResponse = {
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const NEEDED_BY_PREFIX = 'Needed By:';
 export const RESTOCK_REQUESTS_CHANGED_EVENT = 'restock-requests-changed';
+const inFlightCreateByMedication = new Map<number, Promise<StoredRestockRequest>>();
 
 function parseNeededBy(notes: string) {
   const lines = notes.split('\n').map((line) => line.trim());
@@ -117,6 +120,7 @@ function mapApiToStored(item: RestockApiItem): StoredRestockRequest {
     currentStock: item.current_stock,
     threshold: item.reorder_threshold,
     requestedOnIso: item.requested_on,
+    resolvedAtIso: item.resolved_on ?? item.resolved_at ?? null,
     supplierId: item.supplier_id,
     supplier: item.supplier_name || 'N/A',
     status: item.status,
@@ -136,37 +140,54 @@ export async function loadRestockRequests(): Promise<StoredRestockRequest[]> {
 }
 
 export async function createRestockRequest(input: CreateRestockRequestInput): Promise<StoredRestockRequest> {
-  const response = await fetch(`${API_BASE_URL}/restock-requests`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      medication_id: input.medicationId,
-      supplier_id: input.supplierId,
-      current_stock: input.currentStock,
-      suggested_quantity: input.suggestedQuantity,
-      requested_quantity: input.quantity,
-      requested_on: new Date().toISOString().slice(0, 10),
-      notes: buildNotes(input.neededBy, input.notes || ''),
-    }),
-  });
+  const existingInFlight = inFlightCreateByMedication.get(input.medicationId);
+  if (existingInFlight) return existingInFlight;
 
-  if (!response.ok) {
-    const errorJson = (await response.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(errorJson?.error || 'Failed to create restock request.');
-  }
+  const createPromise = (async () => {
+    const existingPending = (await loadRestockRequests()).find(
+      (item) => item.medicationId === `I-${String(input.medicationId).padStart(3, '0')}` && item.status === 'Pending',
+    );
+    if (existingPending) return existingPending;
 
-  const createJson = (await response.json()) as RestockCreateApiResponse;
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent(RESTOCK_REQUESTS_CHANGED_EVENT));
+    const response = await fetch(`${API_BASE_URL}/restock-requests`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        medication_id: input.medicationId,
+        supplier_id: input.supplierId,
+        current_stock: input.currentStock,
+        suggested_quantity: input.suggestedQuantity,
+        requested_quantity: input.quantity,
+        requested_on: new Date().toISOString().slice(0, 10),
+        notes: buildNotes(input.neededBy, input.notes || ''),
+      }),
+    });
+
+    if (!response.ok) {
+      const errorJson = (await response.json().catch(() => null)) as { error?: string } | null;
+      throw new Error(errorJson?.error || 'Failed to create restock request.');
+    }
+
+    const createJson = (await response.json()) as RestockCreateApiResponse;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(RESTOCK_REQUESTS_CHANGED_EVENT));
+    }
+    const items = await loadRestockRequests();
+    const created = items.find((item) => item.requestId === createJson.request.request_id);
+    if (!created) {
+      throw new Error('Failed to load the newly created restock request.');
+    }
+    return created;
+  })();
+
+  inFlightCreateByMedication.set(input.medicationId, createPromise);
+  try {
+    return await createPromise;
+  } finally {
+    inFlightCreateByMedication.delete(input.medicationId);
   }
-  const items = await loadRestockRequests();
-  const created = items.find((item) => item.requestId === createJson.request.request_id);
-  if (!created) {
-    throw new Error('Failed to load the newly created restock request.');
-  }
-  return created;
 }
 
 export async function updateRestockRequest(id: number, updates: UpdateRestockRequestInput): Promise<void> {

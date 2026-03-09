@@ -17,5 +17,9 @@ export async function createSignedUploadUrl({ bucket, path }) {
     throw error;
   }
 
-  return data;
+  const { data: publicData } = supabase.storage.from(bucket).getPublicUrl(path);
+  return {
+    ...data,
+    publicUrl: publicData?.publicUrl || null,
+  };
 }

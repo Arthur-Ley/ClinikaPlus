@@ -93,16 +93,21 @@ function formatDateDisplay(value: string | null) {
 }
 
 function matchesMonthFilter(lastUpdatedIso: string | null, filterMonth: string) {
-  if (filterMonth === 'This Month' || filterMonth === 'Last Month' || filterMonth === 'Last 3 Months') {
+  if (filterMonth === 'This Month' || filterMonth === 'Last Month' || filterMonth === 'Last 3 Months' || filterMonth === 'This Year') {
     if (!lastUpdatedIso) return false;
     const updatedAt = new Date(lastUpdatedIso);
     if (Number.isNaN(updatedAt.getTime())) return false;
     const now = new Date();
+    const currentYearStart = new Date(now.getFullYear(), 0, 1);
+    const nextYearStart = new Date(now.getFullYear() + 1, 0, 1);
     const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
     const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const threeMonthsAgoStart = new Date(now.getFullYear(), now.getMonth() - 2, 1);
 
+    if (filterMonth === 'This Year') {
+      return updatedAt >= currentYearStart && updatedAt < nextYearStart;
+    }
     if (filterMonth === 'This Month') {
       return updatedAt >= currentMonthStart && updatedAt < nextMonthStart;
     }
@@ -121,16 +126,35 @@ function statusSortRank(status: InventoryStatus) {
   return 2;
 }
 
+function expirySortRank(expiry: string) {
+  if (!expiry || expiry === 'N/A') return Number.POSITIVE_INFINITY;
+  const parsed = new Date(expiry);
+  if (Number.isNaN(parsed.getTime())) return Number.POSITIVE_INFINITY;
+  return parsed.getTime();
+}
+
 export default function CurrentStocks() {
   const [items, setItems] = useState<InventoryRow[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedItem, setSelectedItem] = useState<InventoryRow | null>(null);
   const [filterCategory, setFilterCategory] = useState('All Categories');
   const [filterStatus, setFilterStatus] = useState('All Status');
-  const [filterMonth, setFilterMonth] = useState('This Month');
+  const [filterMonth, setFilterMonth] = useState('This Year');
   const [currentPage, setCurrentPage] = useState(1);
   const [isAddMedicationOpen, setIsAddMedicationOpen] = useState(false);
   const [isAddedSuccessOpen, setIsAddedSuccessOpen] = useState(false);
+  const [isEditingMedication, setIsEditingMedication] = useState(false);
+  const [isSavingMedicationEdit, setIsSavingMedicationEdit] = useState(false);
+  const [medicationEditError, setMedicationEditError] = useState('');
+  const [medicationDraft, setMedicationDraft] = useState({
+    name: '',
+    category: '',
+    form: '',
+    strength: '',
+    stock: '',
+    reorder: '',
+    supplier: '',
+  });
   const [isLoadingStocks, setIsLoadingStocks] = useState(false);
   const [stocksError, setStocksError] = useState('');
   const [isSubmittingMedication, setIsSubmittingMedication] = useState(false);
@@ -207,6 +231,8 @@ export default function CurrentStocks() {
       .sort((a, b) => {
         const statusRankDiff = statusSortRank(a.status) - statusSortRank(b.status);
         if (statusRankDiff !== 0) return statusRankDiff;
+        const expiryRankDiff = expirySortRank(a.expiry) - expirySortRank(b.expiry);
+        if (expiryRankDiff !== 0) return expiryRankDiff;
         return a.name.localeCompare(b.name);
       });
   }, [searchTerm, filterStatus, filterCategory, filterMonth, items]);
@@ -354,6 +380,83 @@ export default function CurrentStocks() {
     };
   }
 
+  function openMedicationDetails(item: InventoryRow) {
+    setSelectedItem(item);
+    setIsEditingMedication(false);
+    setMedicationDraft({
+      name: item.name,
+      category: item.category,
+      form: item.form || '',
+      strength: item.strength || '',
+      stock: String(item.stock),
+      reorder: String(item.reorder),
+      supplier: item.supplier,
+    });
+  }
+
+  function startEditingMedication() {
+    if (!selectedItem) return;
+    setMedicationEditError('');
+    setMedicationDraft({
+      name: selectedItem.name,
+      category: selectedItem.category,
+      form: selectedItem.form || '',
+      strength: selectedItem.strength || '',
+      stock: String(selectedItem.stock),
+      reorder: String(selectedItem.reorder),
+      supplier: selectedItem.supplier,
+    });
+    setIsEditingMedication(true);
+  }
+
+  function cancelEditingMedication() {
+    setMedicationEditError('');
+    setIsEditingMedication(false);
+  }
+
+  async function saveMedicationDraft() {
+    if (!selectedItem) return;
+
+    const nextStock = Number(medicationDraft.stock);
+    const nextReorder = Number(medicationDraft.reorder);
+    if (!medicationDraft.name.trim() || !medicationDraft.category.trim() || !medicationDraft.supplier.trim()) return;
+    if (!Number.isFinite(nextStock) || !Number.isFinite(nextReorder) || nextStock < 0 || nextReorder < 0) return;
+
+    const medicationId = Number(selectedItem.id.replace('I-', ''));
+    if (!Number.isInteger(medicationId) || medicationId <= 0) return;
+
+    setIsSavingMedicationEdit(true);
+    setMedicationEditError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/medications/${medicationId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          medication_name: medicationDraft.name.trim(),
+          category_name: medicationDraft.category.trim(),
+          form: medicationDraft.form.trim(),
+          strength: medicationDraft.strength.trim(),
+          total_stock: nextStock,
+          reorder_threshold: nextReorder,
+          supplier_name: medicationDraft.supplier.trim(),
+        }),
+      });
+      const json = (await response.json().catch(() => null)) as { error?: string } | null;
+      if (!response.ok) {
+        throw new Error(json?.error || 'Failed to update medication.');
+      }
+
+      await loadMedicationStocks();
+      setIsEditingMedication(false);
+    } catch (error) {
+      setMedicationEditError(error instanceof Error ? error.message : 'Failed to update medication.');
+    } finally {
+      setIsSavingMedicationEdit(false);
+    }
+  }
+
   return (
     <div className="space-y-5">
       <div className="flex justify-between items-center">
@@ -460,6 +563,7 @@ export default function CurrentStocks() {
                   value={filterMonth}
                   onChange={(e) => setFilterMonth(e.target.value)}
                 >
+                  <option>This Year</option>
                   <option>This Month</option>
                   <option>Last Month</option>
                   <option>Last 3 Months</option>
@@ -529,7 +633,7 @@ export default function CurrentStocks() {
                       </span>
                     </td>
                     <td className="px-2 py-1.5">
-                      <button onClick={() => setSelectedItem(item)} className="text-blue-600 hover:text-blue-700 font-semibold">
+                      <button onClick={() => openMedicationDetails(item)} className="text-blue-600 hover:text-blue-700 font-semibold">
                         View
                       </button>
                     </td>
@@ -549,7 +653,10 @@ export default function CurrentStocks() {
       </section>
 
       {selectedItem && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setSelectedItem(null)}>
+        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => {
+          setSelectedItem(null);
+          setIsEditingMedication(false);
+        }}>
           <div className="w-full max-w-[460px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between border-b border-gray-300 pb-3">
               <h2 className="flex items-center gap-2 text-2xl font-bold text-blue-600">
@@ -557,25 +664,112 @@ export default function CurrentStocks() {
                 Medication Details
               </h2>
               <div className="flex items-center gap-1.5">
-                <button type="button" className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700">
+                <button type="button" onClick={() => {
+                  if (isSavingMedicationEdit) return;
+                  if (isEditingMedication) {
+                    cancelEditingMedication();
+                    return;
+                  }
+                  startEditingMedication();
+                }} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700">
                   <Pencil size={14} />
                 </button>
-                <button type="button" onClick={() => setSelectedItem(null)} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700">
+                <button type="button" onClick={() => {
+                  if (isSavingMedicationEdit) return;
+                  setSelectedItem(null);
+                  setIsEditingMedication(false);
+                }} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700">
                   <X size={14} />
                 </button>
               </div>
             </div>
 
             <div className="space-y-1.5 text-2.5 font-semibold text-gray-700">
-              <p>Medication Name: <span className="font-bold text-gray-800">{selectedItem.name}</span></p>
-              <p>Batch: <span className="font-bold text-gray-800">{getMedicationMeta(selectedItem).batch}</span></p>
+              <p>
+                Medication Name:{' '}
+                {isEditingMedication ? (
+                  <input
+                    className="h-8 rounded-md border border-gray-300 bg-transparent px-2 text-2.5 font-semibold text-gray-800"
+                    value={medicationDraft.name}
+                    onChange={(e) => setMedicationDraft((prev) => ({ ...prev, name: e.target.value }))}
+                  />
+                ) : (
+                  <span className="font-semibold text-gray-800">{selectedItem.name}</span>
+                )}
+              </p>
+              <p>Batch: <span className="font-semibold text-gray-800">{getMedicationMeta(selectedItem).batch}</span></p>
               <div className="my-2 border-b border-gray-300" />
-              <p>Category: <span className="font-bold text-gray-800">{getMedicationMeta(selectedItem).category}</span></p>
-              <p>Form: <span className="font-bold text-gray-800">{getMedicationMeta(selectedItem).form || 'N/A'}</span></p>
-              <p>Strength: <span className="font-bold text-gray-800">{getMedicationMeta(selectedItem).strength || 'N/A'}</span></p>
-              <p>Stock: <span className="font-bold text-gray-800">{selectedItem.stock} {selectedItem.unit}</span></p>
-              <p>Threshold: <span className="font-bold text-gray-800">{selectedItem.reorder} {selectedItem.unit}</span></p>
-              <p>Expiry: <span className="font-bold text-gray-800">{selectedItem.expiry}</span></p>
+              <p>
+                Category:{' '}
+                {isEditingMedication ? (
+                  <input
+                    className="h-8 rounded-md border border-gray-300 bg-transparent px-2 text-2.5 font-semibold text-gray-800"
+                    value={medicationDraft.category}
+                    onChange={(e) => setMedicationDraft((prev) => ({ ...prev, category: e.target.value }))}
+                  />
+                ) : (
+                  <span className="font-semibold text-gray-800">{getMedicationMeta(selectedItem).category}</span>
+                )}
+              </p>
+              <p>
+                Form:{' '}
+                {isEditingMedication ? (
+                  <input
+                    className="h-8 rounded-md border border-gray-300 bg-transparent px-2 text-2.5 font-semibold text-gray-800"
+                    value={medicationDraft.form}
+                    onChange={(e) => setMedicationDraft((prev) => ({ ...prev, form: e.target.value }))}
+                  />
+                ) : (
+                  <span className="font-semibold text-gray-800">{getMedicationMeta(selectedItem).form || 'N/A'}</span>
+                )}
+              </p>
+              <p>
+                Strength:{' '}
+                {isEditingMedication ? (
+                  <input
+                    className="h-8 rounded-md border border-gray-300 bg-transparent px-2 text-2.5 font-semibold text-gray-800"
+                    value={medicationDraft.strength}
+                    onChange={(e) => setMedicationDraft((prev) => ({ ...prev, strength: e.target.value }))}
+                  />
+                ) : (
+                  <span className="font-semibold text-gray-800">{getMedicationMeta(selectedItem).strength || 'N/A'}</span>
+                )}
+              </p>
+              <p>
+                Stock:{' '}
+                {isEditingMedication ? (
+                  <span className="inline-flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={0}
+                      className="h-8 w-20 rounded-md border border-gray-300 bg-transparent px-2 text-2.5 font-semibold text-gray-800"
+                      value={medicationDraft.stock}
+                      onChange={(e) => setMedicationDraft((prev) => ({ ...prev, stock: e.target.value }))}
+                    />
+                    <span>{selectedItem.unit}</span>
+                  </span>
+                ) : (
+                  <span className="font-semibold text-gray-800">{selectedItem.stock} {selectedItem.unit}</span>
+                )}
+              </p>
+              <p>
+                Threshold:{' '}
+                {isEditingMedication ? (
+                  <span className="inline-flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={0}
+                      className="h-8 w-20 rounded-md border border-gray-300 bg-transparent px-2 text-2.5 font-semibold text-gray-800"
+                      value={medicationDraft.reorder}
+                      onChange={(e) => setMedicationDraft((prev) => ({ ...prev, reorder: e.target.value }))}
+                    />
+                    <span>{selectedItem.unit}</span>
+                  </span>
+                ) : (
+                  <span className="font-semibold text-gray-800">{selectedItem.reorder} {selectedItem.unit}</span>
+                )}
+              </p>
+              <p>Expiry: <span className="font-semibold text-gray-800">{selectedItem.expiry}</span></p>
               <p className="flex items-center gap-2">
                 Status:
                 <span
@@ -587,13 +781,37 @@ export default function CurrentStocks() {
                         : 'bg-green-100 text-green-500'
                   }`}
                 >
-                  {selectedItem.status === 'Adequate' ? 'OK' : selectedItem.status}
+                  {selectedItem.status}
                 </span>
               </p>
-              <p>Supplier: <span className="font-bold text-gray-800">{getMedicationMeta(selectedItem).supplier}</span></p>
-              <p>Suggested Restock: <span className="font-bold text-gray-800">{getMedicationMeta(selectedItem).suggestedRestock}</span></p>
-              <p>Last Updated: <span className="font-bold text-gray-800">{getMedicationMeta(selectedItem).lastUpdated}</span></p>
+              <p>
+                Supplier:{' '}
+                {isEditingMedication ? (
+                  <input
+                    className="h-8 rounded-md border border-gray-300 bg-transparent px-2 text-2.5 font-semibold text-gray-800"
+                    value={medicationDraft.supplier}
+                    onChange={(e) => setMedicationDraft((prev) => ({ ...prev, supplier: e.target.value }))}
+                  />
+                ) : (
+                  <span className="font-semibold text-gray-800">{getMedicationMeta(selectedItem).supplier}</span>
+                )}
+              </p>
+              <p>Suggested Restock: <span className="font-semibold text-gray-800">{getMedicationMeta(selectedItem).suggestedRestock}</span></p>
+              <p>Last Updated: <span className="font-semibold text-gray-800">{getMedicationMeta(selectedItem).lastUpdated}</span></p>
             </div>
+            {isEditingMedication && (
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button type="button" className="h-9 rounded-lg border border-gray-300 px-3 text-sm font-semibold text-gray-700 disabled:opacity-60" onClick={cancelEditingMedication} disabled={isSavingMedicationEdit}>
+                  Cancel
+                </button>
+                <button type="button" className="h-9 rounded-lg bg-blue-600 px-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60" onClick={saveMedicationDraft} disabled={isSavingMedicationEdit}>
+                  {isSavingMedicationEdit ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            )}
+            {isEditingMedication && medicationEditError && (
+              <p className="mt-2 text-sm text-red-600">{medicationEditError}</p>
+            )}
           </div>
         </div>
       )}

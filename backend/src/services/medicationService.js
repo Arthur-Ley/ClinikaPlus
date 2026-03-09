@@ -83,6 +83,7 @@ async function listMedicationStocks() {
       total_stock: totalStock,
       status: computedStatus,
       last_updated: inventory?.last_updated || null,
+      batch_id: batch?.batch_id || null,
       batch_number: batch?.batch_number || null,
       expiry_date: batch?.expiry_date || null,
       supplier_id: batch?.supplier_id || null,
@@ -159,4 +160,91 @@ async function createMedicationFlow(input) {
   };
 }
 
-export { listCategories, listSuppliers, listMedicationStocks, createMedicationFlow };
+async function updateMedicationFlow(medicationId, input) {
+  const now = new Date().toISOString();
+
+  const { data: categoryRow, error: categoryError } = await supabase
+    .from("tbl_categories")
+    .select("category_id")
+    .eq("category_name", input.categoryName)
+    .maybeSingle();
+  if (categoryError) throw categoryError;
+  if (!categoryRow?.category_id) {
+    throw new Error("Category not found.");
+  }
+
+  const { data: supplierRow, error: supplierError } = await supabase
+    .from("tbl_suppliers")
+    .select("supplier_id")
+    .eq("supplier_name", input.supplierName)
+    .maybeSingle();
+  if (supplierError) throw supplierError;
+  if (!supplierRow?.supplier_id) {
+    throw new Error("Supplier not found.");
+  }
+
+  const { error: medicationUpdateError } = await supabase
+    .from("tbl_medications")
+    .update({
+      medication_name: input.medicationName,
+      category_id: categoryRow.category_id,
+      form: input.form,
+      strength: input.strength,
+      reorder_threshold: input.reorderThreshold,
+      updated_at: now,
+    })
+    .eq("medication_id", medicationId);
+  if (medicationUpdateError) throw medicationUpdateError;
+
+  const inventoryStatus = deriveInventoryStatus(input.totalStock, input.reorderThreshold);
+  const { data: inventoryRow, error: inventoryReadError } = await supabase
+    .from("tbl_inventory")
+    .select("inventory_id")
+    .eq("medication_id", medicationId)
+    .maybeSingle();
+  if (inventoryReadError) throw inventoryReadError;
+
+  if (inventoryRow?.inventory_id) {
+    const { error: inventoryUpdateError } = await supabase
+      .from("tbl_inventory")
+      .update({
+        total_stock: input.totalStock,
+        status: inventoryStatus,
+        last_updated: now,
+      })
+      .eq("inventory_id", inventoryRow.inventory_id);
+    if (inventoryUpdateError) throw inventoryUpdateError;
+  } else {
+    const { error: inventoryInsertError } = await supabase
+      .from("tbl_inventory")
+      .insert({
+        medication_id: medicationId,
+        total_stock: input.totalStock,
+        status: inventoryStatus,
+        last_updated: now,
+      });
+    if (inventoryInsertError) throw inventoryInsertError;
+  }
+
+  const { data: latestBatch, error: batchError } = await supabase
+    .from("tbl_batches")
+    .select("batch_id")
+    .eq("medication_id", medicationId)
+    .order("received_date", { ascending: false })
+    .order("batch_id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (batchError) throw batchError;
+
+  if (latestBatch?.batch_id) {
+    const { error: batchUpdateError } = await supabase
+      .from("tbl_batches")
+      .update({
+        supplier_id: supplierRow.supplier_id,
+      })
+      .eq("batch_id", latestBatch.batch_id);
+    if (batchUpdateError) throw batchUpdateError;
+  }
+}
+
+export { listCategories, listSuppliers, listMedicationStocks, createMedicationFlow, updateMedicationFlow };

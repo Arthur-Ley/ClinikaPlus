@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   Boxes,
   ChevronDown,
@@ -22,6 +22,7 @@ import {
 import Button from '../../components/ui/Button.tsx';
 import {
   loadRestockRequests,
+  RESTOCK_REQUESTS_CHANGED_EVENT,
   updateRestockRequest,
   type RestockRequestSeverity,
   type RestockRequestStatus,
@@ -63,15 +64,21 @@ type Supplier = {
   contact?: string;
   email?: string;
   address?: string;
+  avatarUrl?: string;
 };
 
 type SupplierApiRow = {
   supplier_id: number;
   supplier_name: string;
+  email_address: string | null;
+  contact_number: string | null;
+  address: string | null;
   status: string;
   is_preferred: boolean;
+  supplier_image: string | null;
 };
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+const DEFAULT_SUPPLIER_AVATAR = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22160%22 height=%22160%22 viewBox=%220 0 160 160%22%3E%3Crect width=%22160%22 height=%22160%22 fill=%22%23E5E7EB%22/%3E%3Ccircle cx=%2280%22 cy=%2260%22 r=%2230%22 fill=%22%239CA3AF%22/%3E%3Cpath d=%22M30 136c6-24 24-38 50-38s44 14 50 38%22 fill=%22none%22 stroke=%22%239CA3AF%22 stroke-width=%2216%22 stroke-linecap=%22round%22/%3E%3C/svg%3E';
 
 function formatDateLabel(value: string) {
   const parsed = new Date(value);
@@ -100,6 +107,8 @@ export default function RestockSuppliers() {
   const [selectedRequest, setSelectedRequest] = useState<RestockRequest | null>(null);
   const [confirmChecked, setConfirmChecked] = useState(false);
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
+  const [draggingRequestId, setDraggingRequestId] = useState<number | null>(null);
+  const [isCancelledDropActive, setIsCancelledDropActive] = useState(false);
   const [restockEdit, setRestockEdit] = useState({
     supplierId: '',
     quantity: '',
@@ -117,6 +126,7 @@ export default function RestockSuppliers() {
     contact: '',
     email: '',
     address: '',
+    avatarUrl: '',
   });
   const [formErrors, setFormErrors] = useState({
     name: '',
@@ -125,6 +135,39 @@ export default function RestockSuppliers() {
     email: '',
     address: '',
   });
+  const [newSupplierImageFile, setNewSupplierImageFile] = useState<File | null>(null);
+  const [isSubmittingSupplier, setIsSubmittingSupplier] = useState(false);
+
+  function resetNewSupplierForm() {
+    setNewSupplier({
+      name: '',
+      status: '',
+      contact: '',
+      email: '',
+      address: '',
+      avatarUrl: '',
+    });
+    setFormErrors({
+      name: '',
+      status: '',
+      contact: '',
+      email: '',
+      address: '',
+    });
+    setConfirmChecked(false);
+    setNewSupplierImageFile(null);
+    setIsSubmittingSupplier(false);
+  }
+
+  const syncRestockRequests = useCallback(async () => {
+    const mappedRequests: RestockRequest[] = (await loadRestockRequests())
+      .map((request) => ({
+        ...request,
+        requestedOn: formatDateLabel(request.requestedOnIso),
+      }))
+      .sort((a, b) => new Date(b.requestedOnIso).getTime() - new Date(a.requestedOnIso).getTime());
+    setRestockRequests(mappedRequests);
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -133,7 +176,7 @@ export default function RestockSuppliers() {
 
     async function loadData() {
       try {
-        const suppliersRes = await fetch(`${API_BASE_URL}/medications/suppliers`);
+        const suppliersRes = await fetch(`${API_BASE_URL}/suppliers`);
         if (!suppliersRes.ok) {
           throw new Error('Failed to load supplier records.');
         }
@@ -153,6 +196,10 @@ export default function RestockSuppliers() {
             completed: 0,
             cancelled: 0,
             status: resolvedStatus,
+            contact: supplier.contact_number || '',
+            email: supplier.email_address || '',
+            address: supplier.address || '',
+            avatarUrl: supplier.supplier_image || DEFAULT_SUPPLIER_AVATAR,
           };
         });
 
@@ -172,17 +219,24 @@ export default function RestockSuppliers() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [syncRestockRequests]);
 
-  async function syncRestockRequests() {
-    const mappedRequests: RestockRequest[] = (await loadRestockRequests())
-      .map((request) => ({
-        ...request,
-        requestedOn: formatDateLabel(request.requestedOnIso),
-      }))
-      .sort((a, b) => new Date(b.requestedOnIso).getTime() - new Date(a.requestedOnIso).getTime());
-    setRestockRequests(mappedRequests);
-  }
+  useEffect(() => {
+    function handleRestockRequestsChanged() {
+      syncRestockRequests().catch((error) => {
+        setLoadError(error instanceof Error ? error.message : 'Failed to refresh restock requests.');
+      });
+    }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener(RESTOCK_REQUESTS_CHANGED_EVENT, handleRestockRequestsChanged);
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(RESTOCK_REQUESTS_CHANGED_EVENT, handleRestockRequestsChanged);
+      }
+    };
+  }, [syncRestockRequests]);
 
   const requestCategories = useMemo(() => {
     const categories = Array.from(new Set(restockRequests.map((request) => request.category)));
@@ -217,26 +271,39 @@ export default function RestockSuppliers() {
     } as const;
   }, [filteredRestockRequests]);
 
-  const criticalNeedsCount = useMemo(
-    () => restockRequests.filter((request) => request.severity === 'Critical').length,
+  const pendingRequests = useMemo(
+    () => restockRequests.filter((request) => request.status === 'Pending'),
     [restockRequests],
+  );
+  const uniquePendingRequests = useMemo(() => {
+    const latestByMedication = new Map<string, RestockRequest>();
+    pendingRequests.forEach((request) => {
+      const existing = latestByMedication.get(request.medicationId);
+      if (!existing || new Date(request.requestedOnIso).getTime() > new Date(existing.requestedOnIso).getTime()) {
+        latestByMedication.set(request.medicationId, request);
+      }
+    });
+    return Array.from(latestByMedication.values());
+  }, [pendingRequests]);
+  const criticalNeedsCount = useMemo(
+    () => uniquePendingRequests.filter((request) => request.severity === 'Critical').length,
+    [uniquePendingRequests],
   );
   const pendingRequestsCount = useMemo(
-    () => restockRequests.filter((request) => request.status === 'Pending').length,
-    [restockRequests],
+    () => uniquePendingRequests.length,
+    [uniquePendingRequests],
   );
   const oldestPendingDate = useMemo(() => {
-    const pending = restockRequests.filter((request) => request.status === 'Pending');
-    if (pending.length === 0) return 'N/A';
-    const oldestPending = pending.slice().sort((a, b) => new Date(a.requestedOnIso).getTime() - new Date(b.requestedOnIso).getTime())[0];
+    if (uniquePendingRequests.length === 0) return 'N/A';
+    const oldestPending = uniquePendingRequests.slice().sort((a, b) => new Date(a.requestedOnIso).getTime() - new Date(b.requestedOnIso).getTime())[0];
     return oldestPending.requestedOn;
-  }, [restockRequests]);
+  }, [uniquePendingRequests]);
   const mostUrgentMedication = useMemo(() => {
-    if (restockRequests.length === 0) return 'N/A';
-    return restockRequests
+    if (uniquePendingRequests.length === 0) return 'N/A';
+    return uniquePendingRequests
       .slice()
       .sort((a, b) => a.currentStock - b.currentStock)[0].medication;
-  }, [restockRequests]);
+  }, [uniquePendingRequests]);
   const activeSuppliersCount = useMemo(
     () => supplierRows.filter((supplier) => supplier.status === 'Active' || supplier.status === 'Preferred').length,
     [supplierRows],
@@ -247,20 +314,20 @@ export default function RestockSuppliers() {
   );
 
   const supplierRequestStats = useMemo(() => {
-    return restockRequests.reduce<Record<string, { total: number; completed: number; cancelled: number }>>((acc, request) => {
-      if (!acc[request.supplier]) {
-        acc[request.supplier] = { total: 0, completed: 0, cancelled: 0 };
+    return restockRequests.reduce<Record<number, { total: number; completed: number; cancelled: number }>>((acc, request) => {
+      if (!acc[request.supplierId]) {
+        acc[request.supplierId] = { total: 0, completed: 0, cancelled: 0 };
       }
-      acc[request.supplier].total += 1;
-      if (request.status === 'Completed') acc[request.supplier].completed += 1;
-      if (request.status === 'Cancelled') acc[request.supplier].cancelled += 1;
+      acc[request.supplierId].total += 1;
+      if (request.status === 'Completed') acc[request.supplierId].completed += 1;
+      if (request.status === 'Cancelled') acc[request.supplierId].cancelled += 1;
       return acc;
     }, {});
   }, [restockRequests]);
 
   const alignedSuppliers = useMemo(() => {
     return supplierRows.map((supplier) => {
-      const stats = supplierRequestStats[supplier.name] || { total: 0, completed: 0, cancelled: 0 };
+      const stats = supplierRequestStats[supplier.supplierId] || { total: 0, completed: 0, cancelled: 0 };
       return {
         ...supplier,
         totalRequests: stats.total,
@@ -415,6 +482,15 @@ export default function RestockSuppliers() {
     }
   }
 
+  async function movePendingRequestToCancelled(requestId: number) {
+    try {
+      await updateRestockRequest(requestId, { status: 'Cancelled' });
+      await syncRestockRequests();
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Failed to cancel request.');
+    }
+  }
+
   function handleAddSupplierSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
 
@@ -433,39 +509,111 @@ export default function RestockSuppliers() {
     setModal('confirm');
   }
 
-  function handleConfirmSupplier() {
-    if (!confirmChecked || !newSupplier.status) return;
+  async function handleConfirmSupplier() {
+    if (!confirmChecked || !newSupplier.status || isSubmittingSupplier) return;
 
-    const nextId = `SUP-${String(supplierRows.length + 1).padStart(3, '0')}`;
-    const supplier: Supplier = {
-      id: nextId,
-      supplierId: -(supplierRows.length + 1),
-      name: newSupplier.name || 'New Supplier',
-      totalRequests: 0,
-      completed: 0,
-      cancelled: 0,
-      status: newSupplier.status,
-      contact: newSupplier.contact,
-      email: newSupplier.email,
-      address: newSupplier.address,
+    setIsSubmittingSupplier(true);
+    try {
+      let supplierImageUrl = '';
+      if (newSupplierImageFile) {
+        const fileName = `${Date.now()}-${newSupplierImageFile.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+        const path = `suppliers/${fileName}`;
+        const signedUrlRes = await fetch(`${API_BASE_URL}/storage/signed-upload-url`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            bucket: 'supplier-photos',
+            path,
+          }),
+        });
+        const signedJson = (await signedUrlRes.json().catch(() => null)) as { signedUrl?: string; publicUrl?: string; error?: string } | null;
+        if (!signedUrlRes.ok || !signedJson?.signedUrl) {
+          throw new Error(signedJson?.error || 'Failed to create upload URL for supplier image.');
+        }
+
+        const uploadRes = await fetch(signedJson.signedUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': newSupplierImageFile.type || 'application/octet-stream',
+          },
+          body: newSupplierImageFile,
+        });
+        if (!uploadRes.ok) {
+          throw new Error('Failed to upload supplier image.');
+        }
+        supplierImageUrl = signedJson.publicUrl || '';
+      }
+
+      const response = await fetch(`${API_BASE_URL}/suppliers`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          supplier_name: newSupplier.name.trim(),
+          status: newSupplier.status,
+          contact_number: newSupplier.contact.trim(),
+          email_address: newSupplier.email.trim(),
+          address: newSupplier.address.trim(),
+          supplier_image: supplierImageUrl || null,
+        }),
+      });
+      const json = (await response.json().catch(() => null)) as { error?: string } | null;
+      if (!response.ok) {
+        throw new Error(json?.error || 'Failed to create supplier.');
+      }
+
+      const suppliersRes = await fetch(`${API_BASE_URL}/suppliers`);
+      if (!suppliersRes.ok) {
+        throw new Error('Supplier created, but failed to refresh supplier list.');
+      }
+      const suppliersJson = (await suppliersRes.json()) as { suppliers: SupplierApiRow[] };
+      const refreshed: Supplier[] = (suppliersJson.suppliers || []).map((supplier) => {
+        const resolvedStatus: SupplierStatus =
+          supplier.is_preferred ? 'Preferred' : supplier.status === 'Active' ? 'Active' : 'Review';
+        return {
+          id: `SUP-${String(supplier.supplier_id).padStart(3, '0')}`,
+          supplierId: supplier.supplier_id,
+          name: supplier.supplier_name,
+          totalRequests: 0,
+          completed: 0,
+          cancelled: 0,
+          status: resolvedStatus,
+          contact: supplier.contact_number || '',
+          email: supplier.email_address || '',
+          address: supplier.address || '',
+          avatarUrl: supplier.supplier_image || DEFAULT_SUPPLIER_AVATAR,
+        };
+      });
+      setSupplierRows(refreshed);
+      setModal('success');
+      resetNewSupplierForm();
+    } catch (error) {
+      setFormErrors((prev) => ({
+        ...prev,
+        name: error instanceof Error ? error.message : 'Failed to create supplier.',
+      }));
+    } finally {
+      setIsSubmittingSupplier(false);
+    }
+  }
+
+  function handleSupplierImageChange(file: File | null) {
+    if (!file) {
+      setNewSupplier((prev) => ({ ...prev, avatarUrl: '' }));
+      setNewSupplierImageFile(null);
+      return;
+    }
+    setNewSupplierImageFile(file);
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      setNewSupplier((prev) => ({ ...prev, avatarUrl: result }));
     };
-
-    setSupplierRows((prev) => [supplier, ...prev]);
-    setModal('success');
-    setNewSupplier({
-      name: '',
-      status: '',
-      contact: '',
-      email: '',
-      address: '',
-    });
-    setFormErrors({
-      name: '',
-      status: '',
-      contact: '',
-      email: '',
-      address: '',
-    });
+    reader.readAsDataURL(file);
   }
 
   return (
@@ -503,7 +651,7 @@ export default function RestockSuppliers() {
                 <Clock3 className="h-3.5 w-3.5" />
               </span>
             </div>
-            <p className="mt-3 text-4xl font-bold text-amber-500">{pendingRequestsCount} stock requests</p>
+            <p className="mt-3 text-4xl font-bold text-amber-500">{pendingRequestsCount} medications</p>
             <p className="mt-1 text-base font-semibold text-gray-800">Awaiting action</p>
             <p className="mt-2 text-sm text-gray-700">Oldest: {oldestPendingDate}</p>
           </article>
@@ -559,7 +707,33 @@ export default function RestockSuppliers() {
 
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
               {(['Completed', 'Pending', 'Cancelled'] as RequestStatus[]).map((status) => (
-                <section key={status} className="rounded-xl border border-gray-300 bg-gray-50 p-3">
+                <section
+                  key={status}
+                  className={`rounded-xl border p-3 ${status === 'Cancelled' && isCancelledDropActive ? 'border-[#EF4444] bg-[#FEE2E2]' : 'border-gray-300 bg-gray-50'}`}
+                  onDragOver={(event) => {
+                    if (status !== 'Cancelled' || draggingRequestId === null) return;
+                    event.preventDefault();
+                    setIsCancelledDropActive(true);
+                  }}
+                  onDragLeave={() => {
+                    if (status === 'Cancelled') {
+                      setIsCancelledDropActive(false);
+                    }
+                  }}
+                  onDrop={async (event) => {
+                    if (status !== 'Cancelled') return;
+                    event.preventDefault();
+                    const draggedId = Number(event.dataTransfer.getData('text/plain'));
+                    setIsCancelledDropActive(false);
+                    setDraggingRequestId(null);
+                    if (!Number.isInteger(draggedId) || draggedId <= 0) return;
+
+                    const draggedRequest = restockRequests.find((request) => request.requestId === draggedId);
+                    if (!draggedRequest || draggedRequest.status !== 'Pending') return;
+
+                    await movePendingRequestToCancelled(draggedId);
+                  }}
+                >
                   <div className="mb-2 flex items-center justify-between border-b border-gray-300 pb-2">
                     <h3 className="text-sm font-semibold text-gray-700">{status}</h3>
                     <span className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-700">
@@ -568,7 +742,21 @@ export default function RestockSuppliers() {
                   </div>
                   <div className="space-y-2">
                     {requestsByStatus[status].map((request) => (
-                      <article key={request.id} className={`rounded-lg border p-3 text-sm ${statusCardClass(request.status)}`}>
+                      <article
+                        key={request.id}
+                        draggable={request.status === 'Pending'}
+                        onDragStart={(event) => {
+                          if (request.status !== 'Pending') return;
+                          event.dataTransfer.effectAllowed = 'move';
+                          event.dataTransfer.setData('text/plain', String(request.requestId));
+                          setDraggingRequestId(request.requestId);
+                        }}
+                        onDragEnd={() => {
+                          setDraggingRequestId(null);
+                          setIsCancelledDropActive(false);
+                        }}
+                        className={`rounded-lg border p-3 text-sm ${statusCardClass(request.status)} ${request.status === 'Pending' ? 'cursor-grab active:cursor-grabbing' : ''}`}
+                      >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className={`flex items-center gap-1 ${statusAccentClass(request.status)}`}>
@@ -646,7 +834,10 @@ export default function RestockSuppliers() {
             <div className="flex flex-wrap items-center gap-2 md:justify-end">
               <Button
                 className="inline-flex h-10 items-center gap-2 whitespace-nowrap bg-green-500 pl-3 pr-4 py-1.5 text-sm hover:bg-green-600"
-                onClick={() => setModal('add')}
+                onClick={() => {
+                  resetNewSupplierForm();
+                  setModal('add');
+                }}
               >
                 <PlusCircle className="h-4 w-4 shrink-0" />
                 Add Supplier
@@ -727,23 +918,41 @@ export default function RestockSuppliers() {
                 <Building2 size={16} />
                 Add Supplier
               </h2>
-              <button type="button" onClick={() => setModal('none')} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600">
+              <button type="button" onClick={() => {
+                setModal('none');
+                setIsSubmittingSupplier(false);
+              }} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600">
                 <X size={14} />
               </button>
             </div>
 
             <div className="mb-4 flex justify-center">
-              <div className="flex h-28 w-28 items-center justify-center rounded-full bg-gray-300 text-blue-600">
-                <ImagePlus size={32} />
+              <div className="relative h-28 w-28">
+                <img
+                  src={newSupplier.avatarUrl || DEFAULT_SUPPLIER_AVATAR}
+                  alt="Supplier profile preview"
+                  className="h-28 w-28 rounded-full border border-gray-300 object-cover"
+                />
+                <div className="absolute bottom-1 right-1 rounded-full bg-gray-200 p-1.5 text-blue-600">
+                  <ImagePlus size={14} />
+                </div>
               </div>
             </div>
 
             <div className="mb-3 border-b border-gray-300" />
 
             <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+              <label className="text-sm text-gray-700 md:col-span-2">
+                <span className="mb-1 inline-flex items-center gap-1"><ImagePlus size={14} /> Supplier Image (Optional)</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="mt-1 block w-full rounded-lg border border-gray-300 bg-transparent px-3 py-1.5 text-sm text-gray-700 file:mr-3 file:h-8 file:rounded-md file:border file:border-gray-300 file:bg-gray-200 file:px-3 file:text-sm file:font-medium file:text-gray-700"
+                  onChange={(e) => handleSupplierImageChange(e.target.files?.[0] || null)}
+                />
+              </label>
               <label className="text-sm text-gray-700">
                 <span className="mb-1 inline-flex items-center gap-1"><Building2 size={14} /> Supplier Name</span>
-                Supplier Name
                 <input
                   className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
                   value={newSupplier.name}
@@ -817,9 +1026,11 @@ export default function RestockSuppliers() {
             </div>
 
             <div className="mb-3 flex justify-center">
-              <div className="flex h-28 w-28 items-center justify-center rounded-full bg-gray-200 text-blue-600">
-                <Building2 size={40} />
-              </div>
+              <img
+                src={newSupplier.avatarUrl || DEFAULT_SUPPLIER_AVATAR}
+                alt="Supplier profile preview"
+                className="h-28 w-28 rounded-full border border-gray-300 object-cover"
+              />
             </div>
 
             <div className="rounded-xl bg-gray-200/70 p-4 text-sm">
@@ -839,9 +1050,9 @@ export default function RestockSuppliers() {
               type="button"
               onClick={handleConfirmSupplier}
               className="mt-4 h-9 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white disabled:opacity-60"
-              disabled={!confirmChecked}
+              disabled={!confirmChecked || isSubmittingSupplier}
             >
-              Confirm and Save Supplier
+              {isSubmittingSupplier ? 'Saving...' : 'Confirm and Save Supplier'}
             </button>
           </div>
         </div>
