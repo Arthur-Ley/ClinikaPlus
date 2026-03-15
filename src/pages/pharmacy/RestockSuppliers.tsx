@@ -103,19 +103,19 @@ function RestockSuppliersSkeleton() {
         {[1, 2, 3].map((item) => (
           <article key={item} className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
             <div className="flex items-start justify-between">
-              <div className="h-5 w-32 rounded bg-gray-300" />
+              <div className="h-5 w-36 rounded bg-gray-300" />
               <div className="h-6 w-6 rounded-full bg-gray-300" />
             </div>
-            <div className="mt-3 h-10 w-28 rounded bg-gray-300" />
-            <div className="mt-2 h-4 w-40 rounded bg-gray-300" />
+            <div className="mt-3 h-10 w-32 rounded bg-gray-300" />
+            <div className="mt-2 h-4 w-44 rounded bg-gray-300" />
             <div className="mt-2 h-3 w-36 rounded bg-gray-300" />
           </article>
         ))}
       </div>
 
-      <div className="rounded-2xl bg-gray-100 p-4">
-        <div className="mb-3 flex items-center justify-between">
-          <div className="h-6 w-40 rounded bg-gray-300" />
+      <div className="order-2 rounded-2xl bg-gray-100 p-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="h-6 w-44 rounded bg-gray-300" />
           <div className="flex gap-2">
             <div className="h-10 w-28 rounded-lg bg-gray-300" />
             <div className="h-10 w-32 rounded-lg bg-gray-300" />
@@ -124,24 +124,32 @@ function RestockSuppliersSkeleton() {
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
           {[1, 2, 3].map((col) => (
             <div key={col} className="rounded-xl border border-gray-300 bg-gray-50 p-3">
-              <div className="h-4 w-20 rounded bg-gray-300" />
-              <div className="mt-2 h-16 rounded bg-gray-300" />
-              <div className="mt-2 h-16 rounded bg-gray-300" />
+              <div className="mb-2 flex items-center justify-between border-b border-gray-300 pb-2">
+                <div className="h-4 w-16 rounded bg-gray-300" />
+                <div className="h-5 w-8 rounded-full bg-gray-300" />
+              </div>
+              <div className="space-y-2">
+                <div className="h-16 rounded bg-gray-300" />
+                <div className="h-16 rounded bg-gray-300" />
+                <div className="h-8 rounded bg-gray-300" />
+              </div>
             </div>
           ))}
         </div>
       </div>
 
-      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-        <div className="mb-3 flex items-center justify-between">
+      <div className="order-1 rounded-2xl bg-gray-100 p-4 md:p-5">
+        <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
           <div className="h-6 w-40 rounded bg-gray-300" />
-          <div className="h-10 w-28 rounded-lg bg-gray-300" />
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="h-10 w-32 rounded-lg bg-gray-300" />
+            <div className="h-10 w-28 rounded-lg bg-gray-300" />
+          </div>
         </div>
         <div className="space-y-2">
-          <div className="h-9 w-full rounded bg-gray-300" />
-          <div className="h-9 w-full rounded bg-gray-300" />
-          <div className="h-9 w-full rounded bg-gray-300" />
-          <div className="h-9 w-full rounded bg-gray-300" />
+          {[1, 2, 3, 4, 5].map((row) => (
+            <div key={row} className="h-9 w-full rounded bg-gray-300" />
+          ))}
         </div>
       </div>
     </section>
@@ -164,6 +172,11 @@ export default function RestockSuppliers() {
   const [selectedRequest, setSelectedRequest] = useState<RestockRequest | null>(null);
   const [confirmChecked, setConfirmChecked] = useState(false);
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
+  const [expandedStatusColumns, setExpandedStatusColumns] = useState<Record<RequestStatus, boolean>>({
+    Completed: false,
+    Pending: false,
+    Cancelled: false,
+  });
   const [draggingRequestId, setDraggingRequestId] = useState<number | null>(null);
   const [isCancelledDropActive, setIsCancelledDropActive] = useState(false);
   const [restockEdit, setRestockEdit] = useState({
@@ -340,6 +353,14 @@ export default function RestockSuppliers() {
         return new Date(b.requestedOnIso).getTime() - new Date(a.requestedOnIso).getTime();
       });
   }, [restockRequests, requestSeverityFilter, requestCategoryFilter]);
+
+  useEffect(() => {
+    setExpandedStatusColumns({
+      Completed: false,
+      Pending: false,
+      Cancelled: false,
+    });
+  }, [requestSeverityFilter, requestCategoryFilter]);
 
   const requestsByStatus = useMemo(() => {
     return {
@@ -736,8 +757,6 @@ export default function RestockSuppliers() {
 
   return (
     <div className="space-y-5">
-      <h1 className="text-3xl font-bold tracking-tight text-gray-800">Inventory | Restock and Suppliers</h1>
-
       {showInitialSkeleton && <RestockSuppliersSkeleton />}
 
       {!showInitialSkeleton && (
@@ -822,7 +841,14 @@ export default function RestockSuppliers() {
             </div>
 
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
-              {(['Completed', 'Pending', 'Cancelled'] as RequestStatus[]).map((status) => (
+              {(['Completed', 'Pending', 'Cancelled'] as RequestStatus[]).map((status) => {
+                const statusRequests = requestsByStatus[status];
+                const canCollapse = statusRequests.length > 3;
+                const visibleRequests = expandedStatusColumns[status]
+                  ? statusRequests
+                  : statusRequests.slice(0, 3);
+
+                return (
                 <section
                   key={status}
                   className={`rounded-xl border p-3 ${status === 'Cancelled' && isCancelledDropActive ? 'border-[#EF4444] bg-[#FEE2E2]' : 'border-gray-300 bg-gray-50'}`}
@@ -853,11 +879,11 @@ export default function RestockSuppliers() {
                   <div className="mb-2 flex items-center justify-between border-b border-gray-300 pb-2">
                     <h3 className="text-sm font-semibold text-gray-700">{status}</h3>
                     <span className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-700">
-                      {requestsByStatus[status].length}
+                      {statusRequests.length}
                     </span>
                   </div>
                   <div className="space-y-2">
-                    {requestsByStatus[status].map((request) => (
+                    {visibleRequests.map((request) => (
                       <article
                         key={request.id}
                         data-search-request-code={request.id}
@@ -924,14 +950,28 @@ export default function RestockSuppliers() {
                         )}
                       </article>
                     ))}
-                    {requestsByStatus[status].length === 0 && (
+                    {visibleRequests.length === 0 && (
                       <article className="rounded-lg border border-gray-300 bg-white p-3 text-xs text-gray-600">
                         No {status.toLowerCase()} requests.
                       </article>
                     )}
+                    {canCollapse && (
+                      <button
+                        type="button"
+                        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-200"
+                        onClick={() =>
+                          setExpandedStatusColumns((prev) => ({
+                            ...prev,
+                            [status]: !prev[status],
+                          }))
+                        }
+                      >
+                        {expandedStatusColumns[status] ? 'Show less' : 'Show more'}
+                      </button>
+                    )}
                   </div>
                 </section>
-              ))}
+              )})}
             </div>
 
             {filteredRestockRequests.length === 0 && (

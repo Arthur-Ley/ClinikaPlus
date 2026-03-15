@@ -374,8 +374,6 @@ export default function BillingAndPayments() {
 
   return (
     <div className="space-y-5">
-      <h1 className="text-3xl font-bold tracking-tight text-gray-800">Billing & Payments</h1>
-
       <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
         {/* Summary Cards */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">

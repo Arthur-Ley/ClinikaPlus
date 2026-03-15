@@ -17,8 +17,6 @@ export default function Settings() {
 
   return (
     <div className="space-y-5">
-      <h1 className="text-3xl font-bold tracking-tight text-gray-800">Settings</h1>
-
       <section className="space-y-5 rounded-2xl bg-gray-300/80 p-5">
         <article className="rounded-2xl border border-gray-200 bg-gray-100 p-5">
           <h2 className="mb-4 flex items-center gap-2 text-xl font-semibold text-gray-700">
