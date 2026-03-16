@@ -1,16 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Search, ChevronDown, PlusCircle, Clock3, FileText, Wallet,
+  Search, ChevronDown, PlusCircle, FileText,
   CheckCircle2, X, ReceiptText, Stethoscope, CircleGauge,
   CalendarDays, Info, CircleDollarSign, Coins, XCircle,
-  CreditCard, Hash, MinusCircle, User, Plus, Minus,
+  CreditCard, Hash, MinusCircle, User, Plus, Minus, Wallet,
 } from 'lucide-react';
 import Pagination from '../../components/ui/Pagination';
 import { type BillStatus } from '../../context/BillingPaymentsContext';
 import { useBillingPayments } from '../../context/useBillingPayments';
-
-// ─── Types ───────────────────────────────────────────────────────────────────
 
 type BillRow = { id: string; patient: string; date: string; total: string; status: BillStatus; };
 type ServiceItem = { type: 'service' | 'medication'; name: string; quantity: number; unitPrice: number; serviceId?: number | null; logId?: number | null; };
@@ -23,8 +21,6 @@ type ActiveModal =
   | 'payMethod' | 'payCash' | 'payGcash' | 'payConfirm'
   | 'paySuccess' | 'payCancelConfirm' | 'payCancelled' | 'receipt'
   | 'addService' | 'addMedication';
-
-// ─── Constants ───────────────────────────────────────────────────────────────
 
 const serviceTypeOptions = [
   { id: 1, name: 'Consultation', services: [{ id: 1, name: 'Consultation Fee', unitPrice: 500 }, { id: 2, name: 'Follow-up Consultation', unitPrice: 300 }, { id: 3, name: 'Emergency Consultation', unitPrice: 800 }] },
@@ -60,8 +56,6 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const VAT_RATE = 0.12;
 const SENIOR_DISCOUNT_RATE = 0.2;
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
 function toAmount(total: string) { const p = Number(total.replace(/[^\d.-]/g, '')); return Number.isFinite(p) ? p : 0; }
 function formatPhp(value: number) { return `PHP ${Math.round(value).toLocaleString()}`; }
 function formatDateForTable(value: string) { const p = new Date(value); if (Number.isNaN(p.getTime())) return value; return p.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }); }
@@ -79,8 +73,6 @@ function StatusPill({ status }: { status: string }) {
   return <span className={`inline-flex min-w-[74px] justify-center rounded-full px-2 py-0.5 text-xs font-semibold ${styles}`}>{status}</span>;
 }
 
-// ─── Component ───────────────────────────────────────────────────────────────
-
 export default function BillingAndPayments() {
   const { billingRecords, addBill, paymentQueue, markPaymentPaid, setPaymentProcessing } = useBillingPayments();
 
@@ -90,7 +82,6 @@ export default function BillingAndPayments() {
   const [billingFilter, setBillingFilter] = useState<BillingFilter>('all');
   const [currentPage, setCurrentPage] = useState(1);
 
-  // Bill form
   const [selectedBill, setSelectedBill] = useState<BillRow | null>(null);
   const [billIdInput, setBillIdInput] = useState('');
   const [billStatusInput, setBillStatusInput] = useState('');
@@ -109,7 +100,6 @@ export default function BillingAndPayments() {
   const [isSeniorCitizen, setIsSeniorCitizen] = useState(false);
   const visitDateInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Add Service picker state
   const [serviceTypeSearch, setServiceTypeSearch] = useState('');
   const [serviceSearch, setServiceSearch] = useState('');
   const [selectedServiceType, setSelectedServiceType] = useState<typeof serviceTypeOptions[0] | null>(null);
@@ -119,14 +109,12 @@ export default function BillingAndPayments() {
   const [showServiceTypeDropdown, setShowServiceTypeDropdown] = useState(false);
   const [showServiceDropdown, setShowServiceDropdown] = useState(false);
 
-  // Add Medication picker state
   const [medicationSearch, setMedicationSearch] = useState('');
   const [selectedMedication, setSelectedMedication] = useState<MedicationCatalogItem | null>(null);
   const [medicationQty, setMedicationQty] = useState(1);
   const [medicationUnitPrice, setMedicationUnitPrice] = useState(0);
   const [showMedicationDropdown, setShowMedicationDropdown] = useState(false);
 
-  // Payment
   const [selectedPayRow, setSelectedPayRow] = useState<BillRow | null>(null);
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod>('Cash');
   const [amountReceived, setAmountReceived] = useState('');
@@ -141,14 +129,7 @@ export default function BillingAndPayments() {
         if (!response.ok) return;
         const payload = (await response.json()) as { items?: MedicationStockApiItem[] };
         if (!active || !Array.isArray(payload.items) || !payload.items.length) return;
-        setMedicationCatalog(payload.items.map(item => ({
-          medication_id: item.medication_id,
-          medication_name: item.medication_name,
-          total_stock: item.total_stock ?? 0,
-          batch_number: item.batch_number,
-          expiry_date: item.expiry_date,
-          unit: item.unit,
-        })));
+        setMedicationCatalog(payload.items.map(item => ({ medication_id: item.medication_id, medication_name: item.medication_name, total_stock: item.total_stock ?? 0, batch_number: item.batch_number, expiry_date: item.expiry_date, unit: item.unit })));
       } catch { /* keep fallback */ }
     })();
     return () => { active = false; };
@@ -168,22 +149,6 @@ export default function BillingAndPayments() {
   useEffect(() => { if (currentPage > totalPages) setCurrentPage(totalPages); }, [currentPage, totalPages]);
   const startIndex = (currentPage - 1) * PAGE_SIZE;
   const pagedBills = filteredBills.slice(startIndex, startIndex + PAGE_SIZE);
-
-  const summaryCards = useMemo(() => {
-    const pendingBills = filteredBills.filter(b => b.status === 'Pending');
-    const paidBills = filteredBills.filter(b => b.status === 'Paid');
-    const pendingTotal = pendingBills.reduce((s, b) => s + toAmount(b.total), 0);
-    const allTotal = filteredBills.reduce((s, b) => s + toAmount(b.total), 0);
-    const highestBill = filteredBills.reduce((m, b) => Math.max(m, toAmount(b.total)), 0);
-    const averagePending = pendingBills.length > 0 ? pendingTotal / pendingBills.length : 0;
-    const averageAll = filteredBills.length > 0 ? allTotal / filteredBills.length : 0;
-    const oldestPendingDate = pendingBills.length ? pendingBills.map(b => b.date).sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0] : 'N/A';
-    return [
-      { title: 'Pending Bills', value: `${pendingBills.length} bills`, lines: [`Average Bill: ${formatPhp(averagePending)}`, `Oldest Bill: ${oldestPendingDate}`], accent: 'text-amber-500', chip: 'bg-amber-500', icon: Clock3 },
-      { title: 'Generated', value: `${filteredBills.length} bills`, lines: [`Average per Bill: ${formatPhp(averageAll)}`, `Paid Bills: ${paidBills.length}`], accent: 'text-blue-600', chip: 'bg-blue-600', icon: FileText },
-      { title: 'Awaiting Payment', value: formatPhp(pendingTotal), lines: [`Pending: ${pendingBills.length} bills`, `Highest Bill: ${formatPhp(highestBill)}`], accent: 'text-green-500', chip: 'bg-green-500', icon: Wallet },
-    ];
-  }, [filteredBills]);
 
   const subtotal = useMemo(() => services.reduce((acc, s) => acc + s.quantity * s.unitPrice, 0), [services]);
   const discount = isSeniorCitizen ? subtotal * SENIOR_DISCOUNT_RATE : 0;
@@ -205,7 +170,6 @@ export default function BillingAndPayments() {
     return lines;
   }, [services]);
 
-  // Filtered service type / service dropdowns
   const filteredServiceTypes = useMemo(() => {
     const q = serviceTypeSearch.trim().toLowerCase();
     return q ? serviceTypeOptions.filter(t => t.name.toLowerCase().includes(q)) : serviceTypeOptions;
@@ -370,30 +334,12 @@ export default function BillingAndPayments() {
   }
 
   const isEditingExisting = modal === 'viewBill';
-  const isBillModal = modal === 'createBill' || modal === 'viewBill';
 
   return (
     <div className="space-y-5">
-      <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
-        {/* Summary Cards */}
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-          {summaryCards.map(card => {
-            const Icon = card.icon;
-            return (
-              <article key={card.title} className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
-                <div className="flex items-start justify-between">
-                  <p className="text-xl font-semibold text-gray-500">{card.title}</p>
-                  <span className={`inline-flex h-8 w-8 items-center justify-center rounded-xl text-white ${card.chip}`}><Icon className="h-4 w-4" /></span>
-                </div>
-                <p className={`mt-3 text-5xl font-bold ${card.accent}`}>{card.value}</p>
-                <div className="mt-2 space-y-1.5 text-gray-800">
-                  {card.lines.map(line => <p key={line} className="text-xs font-semibold">{line}</p>)}
-                </div>
-              </article>
-            );
-          })}
-        </div>
+      <h1 className="text-3xl font-bold tracking-tight text-gray-800">Billing & Payments</h1>
 
+      <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
         {/* Billing Table */}
         <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
           <h2 className="mb-3 text-2xl font-bold text-gray-800">Billing Queue</h2>
@@ -464,7 +410,6 @@ export default function BillingAndPayments() {
             else setModal('none');
           }}
         >
-
           {/* ── Create / View Bill Modal ── */}
           {(modal === 'createBill' || modal === 'viewBill') && (
             <div className="w-full max-w-[960px] rounded-2xl border border-gray-200 bg-white shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
@@ -472,7 +417,6 @@ export default function BillingAndPayments() {
                 <h3 className="flex items-center gap-2 text-lg font-bold text-gray-800"><ReceiptText size={18} className="text-gray-500" />Bill Details</h3>
                 <button type="button" onClick={() => setModal('none')} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"><X size={15} /></button>
               </div>
-
               <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr]">
                 {/* LEFT PANEL */}
                 <div className="border-r border-gray-200 p-5 space-y-5 bg-gray-50">
@@ -620,16 +564,10 @@ export default function BillingAndPayments() {
                 <div className="p-2 rounded-xl bg-gray-100"><Stethoscope size={20} className="text-gray-500" /></div>
                 <h3 className="text-xl font-bold text-gray-800">Add Service</h3>
               </div>
-
-              {/* Service Type */}
               <div className="mb-4">
                 <label className="block text-sm font-semibold text-gray-700 mb-1.5">Service Type</label>
                 <div className="relative">
-                  <button
-                    type="button"
-                    className="w-full h-10 flex items-center justify-between px-3 rounded-xl border border-gray-200 bg-gray-50 text-sm text-gray-700 hover:bg-gray-100"
-                    onClick={() => { setShowServiceTypeDropdown(v => !v); setShowServiceDropdown(false); }}
-                  >
+                  <button type="button" className="w-full h-10 flex items-center justify-between px-3 rounded-xl border border-gray-200 bg-gray-50 text-sm text-gray-700 hover:bg-gray-100" onClick={() => { setShowServiceTypeDropdown(v => !v); setShowServiceDropdown(false); }}>
                     <span className={selectedServiceType ? 'text-gray-800 font-medium' : 'text-gray-400'}>{selectedServiceType?.name || 'Select service type...'}</span>
                     <ChevronDown size={16} className="text-gray-400" />
                   </button>
@@ -643,12 +581,7 @@ export default function BillingAndPayments() {
                       </div>
                       <div className="max-h-44 overflow-auto">
                         {filteredServiceTypes.map(type => (
-                          <button
-                            key={type.id}
-                            type="button"
-                            className={`block w-full px-3 py-2 text-left text-sm hover:bg-blue-600 hover:text-white transition-colors ${selectedServiceType?.id === type.id ? 'bg-blue-600 text-white' : 'text-gray-700'}`}
-                            onClick={() => { setSelectedServiceType(type); setSelectedService(null); setServiceSearch(''); setShowServiceTypeDropdown(false); }}
-                          >
+                          <button key={type.id} type="button" className={`block w-full px-3 py-2 text-left text-sm hover:bg-blue-600 hover:text-white transition-colors ${selectedServiceType?.id === type.id ? 'bg-blue-600 text-white' : 'text-gray-700'}`} onClick={() => { setSelectedServiceType(type); setSelectedService(null); setServiceSearch(''); setShowServiceTypeDropdown(false); }}>
                             {type.name}
                           </button>
                         ))}
@@ -657,17 +590,10 @@ export default function BillingAndPayments() {
                   )}
                 </div>
               </div>
-
-              {/* Service Name */}
               <div className="mb-4">
                 <label className="block text-sm font-semibold text-gray-700 mb-1.5">Service Name</label>
                 <div className="relative">
-                  <button
-                    type="button"
-                    className="w-full h-10 flex items-center justify-between px-3 rounded-xl border border-gray-200 bg-gray-50 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50"
-                    onClick={() => { if (selectedServiceType) setShowServiceDropdown(v => !v); }}
-                    disabled={!selectedServiceType}
-                  >
+                  <button type="button" className="w-full h-10 flex items-center justify-between px-3 rounded-xl border border-gray-200 bg-gray-50 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50" onClick={() => { if (selectedServiceType) setShowServiceDropdown(v => !v); }} disabled={!selectedServiceType}>
                     <span className={selectedService ? 'text-gray-800 font-medium' : 'text-gray-400'}>{selectedService?.name || 'Select service...'}</span>
                     <ChevronDown size={16} className="text-gray-400" />
                   </button>
@@ -681,12 +607,7 @@ export default function BillingAndPayments() {
                       </div>
                       <div className="max-h-44 overflow-auto">
                         {filteredServiceOptions.map(svc => (
-                          <button
-                            key={svc.id}
-                            type="button"
-                            className={`block w-full px-3 py-2 text-left text-sm hover:bg-blue-600 hover:text-white transition-colors ${selectedService?.id === svc.id ? 'bg-blue-600 text-white' : 'text-gray-700'}`}
-                            onClick={() => { setSelectedService(svc); setServiceUnitPrice(svc.unitPrice); setShowServiceDropdown(false); }}
-                          >
+                          <button key={svc.id} type="button" className={`block w-full px-3 py-2 text-left text-sm hover:bg-blue-600 hover:text-white transition-colors ${selectedService?.id === svc.id ? 'bg-blue-600 text-white' : 'text-gray-700'}`} onClick={() => { setSelectedService(svc); setServiceUnitPrice(svc.unitPrice); setShowServiceDropdown(false); }}>
                             {svc.name}
                           </button>
                         ))}
@@ -695,8 +616,6 @@ export default function BillingAndPayments() {
                   )}
                 </div>
               </div>
-
-              {/* Quantity + Unit Price */}
               <div className="grid grid-cols-2 gap-3 mb-5">
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-1.5">Quantity</label>
@@ -711,7 +630,6 @@ export default function BillingAndPayments() {
                   <input type="number" min={0} value={serviceUnitPrice} onChange={e => setServiceUnitPrice(Number(e.target.value))} className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm" />
                 </div>
               </div>
-
               <div className="space-y-2">
                 <button type="button" onClick={confirmAddService} disabled={!selectedService} className="h-10 w-full rounded-xl bg-blue-600 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">Add Item</button>
                 <button type="button" onClick={() => setModal(prevModal)} className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50 text-sm font-semibold text-gray-700 hover:bg-gray-100 transition-colors">Cancel</button>
@@ -726,41 +644,20 @@ export default function BillingAndPayments() {
                 <div className="p-2 rounded-xl bg-gray-100"><PlusCircle size={20} className="text-gray-500" /></div>
                 <h3 className="text-xl font-bold text-gray-800">Add Medication</h3>
               </div>
-
-              {/* Medication Search */}
               <div className="mb-4">
                 <label className="block text-sm font-semibold text-gray-700 mb-1.5">Medication Name</label>
                 <div className="relative">
                   <div className="relative">
                     <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                    <input
-                      value={medicationSearch}
-                      onChange={e => { setMedicationSearch(e.target.value); setShowMedicationDropdown(true); setSelectedMedication(null); }}
-                      onFocus={() => setShowMedicationDropdown(true)}
-                      placeholder="Search Medication"
-                      className="h-10 w-full pl-9 pr-3 rounded-xl border border-gray-200 bg-gray-50 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                    />
+                    <input value={medicationSearch} onChange={e => { setMedicationSearch(e.target.value); setShowMedicationDropdown(true); setSelectedMedication(null); }} onFocus={() => setShowMedicationDropdown(true)} placeholder="Search Medication" className="h-10 w-full pl-9 pr-3 rounded-xl border border-gray-200 bg-gray-50 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
                   </div>
                   {showMedicationDropdown && filteredMedicationOptions.length > 0 && (
                     <div className="absolute left-0 top-11 z-20 w-full rounded-xl border border-gray-200 bg-white shadow-lg overflow-hidden">
                       <div className="max-h-44 overflow-auto">
                         {filteredMedicationOptions.map(med => (
-                          <button
-                            key={med.medication_id}
-                            type="button"
-                            className={`block w-full px-3 py-2.5 text-left text-sm hover:bg-blue-600 hover:text-white transition-colors ${selectedMedication?.medication_id === med.medication_id ? 'bg-blue-600 text-white' : ''}`}
-                            onClick={() => {
-                              setSelectedMedication(med);
-                              setMedicationSearch(med.medication_name);
-                              setMedicationUnitPrice(resolveMedicationUnitPrice(med.medication_name));
-                              setMedicationQty(1);
-                              setShowMedicationDropdown(false);
-                            }}
-                          >
+                          <button key={med.medication_id} type="button" className={`block w-full px-3 py-2.5 text-left text-sm hover:bg-blue-600 hover:text-white transition-colors ${selectedMedication?.medication_id === med.medication_id ? 'bg-blue-600 text-white' : ''}`} onClick={() => { setSelectedMedication(med); setMedicationSearch(med.medication_name); setMedicationUnitPrice(resolveMedicationUnitPrice(med.medication_name)); setMedicationQty(1); setShowMedicationDropdown(false); }}>
                             <p className="font-semibold">{med.medication_name}</p>
-                            <p className={`text-xs ${selectedMedication?.medication_id === med.medication_id ? 'text-blue-100' : 'text-gray-400'}`}>
-                              Stock: {med.total_stock} {med.unit || 'pcs'} &nbsp;·&nbsp; Batch: {med.batch_number || 'N/A'}
-                            </p>
+                            <p className={`text-xs ${selectedMedication?.medication_id === med.medication_id ? 'text-blue-100' : 'text-gray-400'}`}>Stock: {med.total_stock} {med.unit || 'pcs'} &nbsp;·&nbsp; Batch: {med.batch_number || 'N/A'}</p>
                           </button>
                         ))}
                       </div>
@@ -768,8 +665,6 @@ export default function BillingAndPayments() {
                   )}
                 </div>
               </div>
-
-              {/* Medication Details */}
               {selectedMedication && (
                 <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm space-y-1.5">
                   <div className="grid grid-cols-2 gap-2">
@@ -779,8 +674,6 @@ export default function BillingAndPayments() {
                   <div><p className="text-xs text-gray-400">Expiry</p><p className="font-bold text-gray-800">{selectedMedication.expiry_date ? formatDateMed(selectedMedication.expiry_date) : 'N/A'}</p></div>
                 </div>
               )}
-
-              {/* Quantity + Unit Price */}
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <div>
                   <label className="block text-sm font-semibold text-gray-700 mb-1.5">Quantity</label>
@@ -795,13 +688,10 @@ export default function BillingAndPayments() {
                   <input type="number" min={0} value={medicationUnitPrice} onChange={e => setMedicationUnitPrice(Number(e.target.value))} className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm" />
                 </div>
               </div>
-
-              {/* Subtotal */}
               <div className="flex justify-between items-center mb-5 px-1 text-sm font-semibold text-gray-700">
                 <span>Subtotal</span>
                 <span className="text-base font-bold text-gray-900">₱{medicationSubtotal.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</span>
               </div>
-
               <div className="space-y-2">
                 <button type="button" onClick={confirmAddMedication} disabled={!selectedMedication} className="h-10 w-full rounded-xl bg-blue-600 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">Add Item</button>
                 <button type="button" onClick={() => setModal(prevModal)} className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50 text-sm font-semibold text-gray-700 hover:bg-gray-100 transition-colors">Cancel</button>
