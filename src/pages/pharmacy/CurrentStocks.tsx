@@ -174,15 +174,57 @@ function Skeleton() {
   return (
     <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5 animate-pulse">
       <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
+        <div className="mb-4 flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="h-6 w-56 rounded bg-gray-300" />
+            <div className="h-9 w-24 rounded-lg bg-gray-300" />
+          </div>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="h-10 w-full rounded-lg bg-gray-300 lg:w-72" />
+            <div className="flex gap-2">
+              <div className="h-10 w-32 rounded-lg bg-gray-300" />
+              <div className="h-10 w-36 rounded-lg bg-gray-300" />
+            </div>
+          </div>
+        </div>
+        <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 min-h-[200px] content-start">
+          {[1, 2, 3].map((card) => (
+            <div key={card} className="rounded-xl border-2 border-gray-300 bg-gray-50 p-4">
+              <div className="mb-3 flex items-start justify-between gap-3">
+                <div className="h-4 w-40 rounded bg-gray-300" />
+                <div className="h-5 w-16 rounded-full bg-gray-300" />
+              </div>
+              <div className="space-y-2">
+                <div className="h-3 w-32 rounded bg-gray-300" />
+                <div className="h-3 w-28 rounded bg-gray-300" />
+                <div className="h-3 w-36 rounded bg-gray-300" />
+              </div>
+              <div className="mt-4 flex gap-2">
+                <div className="h-8 flex-1 rounded-lg bg-gray-300" />
+                <div className="h-8 flex-1 rounded-lg bg-gray-300" />
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="mt-4 flex justify-center">
+          <div className="h-9 w-28 rounded-lg bg-gray-300" />
+        </div>
+      </div>
+
+      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
         <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="h-10 w-full rounded-lg bg-gray-300 md:w-72" />
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <div className="h-10 w-36 rounded-lg bg-gray-300" />
             <div className="h-10 w-32 rounded-lg bg-gray-300" />
+            <div className="h-10 w-28 rounded-lg bg-gray-300" />
             <div className="h-10 w-32 rounded-lg bg-gray-300" />
           </div>
         </div>
         <div className="space-y-2">
-          {[1,2,3,4,5].map((i) => <div key={i} className="h-9 w-full rounded bg-gray-300" />)}
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div key={i} className="h-9 w-full rounded bg-gray-300" />
+          ))}
         </div>
       </div>
     </section>
@@ -202,6 +244,8 @@ export default function CurrentStocks() {
   const [severityFilter, setSeverityFilter] = useState<Severity | ''>('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [alertPage, setAlertPage] = useState(1);
+  const [showAllAlerts, setShowAllAlerts] = useState(false);
+  const [highlightedAlertId, setHighlightedAlertId] = useState('');
 
   const [searchTerm, setSearchTerm] = useState('');
   const [filterCategory, setFilterCategory] = useState('All Categories');
@@ -333,9 +377,14 @@ export default function CurrentStocks() {
   const alertCategories = useMemo(() => Array.from(new Set(alerts.map(a => a.category))).sort(), [alerts]);
   const alertTotalPages = Math.ceil(filteredAlerts.length / ALERTS_PAGE_SIZE);
   const pagedAlerts = filteredAlerts.slice((alertPage - 1) * ALERTS_PAGE_SIZE, alertPage * ALERTS_PAGE_SIZE);
+  const canCollapseAlerts = filteredAlerts.length > 3;
+  const visibleAlerts = showAllAlerts ? filteredAlerts : filteredAlerts.slice(0, 3);
 
   // Fix 1: added alertPage to deps
-  useEffect(() => setAlertPage(1), [alertSearchTerm, severityFilter, categoryFilter]);
+  useEffect(() => {
+    setAlertPage(1);
+    setShowAllAlerts(false);
+  }, [alertSearchTerm, severityFilter, categoryFilter]);
   useEffect(() => { if (alertPage > alertTotalPages) setAlertPage(1); }, [alertPage, alertTotalPages]);
 
   const filteredItems = useMemo(() => {
@@ -362,6 +411,9 @@ export default function CurrentStocks() {
   useEffect(() => { if (currentPage > totalPages) setCurrentPage(totalPages); }, [currentPage, totalPages]);
 
   const focusMedicationId = useMemo(() => new URLSearchParams(location.search).get('focusMedicationId') || '', [location.search]);
+  const focusAlertMedicationId = useMemo(() => new URLSearchParams(location.search).get('focusAlertMedicationId') || '', [location.search]);
+  const focusAlertName = useMemo(() => new URLSearchParams(location.search).get('focusAlertName') || '', [location.search]);
+  const focusAlertQuery = useMemo(() => new URLSearchParams(location.search).get('focusAlertQuery') || '', [location.search]);
   const openMedicationId = useMemo(() => new URLSearchParams(location.search).get('openMedicationId') || '', [location.search]);
 
   useEffect(() => {
@@ -373,6 +425,61 @@ export default function CurrentStocks() {
     setFilterStatus('All Status');
     setSearchTerm(target.name);
   }, [focusMedicationId, items]);
+
+  useEffect(() => {
+    if (!alerts.length || !items.length) return;
+    if (!focusAlertMedicationId && !focusAlertName && !focusAlertQuery) return;
+    const normalizedName = focusAlertName.trim().toLowerCase();
+    const normalizedQuery = focusAlertQuery.trim().toLowerCase();
+    const queryTokens = normalizedQuery
+      .split(/[^a-z0-9]+/i)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3);
+
+    function scoreAlert(alert: InventoryAlert) {
+      const haystack = `${alert.name} ${alert.category}`.toLowerCase();
+      let score = 0;
+      if (normalizedName && haystack.includes(normalizedName)) score += 6;
+      if (normalizedQuery && haystack.includes(normalizedQuery)) score += 8;
+      if (queryTokens.length) {
+        for (const token of queryTokens) {
+          if (haystack.includes(token)) score += 2;
+        }
+      }
+      return score;
+    }
+
+    const directMatch = focusAlertMedicationId
+      ? alerts.find((alert) => alert.id === focusAlertMedicationId)
+      : null;
+    const bestMatch = directMatch
+      || alerts
+        .map((alert) => ({ alert, score: scoreAlert(alert) }))
+        .sort((a, b) => b.score - a.score)[0]?.alert
+      || null;
+
+    if (!bestMatch || scoreAlert(bestMatch) <= 0) return;
+    const targetId = bestMatch.id;
+    setSeverityFilter('');
+    setCategoryFilter('');
+    setAlertSearchTerm('');
+    setShowAllAlerts(true);
+    setHighlightedAlertId(targetId);
+    const timeout = window.setTimeout(() => setHighlightedAlertId(''), 3000);
+    setTimeout(() => {
+      const node = document.querySelector(`[data-search-alert-id="${targetId}"]`);
+      if (node instanceof HTMLElement) {
+        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      const targetItem =
+        items.find((item) => item.id === targetId)
+        || items.find((item) => item.name.toLowerCase() === bestMatch.name.toLowerCase());
+      if (targetItem) {
+        openMedicationDetails(targetItem);
+      }
+    }, 180);
+    return () => window.clearTimeout(timeout);
+  }, [focusAlertMedicationId, focusAlertName, focusAlertQuery, alerts, items]);
 
   useEffect(() => {
     if (!focusMedicationId || !filteredItems.length) return;
@@ -525,10 +632,6 @@ export default function CurrentStocks() {
 
   return (
     <div className="space-y-5">
-      <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold tracking-tight text-gray-800">Pharmacy | Inventory & Alerts</h1>
-      </div>
-
       {showInitialSkeleton && <Skeleton />}
 
       {!showInitialSkeleton && (
@@ -536,22 +639,23 @@ export default function CurrentStocks() {
 
           {/* ── ALERTS ── */}
           <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-bold text-gray-800">Priority Alerts ({filteredAlerts.length})</h2>
-              {/* Fix 4: added type="button" */}
-              <button type="button" className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-200 text-sm font-medium" onClick={loadData}>Refresh</button>
-            </div>
-            <div className="flex flex-col lg:flex-row gap-3 mb-4">
-              <div className="relative w-full lg:w-72">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
-                <input
-                  className="w-full h-10 pl-9 pr-4 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                  placeholder="Search alerts..."
-                  value={alertSearchTerm}
-                  onChange={e => setAlertSearchTerm(e.target.value)}
-                />
+            <div className="flex flex-col gap-3 mb-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-bold text-gray-800">Priority Alerts ({filteredAlerts.length})</h2>
+                {/* Fix 4: added type="button" */}
+                <button type="button" className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-200 text-sm font-medium" onClick={loadData}>Refresh</button>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div className="relative w-full lg:w-72">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
+                  <input
+                    className="w-full h-10 pl-9 pr-4 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    placeholder="Search alerts..."
+                    value={alertSearchTerm}
+                    onChange={e => setAlertSearchTerm(e.target.value)}
+                  />
+                </div>
+                <div className="flex gap-2">
                 <div className="relative">
                   <select className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" value={severityFilter} onChange={e => setSeverityFilter(e.target.value as Severity | '')}>
                     <option value="">All Severity</option>
@@ -567,11 +671,30 @@ export default function CurrentStocks() {
                   </select>
                   <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                 </div>
+                </div>
               </div>
             </div>
             <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 min-h-[200px] content-start">
-              {pagedAlerts.map(alert => (
-                <div key={alert.id} className={`p-4 rounded-xl border-2 ${severityColors[alert.severity]}`}>
+              {visibleAlerts.map(alert => (
+                <div
+                  key={alert.id}
+                  data-search-alert-id={alert.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => {
+                    const target = items.find(i => i.id === alert.id);
+                    if (!target) return;
+                    openMedicationDetails(target);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    const target = items.find(i => i.id === alert.id);
+                    if (!target) return;
+                    openMedicationDetails(target);
+                  }}
+                  className={`p-4 rounded-xl border-2 ${severityColors[alert.severity]} cursor-pointer transition hover:-translate-y-0.5 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${highlightedAlertId === alert.id ? 'ring-2 ring-blue-400 shadow-md' : ''}`}
+                >
                   <div className="flex items-start justify-between mb-3">
                     <h3 className="font-bold text-sm line-clamp-2 flex-1 mr-2">{alert.name}</h3>
                     <span className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold ${alert.severity === 'critical' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
@@ -596,14 +719,25 @@ export default function CurrentStocks() {
                   </div>
                 </div>
               ))}
-              {!pagedAlerts.length && !isLoadingStocks && (
+              {!visibleAlerts.length && !isLoadingStocks && (
                 <div className="col-span-full p-10 text-center">
                   <AlertTriangle className="mx-auto h-10 w-10 text-gray-300 mb-2" />
                   <p className="text-gray-500 text-sm">No current alerts</p>
                 </div>
               )}
             </div>
-            {alertTotalPages > 1 && (
+            {canCollapseAlerts && (
+              <div className="mt-4 flex justify-center">
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-300 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-200"
+                  onClick={() => setShowAllAlerts((prev) => !prev)}
+                >
+                  {showAllAlerts ? 'Show less' : 'Show more'}
+                </button>
+              </div>
+            )}
+            {alertTotalPages > 1 && !canCollapseAlerts && (
               <div className="mt-4">
                 <Pagination currentPage={alertPage} totalPages={alertTotalPages} onPageChange={setAlertPage} />
               </div>

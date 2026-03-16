@@ -27,8 +27,8 @@ const NAVIGATION_ENTRIES: NavigationEntry[] = [
   { id: 'nav-restock-requests', label: 'Restock Requests', path: '/pharmacy/restock', keywords: ['restock', 'requests', 'purchase', 'order'] },
   { id: 'nav-suppliers', label: 'Suppliers', path: '/pharmacy/restock', keywords: ['suppliers', 'vendor', 'pharma'] },
   { id: 'nav-billing', label: 'Billing', path: '/billing', keywords: ['billing', 'bills', 'charges', 'invoice'] },
-  { id: 'nav-payments', label: 'Payments', path: '/payments', keywords: ['payments', 'cash', 'gcash', 'maya'] },
-  { id: 'nav-revenue', label: 'Revenue Reports', path: '/revenue', keywords: ['revenue', 'reports', 'analytics', 'finance'] },
+  { id: 'nav-payments', label: 'Payments', path: '/billing/payments', keywords: ['payments', 'cash', 'gcash', 'maya'] },
+  { id: 'nav-revenue', label: 'Revenue Reports', path: '/billing/reports', keywords: ['revenue', 'reports', 'analytics', 'finance'] },
 
 ];
 
@@ -74,6 +74,22 @@ function highlight(text: string, query: string): ReactNode {
       ))}
     </>
   );
+}
+
+function getPageTitle(pathname: string) {
+  if (pathname === '/' || pathname.startsWith('/dashboard')) return 'Overview';
+  if (pathname.startsWith('/settings')) return 'Settings';
+  if (pathname.startsWith('/pharmacy/inventory') || pathname.startsWith('/inventory')) {
+    return 'Pharmacy | Inventory & Alerts';
+  }
+  if (pathname.startsWith('/pharmacy/restock') || pathname.startsWith('/restock') || pathname.startsWith('/suppliers')) {
+    return 'Inventory | Restock and Suppliers';
+  }
+  if (pathname.startsWith('/billing/reports') || pathname.startsWith('/reports')) {
+    return 'Reports & Insurance | Revenue Reports';
+  }
+  if (pathname.startsWith('/billing')) return 'Billing & Payments';
+  return 'Overview';
 }
 
 export default function Header() {
@@ -308,10 +324,16 @@ export default function Header() {
     return '';
   }
 
+  const pageTitle = getPageTitle(location.pathname);
+
   return (
-    <header className="relative z-20 h-16 bg-[#F5F7FA] px-5 flex items-center justify-end">
-      <div ref={rootRef} className="flex items-center gap-3 w-full justify-end">
-        <div className="relative w-full sm:w-[380px] max-w-full">
+    <header className="relative z-20 h-16 bg-[#F5F7FA] px-5 flex items-center">
+      <div className="flex w-full items-center justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="truncate text-3xl font-bold tracking-tight text-gray-800">{pageTitle}</h1>
+        </div>
+        <div ref={rootRef} className="flex items-center gap-3">
+          <div className="relative w-full sm:w-[380px] max-w-full">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={15} />
           <input
             type="text"
@@ -444,10 +466,11 @@ export default function Header() {
               )}
             </div>
           )}
+          </div>
+          <button type="button" className="text-blue-600" onClick={() => navigate('/settings')} aria-label="Open settings">
+            <CircleUserRound size={26} />
+          </button>
         </div>
-        <button type="button" className="text-blue-600" onClick={() => navigate('/settings')} aria-label="Open settings">
-          <CircleUserRound size={26} />
-        </button>
       </div>
     </header>
   );

@@ -18,6 +18,7 @@ type OverviewResponse = {
     title: string;
     message: string;
     tone: Tone;
+    medication_key?: string;
   }>;
   inventory_highlights: Array<{
     medication_key: string;
@@ -84,29 +85,30 @@ function cashToneColor(status: string) {
 function OverviewSkeleton() {
   return (
     <>
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 animate-pulse">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3 animate-pulse">
         {[1, 2, 3].map((card) => (
           <div key={card} className="rounded-2xl border border-gray-200 bg-gray-100 p-5">
             <div className="mb-4 flex items-center justify-between">
-              <div className="h-5 w-40 rounded bg-gray-300" />
+              <div className="h-5 w-44 rounded bg-gray-300" />
               <div className="h-8 w-8 rounded-xl bg-gray-300" />
             </div>
-            <div className="h-10 w-32 rounded bg-gray-300" />
+            <div className="h-10 w-28 rounded bg-gray-300" />
             <div className="my-4 h-2 w-full rounded bg-gray-300" />
-            <div className="h-4 w-36 rounded bg-gray-300" />
+            <div className="h-4 w-40 rounded bg-gray-300" />
           </div>
         ))}
       </div>
 
-      <div className="rounded-2xl bg-gray-100 p-5 grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4 animate-pulse">
-        <div className="flex flex-col items-center justify-center gap-3">
-          <div className="h-8 w-44 rounded bg-gray-300" />
-          <div className="h-4 w-20 rounded bg-gray-300" />
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[280px_1fr] rounded-2xl bg-gray-100 p-5 animate-pulse">
+        <div className="mx-auto flex w-full max-w-[220px] flex-col items-start gap-3 pt-4">
+          <div className="h-9 w-9 rounded-full bg-gray-300" />
+          <div className="h-6 w-44 rounded bg-gray-300" />
+          <div className="h-5 w-24 rounded bg-gray-300" />
         </div>
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
           {[1, 2, 3, 4].map((item) => (
             <div key={item} className="rounded-xl border border-gray-300 bg-gray-50 p-3">
-              <div className="h-4 w-20 rounded bg-gray-300" />
+              <div className="h-4 w-24 rounded bg-gray-300" />
               <div className="mt-2 h-3 w-full rounded bg-gray-300" />
               <div className="mt-1 h-3 w-5/6 rounded bg-gray-300" />
             </div>
@@ -114,36 +116,37 @@ function OverviewSkeleton() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_1fr] gap-4 animate-pulse">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.1fr_1fr] animate-pulse">
         <div className="rounded-2xl bg-gray-100 p-5">
           <div className="mb-4 flex items-center justify-between">
-            <div className="h-6 w-52 rounded bg-gray-300" />
-            <div className="h-4 w-14 rounded bg-gray-300" />
+            <div className="h-6 w-56 rounded bg-gray-300" />
+            <div className="h-4 w-16 rounded bg-gray-300" />
           </div>
           <div className="space-y-2">
-            <div className="h-8 w-full rounded-xl bg-gray-300" />
-            <div className="h-8 w-full rounded-xl bg-gray-300" />
-            <div className="h-8 w-full rounded-xl bg-gray-300" />
-            <div className="h-8 w-full rounded-xl bg-gray-300" />
-            <div className="h-8 w-full rounded-xl bg-gray-300" />
+            {[1, 2, 3, 4].map((row) => (
+              <div key={row} className="h-8 w-full rounded-xl bg-gray-300" />
+            ))}
           </div>
           <div className="mt-2 h-9 w-full rounded-xl bg-gray-300" />
         </div>
 
         <div className="space-y-4">
           <div className="rounded-2xl bg-gray-100 p-5">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-[140px_1fr_1fr]">
               <div className="h-20 rounded bg-gray-300" />
               <div className="h-20 rounded bg-gray-300" />
               <div className="h-20 rounded bg-gray-300" />
             </div>
           </div>
           <div className="rounded-2xl bg-gray-100 p-5">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-[140px_1fr]">
               <div className="h-20 rounded bg-gray-300" />
-              <div className="h-20 rounded bg-gray-300" />
-              <div className="h-20 rounded bg-gray-300" />
-              <div className="h-20 rounded bg-gray-300" />
+              <div className="grid grid-cols-2 gap-4">
+                <div className="h-16 rounded bg-gray-300" />
+                <div className="h-16 rounded bg-gray-300" />
+                <div className="h-16 rounded bg-gray-300" />
+                <div className="h-16 rounded bg-gray-300" />
+              </div>
             </div>
           </div>
         </div>
@@ -191,6 +194,8 @@ export default function Dashboard() {
   const inventoryRows = overview?.inventory_highlights || [];
   const suggestedOrders = overview?.restocking_overview?.suggested_orders || [];
   const nextSupply = overview?.restocking_overview?.next_supply_delivery || null;
+  const visibleSuggestedOrders = suggestedOrders.slice(0, 2);
+  const visibleNextSupply = nextSupply ? [nextSupply].slice(0, 2) : [];
   const nearExpiryItems = overview?.near_expiry_items || [];
 
   const summary = useMemo(() => {
@@ -210,8 +215,6 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-5">
-      <h1 className="text-3xl font-bold tracking-tight text-gray-800">Overview</h1>
-
       <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
         {isLoading && !overview && <OverviewSkeleton />}
         {!isLoading && loadError && (
@@ -259,15 +262,13 @@ export default function Dashboard() {
         </div>
 
         <div className="rounded-2xl bg-gray-100 p-5 grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4">
-          <div className="flex flex-col items-center justify-center gap-3">
-            <div className="flex items-center justify-center gap-3">
-              <BellRing size={52} className="text-red-500" />
-              <h2 className="text-2xl leading-tight font-semibold text-gray-500">Alerts & Operational Risks</h2>
-            </div>
+          <div className="mx-auto flex w-full max-w-[220px] flex-col items-start gap-3 pt-4">
+            <BellRing size={36} className="text-red-500" />
+            <h2 className="text-2xl leading-tight font-semibold text-gray-500">Alerts & Operational Risks</h2>
             <button
               type="button"
               onClick={() => navigate('/inventory/alerts')}
-              className="text-sm font-semibold text-blue-600 hover:text-blue-700"
+              className="inline-flex items-center px-0 py-1 text-sm font-semibold text-blue-600 hover:text-blue-700"
             >
               View Alerts
             </button>
@@ -279,7 +280,28 @@ export default function Dashboard() {
             {alerts.map((item, index) => (
               <div
                 key={`${item.title}-${index}`}
-                className={`rounded-xl border p-3 ${item.tone === 'critical' ? 'border-red-300 bg-red-50' : 'border-amber-300 bg-amber-50'}`}
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  const focusQuery = item.message || item.title;
+                  if (item.medication_key) {
+                    navigate(`/inventory/alerts?focusAlertMedicationId=${encodeURIComponent(item.medication_key)}&focusAlertName=${encodeURIComponent(item.title)}&focusAlertQuery=${encodeURIComponent(focusQuery)}`);
+                    return;
+                  }
+                  navigate(`/inventory/alerts?focusAlertName=${encodeURIComponent(item.title)}&focusAlertQuery=${encodeURIComponent(focusQuery)}`);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    const focusQuery = item.message || item.title;
+                    if (item.medication_key) {
+                      navigate(`/inventory/alerts?focusAlertMedicationId=${encodeURIComponent(item.medication_key)}&focusAlertName=${encodeURIComponent(item.title)}&focusAlertQuery=${encodeURIComponent(focusQuery)}`);
+                      return;
+                    }
+                    navigate(`/inventory/alerts?focusAlertName=${encodeURIComponent(item.title)}&focusAlertQuery=${encodeURIComponent(focusQuery)}`);
+                  }
+                }}
+                className={`rounded-xl border p-3 ${item.tone === 'critical' ? 'border-red-300 bg-red-50' : 'border-amber-300 bg-amber-50'} cursor-pointer transition hover:-translate-y-0.5 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400`}
               >
                 <p className={`text-base font-bold ${item.tone === 'critical' ? 'text-red-500' : 'text-amber-500'}`}>{item.title}</p>
                 <p className="text-sm text-gray-700">{item.message}</p>
@@ -383,8 +405,8 @@ export default function Dashboard() {
               <div>
                 <div className="inline-block rounded-full bg-blue-600 px-3 py-1 text-white text-xs mb-2">Suggested Orders</div>
                 <div className="space-y-1 text-sm">
-                  {suggestedOrders.length === 0 && <p>No suggested orders</p>}
-                  {suggestedOrders.map((order) => (
+                  {visibleSuggestedOrders.length === 0 && <p>No suggested orders</p>}
+                  {visibleSuggestedOrders.map((order) => (
                     <p key={order.medication_name}>{order.medication_name} {order.quantity} {order.unit}</p>
                   ))}
                 </div>
@@ -392,11 +414,13 @@ export default function Dashboard() {
               <div>
                 <div className="inline-block rounded-full bg-blue-600 px-3 py-1 text-white text-xs mb-2">Next Supply Delivery</div>
                 <div className="space-y-1 text-sm">
-                  {nextSupply?.date ? (
-                    <>
-                      <p>{nextSupply.supplier_name}</p>
-                      <p>{formatDeliveryDate(nextSupply.date)}</p>
-                    </>
+                  {visibleNextSupply.length > 0 ? (
+                    visibleNextSupply.map((supply) => (
+                      <div key={supply.supplier_name}>
+                        <p>{supply.supplier_name}</p>
+                        <p>{formatDeliveryDate(supply.date)}</p>
+                      </div>
+                    ))
                   ) : (
                     <p>Pending supplier confirmation</p>
                   )}

@@ -367,8 +367,6 @@ export default function RevenueReports() {
 
   return (
     <div className="space-y-5">
-      <h1 className="text-3xl font-bold tracking-tight text-gray-800">Reports & Insurance | Revenue Reports</h1>
-
       <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
         <div className="flex items-center justify-between">
           <h2 className="text-4xl font-bold text-gray-800">Overview</h2>
