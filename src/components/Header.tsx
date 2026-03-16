@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { CircleUserRound, Search, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useGlobalSearchData } from '../context/GlobalSearchDataContext.tsx';
+import { useBillingPayments } from '../context/useBillingPayments.ts';
 
 type NavigationEntry = {
   id: string;
@@ -12,8 +13,8 @@ type NavigationEntry = {
 
 type SearchResult = {
   id: string;
-  section: 'navigation' | 'inventory';
-  entityType?: 'medication' | 'alert' | 'request' | 'supplier';
+  section: 'navigation' | 'inventory' | 'billing';
+  entityType?: 'medication' | 'alert' | 'request' | 'supplier' | 'bill';
   label: string;
   sublabel?: string;
   status?: string;
@@ -38,6 +39,12 @@ function normalize(text: string) {
 
 function safeLower(value: string | null | undefined) {
   return String(value || '').toLowerCase();
+}
+
+function formatDateLabel(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value || 'N/A';
+  return parsed.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
 }
 
 function escapeRegex(value: string) {
@@ -86,7 +93,7 @@ function getPageTitle(pathname: string) {
     return 'Inventory | Restock and Suppliers';
   }
   if (pathname.startsWith('/billing/reports') || pathname.startsWith('/reports')) {
-    return 'Reports & Insurance | Revenue Reports';
+    return 'Billing & Reports | Reports';
   }
   if (pathname.startsWith('/billing')) return 'Billing & Payments';
   return 'Overview';
@@ -100,7 +107,8 @@ export default function Header() {
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
-  const { medications, alerts, restockRequests, suppliers, isLoading } = useGlobalSearchData();
+  const { medications, alerts, restockRequests, suppliers, isLoading: searchLoading } = useGlobalSearchData();
+  const { billingRecords, isLoading: billingLoading } = useBillingPayments();
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -231,9 +239,38 @@ export default function Header() {
       .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
   }, [debouncedQuery, medications, alerts, restockRequests, suppliers]);
 
+  const billingMatches = useMemo(() => {
+    const query = normalize(debouncedQuery);
+    if (!query) return [] as SearchResult[];
+
+    return billingRecords
+      .map((row) => {
+        const fields = [row.id, row.patient, row.date, row.status];
+        const score = Math.max(...fields.map((field) => textMatchScore(field, query)));
+        if (score <= 0) return null;
+        return {
+          id: `bill-${row.id}`,
+          section: 'billing',
+          entityType: 'bill',
+          label: row.id,
+          sublabel: `${row.patient} | ${formatDateLabel(row.date)} | ${row.status}`,
+          status: row.status,
+          path: '/billing',
+          query: `focusBillId=${encodeURIComponent(row.id)}`,
+          score,
+        } satisfies SearchResult;
+      })
+      .filter(isDefined)
+      .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+  }, [debouncedQuery, billingRecords]);
+
   const visibleNavigation = navigationMatches.slice(0, 5);
   const visibleInventory = inventoryMatches.slice(0, 5);
-  const selectableResults = useMemo(() => [...visibleNavigation, ...visibleInventory], [visibleNavigation, visibleInventory]);
+  const visibleBilling = billingMatches.slice(0, 5);
+  const selectableResults = useMemo(
+    () => [...visibleNavigation, ...visibleInventory, ...visibleBilling],
+    [visibleNavigation, visibleInventory, visibleBilling],
+  );
   const effectiveHighlightedIndex = selectableResults.length === 0
     ? -1
     : highlightedIndex < 0 || highlightedIndex >= selectableResults.length
@@ -249,6 +286,7 @@ export default function Header() {
       const focusAlertMedicationId = params.get('focusAlertMedicationId');
       const focusRequestCode = params.get('focusRequestCode');
       const focusSupplierId = params.get('focusSupplierId');
+      const focusBillId = params.get('focusBillId');
 
       setTimeout(() => {
         const selector = focusMedicationId
@@ -259,6 +297,8 @@ export default function Header() {
               ? `[data-search-request-code="${focusRequestCode}"]`
               : focusSupplierId
                 ? `[data-search-supplier-id="${focusSupplierId}"]`
+                : focusBillId
+                  ? `[data-search-bill-id="${focusBillId}"]`
                 : '';
 
         if (!selector) return;
@@ -321,6 +361,7 @@ export default function Header() {
     if (type === 'alert') return 'Alert';
     if (type === 'request') return 'Restock';
     if (type === 'supplier') return 'Supplier';
+    if (type === 'bill') return 'Bill';
     return '';
   }
 
@@ -353,7 +394,7 @@ export default function Header() {
               if (debouncedQuery || rawQuery.trim()) setIsOpen(true);
             }}
             onKeyDown={onInputKeyDown}
-            placeholder="Search pages, medications, alerts, requests, suppliers"
+            placeholder="Search pages, medications, alerts, requests, suppliers, bills"
             className="w-full h-10 rounded-lg border border-blue-100 bg-blue-100 pl-9 pr-10 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-blue-300"
           />
           {rawQuery.trim() && (
@@ -374,7 +415,7 @@ export default function Header() {
 
           {isOpen && debouncedQuery && (
             <div className="absolute left-0 top-[calc(100%+8px)] z-50 w-full max-h-[70vh] overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-xl">
-              {isLoading && (
+              {(searchLoading || billingLoading) && (
                 <div className="space-y-2 p-3">
                   <div className="h-4 w-40 animate-pulse rounded bg-gray-200" />
                   <div className="h-9 w-full animate-pulse rounded bg-gray-100" />
@@ -383,7 +424,7 @@ export default function Header() {
                 </div>
               )}
 
-              {!isLoading && (
+              {!(searchLoading || billingLoading) && (
                 <div className="p-2">
                   {visibleNavigation.length > 0 && (
                     <section>
@@ -459,7 +500,40 @@ export default function Header() {
                     </section>
                   )}
 
-                  {visibleNavigation.length === 0 && visibleInventory.length === 0 && (
+                  {visibleBilling.length > 0 && (
+                    <section className={visibleNavigation.length > 0 || visibleInventory.length > 0 ? 'mt-2 border-t border-gray-200 pt-2' : ''}>
+                      <p className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Billing Results</p>
+                      <div className="space-y-1">
+                        {visibleBilling.map((result) => {
+                          const globalIndex = selectableResults.findIndex((item) => item.id === result.id);
+                          const active = effectiveHighlightedIndex === globalIndex;
+                          return (
+                            <button
+                              key={result.id}
+                              type="button"
+                              onMouseEnter={() => setHighlightedIndex(globalIndex)}
+                              onClick={() => navigateTo(result.path, result.query)}
+                              className={`w-full rounded-lg px-2 py-2 text-left ${active ? 'bg-blue-100' : 'hover:bg-gray-100'}`}
+                            >
+                              <p className="text-sm font-semibold text-gray-800">{highlight(result.label, debouncedQuery)}</p>
+                              <p className="text-xs text-gray-600">{highlight(result.sublabel || '', debouncedQuery)}</p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {billingMatches.length > 5 && (
+                        <button
+                          type="button"
+                          onClick={() => navigateTo('/billing')}
+                          className="mt-1 w-full px-2 py-1.5 text-left text-xs font-semibold text-blue-600 hover:text-blue-700"
+                        >
+                          See all results
+                        </button>
+                      )}
+                    </section>
+                  )}
+
+                  {visibleNavigation.length === 0 && visibleInventory.length === 0 && visibleBilling.length === 0 && (
                     <div className="px-2 py-4 text-sm text-gray-600">No results found.</div>
                   )}
                 </div>

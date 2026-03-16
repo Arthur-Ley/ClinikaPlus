@@ -6,6 +6,7 @@ import {
   CalendarDays, Info, CircleDollarSign, Coins, XCircle,
   CreditCard, Hash, MinusCircle, User, Plus, Minus,
 } from 'lucide-react';
+import { useLocation } from 'react-router-dom';
 import Pagination from '../../components/ui/Pagination';
 import { type BillStatus } from '../../context/BillingPaymentsContext';
 import { useBillingPayments } from '../../context/useBillingPayments';
@@ -79,10 +80,66 @@ function StatusPill({ status }: { status: string }) {
   return <span className={`inline-flex min-w-[74px] justify-center rounded-full px-2 py-0.5 text-xs font-semibold ${styles}`}>{status}</span>;
 }
 
+function BillingSkeleton() {
+  return (
+    <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5 animate-pulse">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
+        {[1, 2, 3].map((item) => (
+          <article key={item} className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
+            <div className="flex items-start justify-between">
+              <div className="h-5 w-28 rounded bg-gray-300" />
+              <div className="h-8 w-8 rounded-xl bg-gray-300" />
+            </div>
+            <div className="mt-4 h-10 w-40 rounded bg-gray-300" />
+            <div className="mt-3 space-y-2">
+              <div className="h-3 w-44 rounded bg-gray-300" />
+              <div className="h-3 w-36 rounded bg-gray-300" />
+            </div>
+          </article>
+        ))}
+      </div>
+
+      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
+        <div className="mb-3 h-7 w-48 rounded bg-gray-300" />
+        <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="h-10 w-full rounded-xl bg-gray-300 lg:max-w-xl" />
+          <div className="flex gap-2">
+            <div className="h-10 w-36 rounded-xl bg-gray-300" />
+            <div className="h-10 w-28 rounded-xl bg-gray-300" />
+          </div>
+        </div>
+        <div className="overflow-x-auto rounded-xl">
+          <div className="min-w-full">
+            <div className="grid grid-cols-6 gap-2 bg-gray-200/90 px-3 py-2">
+              {[1, 2, 3, 4, 5, 6].map((item) => (
+                <div key={item} className="h-3 w-full rounded bg-gray-300" />
+              ))}
+            </div>
+            <div className="divide-y divide-gray-200">
+              {[1, 2, 3, 4, 5].map((row) => (
+                <div key={row} className="grid grid-cols-6 gap-2 px-3 py-3">
+                  {[1, 2, 3, 4, 5, 6].map((col) => (
+                    <div key={col} className="h-3 w-full rounded bg-gray-300" />
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 flex flex-col gap-2.5 text-sm text-gray-600 md:flex-row md:items-center md:justify-between">
+          <div className="h-4 w-44 rounded bg-gray-300" />
+          <div className="h-9 w-48 rounded bg-gray-300" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function BillingAndPayments() {
-  const { billingRecords, addBill, paymentQueue, markPaymentPaid, setPaymentProcessing } = useBillingPayments();
+  const { billingRecords, addBill, paymentQueue, markPaymentPaid, setPaymentProcessing, isLoading } = useBillingPayments();
+  const location = useLocation();
 
   const [modal, setModal] = useState<ActiveModal>('none');
   const [prevModal, setPrevModal] = useState<ActiveModal>('none');
@@ -132,6 +189,8 @@ export default function BillingAndPayments() {
   const [amountReceived, setAmountReceived] = useState('');
   const [gcashReference, setGcashReference] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [focusHandledKey, setFocusHandledKey] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -168,6 +227,25 @@ export default function BillingAndPayments() {
   useEffect(() => { if (currentPage > totalPages) setCurrentPage(totalPages); }, [currentPage, totalPages]);
   const startIndex = (currentPage - 1) * PAGE_SIZE;
   const pagedBills = filteredBills.slice(startIndex, startIndex + PAGE_SIZE);
+  const focusBillId = useMemo(() => new URLSearchParams(location.search).get('focusBillId') || '', [location.search]);
+
+  useEffect(() => {
+    if (!focusBillId) return;
+    if (focusHandledKey === `bill:${focusBillId}`) return;
+    setSearchTerm('');
+    setBillingFilter('all');
+    const index = billingRecords.findIndex((row) => row.id === focusBillId);
+    if (index >= 0) {
+      setCurrentPage(Math.floor(index / PAGE_SIZE) + 1);
+    }
+    setTimeout(() => {
+      const node = document.querySelector(`[data-search-bill-id="${focusBillId}"]`);
+      if (node instanceof HTMLElement) {
+        node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setFocusHandledKey(`bill:${focusBillId}`);
+      }
+    }, 140);
+  }, [focusBillId, focusHandledKey, billingRecords]);
 
   const summaryCards = useMemo(() => {
     const pendingBills = filteredBills.filter(b => b.status === 'Pending');
@@ -371,9 +449,22 @@ export default function BillingAndPayments() {
 
   const isEditingExisting = modal === 'viewBill';
   const isBillModal = modal === 'createBill' || modal === 'viewBill';
+  const showSkeleton = isLoading || pageLoading;
+
+  useEffect(() => {
+    if (isLoading) {
+      setPageLoading(true);
+      return;
+    }
+    const timeout = window.setTimeout(() => setPageLoading(false), 350);
+    return () => window.clearTimeout(timeout);
+  }, [isLoading]);
 
   return (
     <div className="space-y-5">
+      {showSkeleton ? (
+        <BillingSkeleton />
+      ) : (
       <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
         {/* Summary Cards */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -431,7 +522,7 @@ export default function BillingAndPayments() {
               </thead>
               <tbody>
                 {pagedBills.map(bill => (
-                  <tr key={bill.id} className="border-t border-gray-200 text-gray-800 hover:bg-gray-200/40">
+                  <tr key={bill.id} data-search-bill-id={bill.id} className="border-t border-gray-200 text-gray-800 hover:bg-gray-200/40">
                     <td className="px-3 py-2 font-semibold">{bill.id}</td>
                     <td className="px-3 py-2 font-semibold">{bill.patient}</td>
                     <td className="px-3 py-2 font-semibold">{formatDateForTable(bill.date)}</td>
@@ -453,11 +544,12 @@ export default function BillingAndPayments() {
           </div>
         </div>
       </section>
+      )}
 
       {/* ── Modals ── */}
       {modal !== 'none' && typeof document !== 'undefined' && createPortal(
         <div
-          className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-10 backdrop-blur-[1px]"
+          className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md"
           onClick={() => {
             if (['payMethod','payCash','payGcash','payConfirm','payCancelConfirm','payCancelled','paySuccess','receipt'].includes(modal)) closePayModals();
             else if (modal === 'addService' || modal === 'addMedication') setModal(prevModal);

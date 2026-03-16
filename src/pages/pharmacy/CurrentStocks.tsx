@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, X, Pill, CheckCircle, Plus, Search, ChevronDown, CheckCircle2, Pencil, Layers, Package, Building2, RefreshCw } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { createRestockRequest, loadRestockRequests, RESTOCK_REQUESTS_CHANGED_EVENT } from './restockRequestsStore';
@@ -707,11 +708,23 @@ export default function CurrentStocks() {
                     <div className="flex justify-between font-semibold text-blue-600"><span>Suggested Restock</span><span>{alert.suggestedRestock} {alert.unit}</span></div>
                   </div>
                   <div className="flex gap-2">
-                    <button type="button" className="flex-1 py-1.5 px-3 border border-gray-200 rounded-lg hover:bg-gray-50 font-medium text-sm" onClick={() => openMedicationDetails(items.find(i => i.id === alert.id) || items[0])}>View</button>
+                    <button
+                      type="button"
+                      className="flex-1 py-1.5 px-3 border border-gray-200 rounded-lg hover:bg-gray-50 font-medium text-sm"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openMedicationDetails(items.find(i => i.id === alert.id) || items[0]);
+                      }}
+                    >
+                      View
+                    </button>
                     <button
                       type="button"
                       className={`flex-1 py-1.5 px-3 rounded-lg font-semibold text-sm ${createdRequests[alert.id] ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
-                      onClick={() => openRestock(alert)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openRestock(alert);
+                      }}
                       disabled={Boolean(createdRequests[alert.id])}
                     >
                       {createdRequests[alert.id] ? 'Requested' : 'Create Request'}
@@ -851,8 +864,8 @@ export default function CurrentStocks() {
       )}
 
       {/* ── Detail / Edit Modal ── */}
-      {selectedItem && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-16 backdrop-blur-[1px]" onClick={() => { setSelectedItem(null); setIsEditingMedication(false); }}>
+      {selectedItem && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => { setSelectedItem(null); setIsEditingMedication(false); }}>
           <div className="w-full max-w-[640px] rounded-2xl border border-gray-200 bg-gray-100 shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white">
               <div className="flex items-center gap-3">
@@ -908,12 +921,13 @@ export default function CurrentStocks() {
               </div>
             )}
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* ── Add Medication Modal ── */}
-      {isAddMedicationOpen && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setIsAddMedicationOpen(false)}>
+      {isAddMedicationOpen && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setIsAddMedicationOpen(false)}>
           <form className="w-full max-w-[460px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={e => e.stopPropagation()} onSubmit={handleAddMedicationSubmit}>
             <div className="mb-4 flex items-center justify-between border-b border-gray-300 pb-3">
               <h2 className="flex items-center gap-2 text-xl font-semibold text-gray-700"><Pill size={16} />Add Medication</h2>
@@ -934,12 +948,13 @@ export default function CurrentStocks() {
             {formError && <p className="mt-3 text-sm text-red-600">{formError}</p>}
             <button type="submit" className="mt-5 h-9 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white disabled:opacity-60" disabled={isSubmittingMedication}>{isSubmittingMedication ? 'Saving...' : 'Add Medication'}</button>
           </form>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* ── Restock Modal ── */}
-      {restockTarget && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-16 backdrop-blur-[1px]" onClick={() => setRestockTarget(null)}>
+      {restockTarget && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setRestockTarget(null)}>
           <div className="w-full max-w-[640px] rounded-2xl border border-gray-200 bg-gray-100 shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white">
               <div className="flex items-center gap-3">
@@ -1050,31 +1065,34 @@ export default function CurrentStocks() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* ── Added Success Modal ── */}
-      {isAddedSuccessOpen && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setIsAddedSuccessOpen(false)}>
+      {isAddedSuccessOpen && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setIsAddedSuccessOpen(false)}>
           <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-gray-100 p-6 text-center shadow-xl" onClick={e => e.stopPropagation()}>
             <CheckCircle2 className="mx-auto h-14 w-14 text-green-500" strokeWidth={2} />
             <h3 className="mt-2 text-4xl font-bold text-gray-800">Added Successfully!</h3>
             <p className="mt-2 text-sm text-gray-600">Medication record has been successfully added.</p>
             <button type="button" onClick={() => setIsAddedSuccessOpen(false)} className="mt-5 h-9 w-28 rounded-lg bg-blue-600 text-sm font-semibold text-white">Done</button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* ── Restock Success Modal ── */}
-      {showSuccess && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setShowSuccess(false)}>
+      {showSuccess && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setShowSuccess(false)}>
           <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-gray-100 p-6 text-center shadow-xl" onClick={e => e.stopPropagation()}>
             <CheckCircle className="mx-auto h-14 w-14 text-green-500" strokeWidth={2} />
             <h3 className="mt-2 text-2xl font-bold text-gray-800">Request Created!</h3>
             <p className="mt-2 text-sm text-gray-600">Your restock request has been submitted successfully.</p>
             <button type="button" onClick={() => setShowSuccess(false)} className="mt-5 h-9 w-28 rounded-lg bg-green-600 text-sm font-semibold text-white">Done</button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

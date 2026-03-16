@@ -60,6 +60,7 @@ type SetPaymentProcessingInput = {
 export type BillingPaymentsContextValue = {
   billingRecords: BillRecord[];
   paymentQueue: PaymentQueueRecord[];
+  isLoading: boolean;
   addBill: (bill: NewBillInput) => Promise<void>;
   updateBill: (id: string, updates: UpdateBillInput) => void;
   markPaymentPaid: (input: MarkPaymentPaidInput) => Promise<void>;
@@ -249,6 +250,7 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
   const [paymentQueue, setPaymentQueue] = useState<PaymentQueueRecord[]>(
     () => preparedInitialData.paymentQueue,
   );
+  const [isLoading, setIsLoading] = useState(true);
 
   const refreshBillingData = useCallback(async () => {
     const response = await fetch(`${API_BASE_URL}/billing/bills?page=1&page_size=100`);
@@ -283,6 +285,10 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
         setPaymentQueue(mapped.payment);
       } catch {
         // Keep mock data as fallback when API is unavailable.
+      } finally {
+        if (active) {
+          setIsLoading(false);
+        }
       }
     })();
 
@@ -434,12 +440,13 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
     () => ({
       billingRecords,
       paymentQueue,
+      isLoading,
       addBill,
       updateBill,
       markPaymentPaid,
       setPaymentProcessing,
     }),
-    [billingRecords, paymentQueue, addBill, updateBill, markPaymentPaid, setPaymentProcessing],
+    [billingRecords, paymentQueue, isLoading, addBill, updateBill, markPaymentPaid, setPaymentProcessing],
   );
 
   return <BillingPaymentsContext.Provider value={value}>{children}</BillingPaymentsContext.Provider>;

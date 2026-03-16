@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Boxes,
   ChevronDown,
@@ -17,6 +18,7 @@ import {
   CheckCircle2,
   Copy,
   Check,
+  Pencil,
   ClipboardList,
   Shield,
   CircleDot,
@@ -69,6 +71,7 @@ type Supplier = {
   email?: string;
   address?: string;
   avatarUrl?: string;
+  imageUrl?: string | null;
 };
 
 type SupplierApiRow = {
@@ -94,6 +97,26 @@ function cardIconStyle(tone: 'blue' | 'amber') {
   return tone === 'blue'
     ? 'bg-blue-600/90 text-white'
     : 'bg-amber-500/90 text-white';
+}
+
+function mapSupplierRow(supplier: SupplierApiRow): Supplier {
+  const resolvedStatus: SupplierStatus =
+    supplier.is_preferred ? 'Preferred' : supplier.status === 'Active' ? 'Active' : 'Review';
+
+  return {
+    id: `SUP-${String(supplier.supplier_id).padStart(3, '0')}`,
+    supplierId: supplier.supplier_id,
+    name: supplier.supplier_name,
+    totalRequests: 0,
+    completed: 0,
+    cancelled: 0,
+    status: resolvedStatus,
+    contact: supplier.contact_number || '',
+    email: supplier.email_address || '',
+    address: supplier.address || '',
+    avatarUrl: supplier.supplier_image || DEFAULT_SUPPLIER_AVATAR,
+    imageUrl: supplier.supplier_image || null,
+  };
 }
 
 function RestockSuppliersSkeleton() {
@@ -205,6 +228,14 @@ export default function RestockSuppliers() {
     email: '',
     address: '',
   });
+  const [supplierEditDraft, setSupplierEditDraft] = useState({
+    contact: '',
+    email: '',
+    address: '',
+  });
+  const [supplierEditError, setSupplierEditError] = useState('');
+  const [isSavingSupplierEdit, setIsSavingSupplierEdit] = useState(false);
+  const [isContactEditOpen, setIsContactEditOpen] = useState(false);
   const [newSupplierImageFile, setNewSupplierImageFile] = useState<File | null>(null);
   const [isSubmittingSupplier, setIsSubmittingSupplier] = useState(false);
   const [isPhonePanelOpen, setIsPhonePanelOpen] = useState(false);
@@ -239,6 +270,18 @@ export default function RestockSuppliers() {
     }
   }, [modal]);
 
+  useEffect(() => {
+    if (modal !== 'viewSupplier' || !selectedSupplier) return;
+    setSupplierEditDraft({
+      contact: selectedSupplier.contact || '',
+      email: selectedSupplier.email || '',
+      address: selectedSupplier.address || '',
+    });
+    setSupplierEditError('');
+    setIsSavingSupplierEdit(false);
+    setIsContactEditOpen(false);
+  }, [modal, selectedSupplier]);
+
   async function copySupplierPhone(phoneNumber: string) {
     if (!phoneNumber.trim()) return;
     try {
@@ -247,6 +290,89 @@ export default function RestockSuppliers() {
       window.setTimeout(() => setIsPhoneCopied(false), 1200);
     } catch {
       setIsPhoneCopied(false);
+    }
+  }
+
+  function startSupplierEdit() {
+    if (!selectedSupplier) return;
+    setSupplierEditDraft({
+      contact: selectedSupplier.contact || '',
+      email: selectedSupplier.email || '',
+      address: selectedSupplier.address || '',
+    });
+    setSupplierEditError('');
+    setIsContactEditOpen(true);
+  }
+
+  function cancelSupplierEdit() {
+    if (selectedSupplier) {
+      setSupplierEditDraft({
+        contact: selectedSupplier.contact || '',
+        email: selectedSupplier.email || '',
+        address: selectedSupplier.address || '',
+      });
+    }
+    setSupplierEditError('');
+    setIsContactEditOpen(false);
+  }
+
+  async function saveSupplierEdit() {
+    if (!selectedSupplier) return;
+    setIsSavingSupplierEdit(true);
+    setSupplierEditError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/suppliers/${selectedSupplier.supplierId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          supplier_name: selectedSupplier.name,
+          status: selectedSupplier.status,
+          contact_number: supplierEditDraft.contact.trim(),
+          email_address: supplierEditDraft.email.trim(),
+          address: supplierEditDraft.address.trim(),
+          supplier_image: selectedSupplier.imageUrl || null,
+        }),
+      });
+      const json = (await response.json().catch(() => null)) as { supplier?: SupplierApiRow; error?: string } | null;
+      if (!response.ok) {
+        throw new Error(json?.error || 'Failed to update supplier.');
+      }
+      if (!json?.supplier) {
+        throw new Error('Supplier update failed.');
+      }
+
+      const updatedBase = mapSupplierRow(json.supplier);
+      setSupplierRows((prev) =>
+        prev.map((item) =>
+          item.supplierId === updatedBase.supplierId
+            ? {
+                ...item,
+                ...updatedBase,
+                totalRequests: item.totalRequests,
+                completed: item.completed,
+                cancelled: item.cancelled,
+              }
+            : item,
+        ),
+      );
+      setSelectedSupplier((prev) =>
+        prev && prev.supplierId === updatedBase.supplierId
+          ? {
+              ...prev,
+              ...updatedBase,
+              totalRequests: prev.totalRequests,
+              completed: prev.completed,
+              cancelled: prev.cancelled,
+            }
+          : prev,
+      );
+      setIsContactEditOpen(false);
+    } catch (error) {
+      setSupplierEditError(error instanceof Error ? error.message : 'Failed to update supplier.');
+    } finally {
+      setIsSavingSupplierEdit(false);
     }
   }
 
@@ -275,24 +401,7 @@ export default function RestockSuppliers() {
         const suppliersJson = (await suppliersRes.json()) as { suppliers: SupplierApiRow[] };
         if (!isMounted) return;
 
-        const mappedSuppliers: Supplier[] = (suppliersJson.suppliers || []).map((supplier) => {
-          const resolvedStatus: SupplierStatus =
-            supplier.is_preferred ? 'Preferred' : supplier.status === 'Active' ? 'Active' : 'Review';
-
-          return {
-            id: `SUP-${String(supplier.supplier_id).padStart(3, '0')}`,
-            supplierId: supplier.supplier_id,
-            name: supplier.supplier_name,
-            totalRequests: 0,
-            completed: 0,
-            cancelled: 0,
-            status: resolvedStatus,
-            contact: supplier.contact_number || '',
-            email: supplier.email_address || '',
-            address: supplier.address || '',
-            avatarUrl: supplier.supplier_image || DEFAULT_SUPPLIER_AVATAR,
-          };
-        });
+        const mappedSuppliers: Supplier[] = (suppliersJson.suppliers || []).map(mapSupplierRow);
 
         setSupplierRows(mappedSuppliers);
         await syncRestockRequests();
@@ -708,23 +817,7 @@ export default function RestockSuppliers() {
         throw new Error('Supplier created, but failed to refresh supplier list.');
       }
       const suppliersJson = (await suppliersRes.json()) as { suppliers: SupplierApiRow[] };
-      const refreshed: Supplier[] = (suppliersJson.suppliers || []).map((supplier) => {
-        const resolvedStatus: SupplierStatus =
-          supplier.is_preferred ? 'Preferred' : supplier.status === 'Active' ? 'Active' : 'Review';
-        return {
-          id: `SUP-${String(supplier.supplier_id).padStart(3, '0')}`,
-          supplierId: supplier.supplier_id,
-          name: supplier.supplier_name,
-          totalRequests: 0,
-          completed: 0,
-          cancelled: 0,
-          status: resolvedStatus,
-          contact: supplier.contact_number || '',
-          email: supplier.email_address || '',
-          address: supplier.address || '',
-          avatarUrl: supplier.supplier_image || DEFAULT_SUPPLIER_AVATAR,
-        };
-      });
+      const refreshed: Supplier[] = (suppliersJson.suppliers || []).map(mapSupplierRow);
       setSupplierRows(refreshed);
       emitGlobalSearchRefresh();
       setModal('success');
@@ -1064,8 +1157,8 @@ export default function RestockSuppliers() {
       </section>
       )}
 
-      {modal === 'add' && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
+      {modal === 'add' && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setModal('none')}>
           <form
             className="w-full max-w-[460px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
@@ -1167,11 +1260,12 @@ export default function RestockSuppliers() {
               </button>
             </div>
           </form>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {modal === 'confirm' && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
+      {modal === 'confirm' && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setModal('none')}>
           <div className="w-full max-w-[460px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between border-b border-gray-300 pb-3">
               <h2 className="flex items-center gap-2 text-xl font-semibold text-gray-700">
@@ -1213,11 +1307,12 @@ export default function RestockSuppliers() {
               {isSubmittingSupplier ? 'Saving...' : 'Confirm and Save Supplier'}
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {modal === 'success' && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
+      {modal === 'success' && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setModal('none')}>
           <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-gray-100 p-6 text-center shadow-xl" onClick={(e) => e.stopPropagation()}>
             <CheckCircle2 className="mx-auto h-14 w-14 text-green-500" strokeWidth={2} />
             <h3 className="mt-2 text-4xl font-bold text-gray-800">Added Successfully!</h3>
@@ -1226,11 +1321,12 @@ export default function RestockSuppliers() {
               Done
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {modal === 'viewRequest' && selectedRequest && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
+      {modal === 'viewRequest' && selectedRequest && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setModal('none')}>
           <div className="w-full max-w-[520px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between border-b border-gray-300 pb-3">
               <h2 className="text-xl font-semibold text-gray-800">Stock Request Details</h2>
@@ -1272,11 +1368,12 @@ export default function RestockSuppliers() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {modal === 'editRequest' && selectedRequest && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
+      {modal === 'editRequest' && selectedRequest && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setModal('none')}>
           <div className="w-full max-w-[520px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between border-b border-gray-300 pb-3">
               <h2 className="text-xl font-semibold text-gray-800">Adjust Restock Request</h2>
@@ -1341,11 +1438,12 @@ export default function RestockSuppliers() {
               Save Changes
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {modal === 'cancelRequest' && selectedRequest && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
+      {modal === 'cancelRequest' && selectedRequest && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setModal('none')}>
           <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-gray-100 p-6 text-center shadow-xl" onClick={(e) => e.stopPropagation()}>
             <h3 className="text-2xl font-bold text-gray-800">Cancel Request?</h3>
             <p className="mt-2 text-sm text-gray-600">
@@ -1360,12 +1458,13 @@ export default function RestockSuppliers() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
-      {modal === 'viewSupplier' && selectedSupplier && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={() => setModal('none')}>
-          <div className="w-full max-w-[760px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+      {modal === 'viewSupplier' && selectedSupplier && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setModal('none')}>
+          <div className="flex w-full max-w-[760px] max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="mb-4 flex items-center justify-between border-b border-gray-300 pb-3">
               <div className="flex items-center gap-3.5">
                 <div className="flex h-14 w-14 items-center justify-center rounded-xl border border-gray-300 bg-white text-base font-bold text-blue-600">
@@ -1421,6 +1520,14 @@ export default function RestockSuppliers() {
                 >
                   <MapPin className="h-3.5 w-3.5" />
                 </button>
+                <button
+                  type="button"
+                  title={isContactEditOpen ? 'Editing contact details' : 'Edit contact details'}
+                  onClick={startSupplierEdit}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-200 text-gray-600 transition hover:bg-gray-300 hover:text-gray-800"
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
                 <button type="button" onClick={() => setModal('none')} className="ml-1 inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600">
                   <X size={14} />
                 </button>
@@ -1450,88 +1557,146 @@ export default function RestockSuppliers() {
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 border-b border-gray-300 pb-3 text-sm md:grid-cols-4">
-              <div>
-                <p className="text-gray-500">Total Requests</p>
-                <p className="font-semibold text-gray-800">{selectedSupplier.totalRequests}</p>
-              </div>
-              <div>
-                <p className="text-gray-500">Completed</p>
-                <p className="font-semibold text-gray-800">{selectedSupplier.completed}</p>
-              </div>
-              <div>
-                <p className="text-gray-500">Cancelled</p>
-                <p className="font-semibold text-gray-800">{selectedSupplier.cancelled}</p>
-              </div>
-              <div>
-                <p className="text-gray-500">Pending</p>
-                <p className="font-semibold text-gray-800">
-                  {Math.max(0, selectedSupplier.totalRequests - selectedSupplier.completed - selectedSupplier.cancelled)}
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[230px_1fr]">
-              <section className="rounded-xl border border-gray-300 bg-white p-3">
-                <h4 className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-700">
-                  <Shield className="h-4 w-4 text-gray-500" />
-                  Frequently Supplied Medication
-                </h4>
-                <div className="space-y-2 text-sm text-gray-800">
-                  {frequentSupplierMedications.length > 0 ? (
-                    frequentSupplierMedications.map((medication) => (
-                      <p key={medication} className="flex items-center gap-2">
-                        <CircleDot className="h-3.5 w-3.5 text-blue-500" />
-                        {medication}
-                      </p>
-                    ))
-                  ) : (
-                    <p className="text-xs text-gray-500">No supplied medications yet.</p>
-                  )}
+            <div className="flex-1 overflow-y-auto pr-1">
+              <div className="grid grid-cols-2 gap-3 border-b border-gray-300 pb-3 text-sm md:grid-cols-4">
+                <div>
+                  <p className="text-gray-500">Total Requests</p>
+                  <p className="font-semibold text-gray-800">{selectedSupplier.totalRequests}</p>
                 </div>
-              </section>
+                <div>
+                  <p className="text-gray-500">Completed</p>
+                  <p className="font-semibold text-gray-800">{selectedSupplier.completed}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">Cancelled</p>
+                  <p className="font-semibold text-gray-800">{selectedSupplier.cancelled}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">Pending</p>
+                  <p className="font-semibold text-gray-800">
+                    {Math.max(0, selectedSupplier.totalRequests - selectedSupplier.completed - selectedSupplier.cancelled)}
+                  </p>
+                </div>
+              </div>
 
-              <section className="rounded-xl border border-gray-300 bg-white p-3">
-                <h4 className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-700">
-                  <ClipboardList className="h-4 w-4 text-gray-500" />
-                  Recent Procurement History
-                </h4>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full table-fixed text-xs">
-                    <thead className="text-gray-500">
-                      <tr>
-                        <th className="w-[30%] px-1 py-1 text-left font-semibold">Date</th>
-                        <th className="w-[42%] px-1 py-1 text-left font-semibold">Medication</th>
-                        <th className="w-[28%] px-1 py-1 text-left font-semibold">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {recentSupplierHistory.length > 0 ? (
-                        recentSupplierHistory.map((request) => (
-                          <tr key={`${request.id}-${request.requestedOnIso}`} className="border-t border-gray-200 text-gray-700">
-                            <td className="px-1 py-1.5">{request.requestedOnIso.slice(0, 10)}</td>
-                            <td className="px-1 py-1.5">{request.medication}</td>
-                            <td className="px-1 py-1.5">
-                              <span className={`inline-flex rounded-full px-2 py-0.5 font-semibold ${tableStatusChipClass(request.status)}`}>
-                                {request.status}
-                              </span>
+              {isContactEditOpen && (
+                <section className="mt-4 rounded-xl border border-gray-300 bg-white p-3">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-gray-700">Edit Contact Details</h4>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 text-sm text-gray-800 md:grid-cols-2">
+                    <label className="md:col-span-1">
+                      <span className="text-xs uppercase tracking-wide text-gray-500">Contact Number</span>
+                      <input
+                        className="mt-2 h-9 w-full rounded-lg border border-gray-300 bg-gray-50 px-3 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                        value={supplierEditDraft.contact}
+                        onChange={(event) => setSupplierEditDraft((prev) => ({ ...prev, contact: event.target.value }))}
+                      />
+                    </label>
+                    <label className="md:col-span-1">
+                      <span className="text-xs uppercase tracking-wide text-gray-500">Email Address</span>
+                      <input
+                        type="email"
+                        className="mt-2 h-9 w-full rounded-lg border border-gray-300 bg-gray-50 px-3 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                        value={supplierEditDraft.email}
+                        onChange={(event) => setSupplierEditDraft((prev) => ({ ...prev, email: event.target.value }))}
+                      />
+                    </label>
+                    <label className="md:col-span-2">
+                      <span className="text-xs uppercase tracking-wide text-gray-500">Address</span>
+                      <textarea
+                        className="mt-2 w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                        rows={3}
+                        value={supplierEditDraft.address}
+                        onChange={(event) => setSupplierEditDraft((prev) => ({ ...prev, address: event.target.value }))}
+                      />
+                    </label>
+                  </div>
+                  {supplierEditError && <p className="mt-2 text-xs text-red-500">{supplierEditError}</p>}
+                  <div className="mt-3 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={cancelSupplierEdit}
+                      className="h-8 rounded-lg border border-gray-300 px-3 text-xs font-semibold text-gray-700"
+                      disabled={isSavingSupplierEdit}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={saveSupplierEdit}
+                      className="h-8 rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
+                      disabled={isSavingSupplierEdit}
+                    >
+                      {isSavingSupplierEdit ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                </section>
+              )}
+
+              <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-[230px_1fr]">
+                <section className="rounded-xl border border-gray-300 bg-white p-3">
+                  <h4 className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-700">
+                    <Shield className="h-4 w-4 text-gray-500" />
+                    Frequently Supplied Medication
+                  </h4>
+                  <div className="space-y-2 text-sm text-gray-800">
+                    {frequentSupplierMedications.length > 0 ? (
+                      frequentSupplierMedications.map((medication) => (
+                        <p key={medication} className="flex items-center gap-2">
+                          <CircleDot className="h-3.5 w-3.5 text-blue-500" />
+                          {medication}
+                        </p>
+                      ))
+                    ) : (
+                      <p className="text-xs text-gray-500">No supplied medications yet.</p>
+                    )}
+                  </div>
+                </section>
+
+                <section className="rounded-xl border border-gray-300 bg-white p-3">
+                  <h4 className="mb-2 flex items-center gap-2 text-sm font-semibold text-gray-700">
+                    <ClipboardList className="h-4 w-4 text-gray-500" />
+                    Recent Procurement History
+                  </h4>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full table-fixed text-xs">
+                      <thead className="text-gray-500">
+                        <tr>
+                          <th className="w-[30%] px-1 py-1 text-left font-semibold">Date</th>
+                          <th className="w-[42%] px-1 py-1 text-left font-semibold">Medication</th>
+                          <th className="w-[28%] px-1 py-1 text-left font-semibold">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {recentSupplierHistory.length > 0 ? (
+                          recentSupplierHistory.map((request) => (
+                            <tr key={`${request.id}-${request.requestedOnIso}`} className="border-t border-gray-200 text-gray-700">
+                              <td className="px-1 py-1.5">{request.requestedOnIso.slice(0, 10)}</td>
+                              <td className="px-1 py-1.5">{request.medication}</td>
+                              <td className="px-1 py-1.5">
+                                <span className={`inline-flex rounded-full px-2 py-0.5 font-semibold ${tableStatusChipClass(request.status)}`}>
+                                  {request.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={3} className="px-1 py-2 text-gray-500">
+                              No procurement history available.
                             </td>
                           </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={3} className="px-1 py-2 text-gray-500">
-                            No procurement history available.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
