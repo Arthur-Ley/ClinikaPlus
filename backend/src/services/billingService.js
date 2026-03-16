@@ -773,12 +773,19 @@ async function getBillingAnalyticsFlow() {
     : 0;
 
   return {
-    total_pending_bills: totalPendingBills,
-    total_paid_bills: totalPaidBills,
-    total_revenue: totalRevenue,
-    total_outstanding_balance: totalOutstandingBalance,
-    average_bill_amount: averageBillAmount,
-  };
+  total_pending_bills: totalPendingBills,
+  total_paid_bills: totalPaidBills,
+  total_revenue: totalRevenue,
+  total_outstanding_balance: totalOutstandingBalance,
+  average_bill_amount: averageBillAmount,
+  payments: payments.map((p) => ({
+    bill_id: p.bill_id,
+    amount: Number(p.amount_paid || 0),
+    date: p.payment_date ? new Date(p.payment_date).toISOString().slice(0, 10) : null,
+    method: p.payment_method || '-',
+    status: 'Paid',
+  })),
+};
 }
 
 export {

@@ -83,18 +83,12 @@ type SupplierApiRow = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
-const DEFAULT_SUPPLIER_AVATAR = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22160%22 height=%22160%22 viewBox=%220 0 160 160%22%3E%3Crect width=%22160%22 height=%22160%22 fill=%22%23E5E7EB%22/%3E%3Ccircle cx=%2280%22 cy=%2260%22 r=%2230%22 fill=%22%239CA3AF%22/%3E%3Cpath d=%22M30 136c6-24 24-38 50-38s44 14 50 38%22 fill=%22none%22 stroke=%22%229CA3AF%22 stroke-width=%2216%22 stroke-linecap=%22round%22/%3E%3C/svg%3E';
+const DEFAULT_SUPPLIER_AVATAR = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22160%22 height=%22160%22 viewBox=%220 0 160 160%22%3E%3Crect width=%22160%22 height=%22160%22 fill=%22%23E5E7EB%22/%3E%3Ccircle cx=%2280%22 cy=%2260%22 r=%2230%22 fill=%22%239CA3AF%22/%3E%3Cpath d=%22M30 136c6-24 24-38 50-38s44 14 50 38%22 fill=%22none%22 stroke=%22%239CA3AF%22 stroke-width=%2216%22 stroke-linecap=%22round%22/%3E%3C/svg%3E';
 
 function formatDateLabel(value: string) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return 'N/A';
   return parsed.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
-}
-
-function cardIconStyle(tone: 'blue' | 'amber') {
-  return tone === 'blue'
-    ? 'bg-blue-600/90 text-white'
-    : 'bg-amber-500/90 text-white';
 }
 
 function mapSupplierRow(supplier: SupplierApiRow): Supplier {
@@ -642,8 +636,7 @@ export default function RestockSuppliers() {
 
   return (
     <div className="space-y-5">
-      <h1 className="text-3xl font-bold tracking-tight text-gray-800">Pharmacy | Restock & Suppliers</h1>
-
+      
       {showInitialSkeleton && <RestockSuppliersSkeleton />}
 
       {!showInitialSkeleton && (

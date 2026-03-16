@@ -72,12 +72,19 @@ type BackendBill = {
   bill_code?: string | null;
   patient_id: number;
   tbl_patients?: Record<string, unknown> | Array<Record<string, unknown>> | null;
+  tbl_payments?: Array<{
+    payment_id: number;
+    amount_paid: number;
+    payment_date: string | null;
+    payment_method: string | null;
+  }> | null;
   total_amount?: number | null;
   net_amount?: number | null;
   status: string;
   remaining_balance?: number | null;
   latest_payment_date?: string | null;
 };
+
 
 type BillsResponse = {
   items?: BackendBill[];
@@ -193,22 +200,28 @@ function mapBackendRows(rows: BackendBill[]) {
   });
 
   const payment = rows
-    .filter((row) => normalizeBillStatus(row.status) !== 'Cancelled')
-    .map((row) => {
-      const normalizedStatus = normalizeBillStatus(row.status);
-      const remaining = Number(row.remaining_balance ?? 0);
-      const amount = normalizedStatus === 'Paid' ? Number(row.net_amount ?? row.total_amount ?? 0) : remaining;
+  .filter((row) => normalizeBillStatus(row.status) !== 'Cancelled')
+  .map((row) => {
+    const normalizedStatus = normalizeBillStatus(row.status);
+    const payments = Array.isArray(row.tbl_payments) ? row.tbl_payments : [];
+    const latestPayment = payments.length
+      ? payments.sort((a, b) => new Date(b.payment_date ?? 0).getTime() - new Date(a.payment_date ?? 0).getTime())[0]
+      : null;
+    const remaining = Number(row.remaining_balance ?? 0);
+    const amount = normalizedStatus === 'Paid'
+      ? Number(row.net_amount ?? row.total_amount ?? 0)
+      : remaining > 0 ? remaining : Number(row.net_amount ?? row.total_amount ?? 0);
 
-      return {
-        id: String(row.bill_code || `BILL-${row.bill_id}`),
-        patient: resolvePatientName(row),
-        amount: amount > 0 ? amount : Number(row.net_amount ?? row.total_amount ?? 0),
-        method: '-',
-        date: toDateOnly(row.latest_payment_date),
-        status: toPaymentStatus(normalizedStatus),
-        backendBillId: row.bill_id,
-      } satisfies PaymentQueueRecord;
-    });
+    return {
+      id: String(row.bill_code || `BILL-${row.bill_id}`),
+      patient: resolvePatientName(row),
+      amount,
+      method: latestPayment?.payment_method ?? '-',
+      date: toDateOnly(latestPayment?.payment_date ?? row.latest_payment_date),
+      status: toPaymentStatus(normalizedStatus),
+      backendBillId: row.bill_id,
+    } satisfies PaymentQueueRecord;
+  });
 
   return {
     billing,

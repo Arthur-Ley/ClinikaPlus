@@ -90,12 +90,12 @@ function getPageTitle(pathname: string) {
     return 'Pharmacy | Inventory & Alerts';
   }
   if (pathname.startsWith('/pharmacy/restock') || pathname.startsWith('/restock') || pathname.startsWith('/suppliers')) {
-    return 'Inventory | Restock and Suppliers';
+  return 'Pharmacy | Restock & Suppliers';
   }
   if (pathname.startsWith('/billing/reports') || pathname.startsWith('/reports')) {
-    return 'Billing & Reports | Reports';
+  return 'Billing & Reports | Reports';
   }
-  if (pathname.startsWith('/billing')) return 'Billing & Payments';
+  if (pathname.startsWith('/billing')) return 'Billing & Reports | Billing & Payments';
   return 'Overview';
 }
 
@@ -368,7 +368,7 @@ export default function Header() {
   const pageTitle = getPageTitle(location.pathname);
 
   return (
-    <header className="relative z-20 h-16 bg-[#F5F7FA] px-5 flex items-center">
+    <header className="relative z-20 h-16 bg-[#F5F7FA] px-5 flex items-end pb-3">
       <div className="flex w-full items-center justify-between gap-4">
         <div className="min-w-0">
           <h1 className="truncate text-3xl font-bold tracking-tight text-gray-800">{pageTitle}</h1>
