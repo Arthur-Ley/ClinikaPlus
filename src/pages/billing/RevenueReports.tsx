@@ -85,7 +85,7 @@ function SummaryCard({ card }: { card: RevenueCard }) {
           <Icon size={14} />
         </span>
       </div>
-      <p className={`mt-8 text-5xl font-bold ${card.valueClass}`}>{card.value}</p>
+      <p className={`mt-6 text-4xl font-bold ${card.valueClass}`}>{card.value}</p>
     </article>
   );
 }
@@ -93,17 +93,17 @@ function SummaryCard({ card }: { card: RevenueCard }) {
 function RevenueOverTimeChart({ data }: { data: ChartPoint[] }) {
   const max = Math.max(...data.map((item) => item.value), 1);
   return (
-    <div className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
+    <div className="rounded-2xl border border-gray-200 bg-gray-100 p-3">
       <div className="mb-3 flex items-center gap-2">
         <BarChart3 className="h-4 w-4 text-blue-600" />
         <h3 className="text-lg font-semibold text-gray-800">Revenue Over Time</h3>
       </div>
-      <div className="flex h-[180px] items-end gap-3">
+      <div className="flex h-[140px] items-end gap-3">
         {data.map((item) => (
           <div key={item.label} className="flex min-w-0 flex-1 flex-col items-center gap-1">
             <div
               className="w-full max-w-[62px] rounded-t-md bg-blue-500/90"
-              style={{ height: `${Math.max(16, (item.value / max) * 130)}px` }}
+              style={{ height: `${Math.max(14, (item.value / max) * 100)}px` }}
               title={`${item.label}: ${formatMoney(item.value)}`}
             />
             <p className="text-xs font-semibold text-gray-700">{item.label}</p>
@@ -121,13 +121,13 @@ function DailyCollectionsChart({ data }: { data: ChartPoint[] }) {
   const max = Math.max(...data.map((item) => item.value), 1);
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
+    <div className="rounded-2xl border border-gray-200 bg-gray-100 p-3">
       <div className="mb-3 flex items-center gap-2">
         <LineChart className="h-4 w-4 text-amber-600" />
         <h3 className="text-lg font-semibold text-gray-800">Daily Collections</h3>
       </div>
 
-      <div className="relative h-[180px] rounded-xl border border-gray-200 bg-gray-50 p-2">
+      <div className="relative h-[140px] rounded-xl border border-gray-200 bg-gray-50 p-2">
         {data.length > 1 && (
           <svg viewBox="0 0 420 160" className="h-full w-full">
             <polyline fill="none" stroke="#d97706" strokeWidth="3" points={points} />
@@ -157,7 +157,7 @@ function PaymentMethodChart({ data }: { data: ChartPoint[] }) {
   const palette = ['bg-blue-600', 'bg-green-500', 'bg-amber-500', 'bg-sky-500'];
 
   return (
-    <div className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
+    <div className="rounded-2xl border border-gray-200 bg-gray-100 p-3">
       <div className="mb-3 flex items-center gap-2">
         <PieChart className="h-4 w-4 text-green-600" />
         <h3 className="text-lg font-semibold text-gray-800">Payment Method Distribution</h3>
@@ -198,7 +198,7 @@ function PaymentMethodChart({ data }: { data: ChartPoint[] }) {
 function RevenueByServiceChart({ data }: { data: ChartPoint[] }) {
   const max = Math.max(...data.map((item) => item.value), 1);
   return (
-    <div className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
+    <div className="rounded-2xl border border-gray-200 bg-gray-100 p-3">
       <div className="mb-3 flex items-center gap-2">
         <BarChartHorizontal className="h-4 w-4 text-purple-600" />
         <h3 className="text-lg font-semibold text-gray-800">Revenue by Service</h3>
@@ -224,9 +224,46 @@ function RevenueByServiceChart({ data }: { data: ChartPoint[] }) {
   );
 }
 
+function RevenueReportsSkeleton() {
+  return (
+    <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5 animate-pulse">
+      <div className="flex items-center justify-between">
+        <div className="h-8 w-40 rounded bg-gray-300" />
+        <div className="h-9 w-28 rounded-xl bg-gray-300" />
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {[1, 2, 3, 4].map((item) => (
+          <article key={item} className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
+            <div className="flex items-start justify-between">
+              <div className="h-5 w-28 rounded bg-gray-300" />
+              <div className="h-8 w-8 rounded-xl bg-gray-300" />
+            </div>
+            <div className="mt-8 h-10 w-32 rounded bg-gray-300" />
+          </article>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        {[1, 2, 3, 4].map((item) => (
+          <div key={item} className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
+            <div className="mb-3 flex items-center gap-2">
+              <div className="h-4 w-4 rounded bg-gray-300" />
+              <div className="h-5 w-40 rounded bg-gray-300" />
+            </div>
+            <div className="h-[180px] rounded-xl bg-gray-200" />
+            <div className="mt-3 h-3 w-48 rounded bg-gray-300" />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function RevenueReports() {
-  const { paymentQueue, billingRecords } = useBillingPayments();
+  const { paymentQueue, billingRecords, isLoading } = useBillingPayments();
   const [analytics, setAnalytics] = useState<BillingAnalytics | null>(null);
+  const [pageLoading, setPageLoading] = useState(true);
 
   const paidPayments = useMemo(
     () => paymentQueue.filter((row) => row.status === 'Paid' && row.amount > 0),
@@ -365,29 +402,37 @@ export default function RevenueReports() {
       .sort((a, b) => b.value - a.value);
   }, [paidBills]);
 
+  const showSkeleton = isLoading || pageLoading;
+
+  useEffect(() => {
+    if (isLoading) {
+      setPageLoading(true);
+      return;
+    }
+    const timeout = window.setTimeout(() => setPageLoading(false), 350);
+    return () => window.clearTimeout(timeout);
+  }, [isLoading]);
+
   return (
     <div className="space-y-5">
-      <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-4xl font-bold text-gray-800">Overview</h2>
-          <span className="rounded-xl border border-gray-400 px-3 py-2 text-xs font-semibold text-gray-700">
-            Total charts: 4
-          </span>
-        </div>
+      {showSkeleton ? (
+        <RevenueReportsSkeleton />
+      ) : (
+        <section className="rounded-2xl bg-gray-300/80 p-4 space-y-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {cards.map((card) => (
+              <SummaryCard key={card.title} card={card} />
+            ))}
+          </div>
 
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {cards.map((card) => (
-            <SummaryCard key={card.title} card={card} />
-          ))}
-        </div>
-
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          <RevenueOverTimeChart data={revenueByMonth} />
-          <DailyCollectionsChart data={revenueByDate} />
-          <PaymentMethodChart data={revenueByMethod} />
-          <RevenueByServiceChart data={revenueByService} />
-        </div>
-      </section>
+          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+            <RevenueOverTimeChart data={revenueByMonth} />
+            <DailyCollectionsChart data={revenueByDate} />
+            <PaymentMethodChart data={revenueByMethod} />
+            <RevenueByServiceChart data={revenueByService} />
+          </div>
+        </section>
+      )}
     </div>
   );
 }
