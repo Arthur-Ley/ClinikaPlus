@@ -224,10 +224,10 @@ export default function Dashboard() {
         {!isLoading && (
         <>
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-          <div className="rounded-2xl border border-gray-200 bg-gray-100 p-5">
+          <div className="group rounded-2xl border border-gray-200 bg-gray-100 p-5 transition-all duration-200 hover:border-amber-200 hover:bg-white hover:shadow-xl hover:ring-1 hover:ring-inset hover:ring-amber-200">
             <div className="flex items-start justify-between mb-4">
               <p className="text-lg font-semibold text-gray-500">Overall System Risk</p>
-              <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-amber-500 text-white">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-amber-500 text-white transition-transform duration-200 group-hover:scale-105">
                 <AlertTriangle size={17} />
               </span>
             </div>
@@ -236,10 +236,10 @@ export default function Dashboard() {
             <p className="text-base font-semibold text-gray-700">{summary.highPriorityIssues} high-priority issues</p>
           </div>
 
-          <div className="rounded-2xl border border-gray-200 bg-gray-100 p-5">
+          <div className="group rounded-2xl border border-gray-200 bg-gray-100 p-5 transition-all duration-200 hover:border-blue-200 hover:bg-white hover:shadow-xl hover:ring-1 hover:ring-inset hover:ring-blue-200">
             <div className="flex items-start justify-between mb-4">
               <p className="text-lg font-semibold text-gray-500">Inventory Stability</p>
-              <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-blue-500 text-white">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-blue-500 text-white transition-transform duration-200 group-hover:scale-105">
                 <Boxes size={17} />
               </span>
             </div>
@@ -248,10 +248,10 @@ export default function Dashboard() {
             <p className="text-base font-semibold text-gray-700">Near-expiry & low-stock risks tracked</p>
           </div>
 
-          <div className="rounded-2xl border border-gray-200 bg-gray-100 p-5">
+          <div className="group rounded-2xl border border-gray-200 bg-gray-100 p-5 transition-all duration-200 hover:border-green-200 hover:bg-white hover:shadow-xl hover:ring-1 hover:ring-inset hover:ring-green-200">
             <div className="flex items-start justify-between mb-4">
               <p className="text-lg font-semibold text-gray-500">Cash Flow Condition</p>
-              <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-green-500 text-white">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-green-500 text-white transition-transform duration-200 group-hover:scale-105">
                 <HandCoins size={17} />
               </span>
             </div>
