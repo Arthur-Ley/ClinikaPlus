@@ -122,7 +122,7 @@ async function listBillsFiltered({ status, page, pageSize, billIds }) {
 
   let query = supabase
     .from("tbl_bills")
-    .select(BILL_SELECT, {
+    .select("bill_id, bill_code, patient_id, total_amount, discount_amount, insurance_coverage, net_amount, status, tbl_patients(*), tbl_payments(payment_id, amount_paid, payment_date, payment_method)", {
       count: "exact",
     })
     .order("bill_id", { ascending: false });
@@ -285,7 +285,7 @@ async function fetchAnalyticsBills() {
 async function fetchAnalyticsPayments() {
   const { data, error } = await supabase
     .from("tbl_payments")
-    .select("payment_id, bill_id, amount_paid");
+    .select("payment_id, bill_id, amount_paid, payment_date, payment_method");
 
   if (error) throw error;
   return data || [];
