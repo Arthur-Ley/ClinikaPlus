@@ -48,6 +48,10 @@ type SupplierOption = {
   supplier_name: string;
   status: string;
   is_preferred: boolean;
+  contact_number?: string | null;
+  email_address?: string | null;
+  contactNumber?: string | null;
+  emailAddress?: string | null;
 };
 type CreateMedicationResponse = {
   medication: {
@@ -265,6 +269,7 @@ export default function CurrentStocks() {
   const [formError, setFormError] = useState('');
   const [categoryDropdown, setCategoryDropdown] = useState<CategoryOption[]>([]);
   const [supplierDropdown, setSupplierDropdown] = useState<SupplierOption[]>([]);
+  const [restockSupplierDropdown, setRestockSupplierDropdown] = useState<SupplierOption[]>([]);
   const [newMedication, setNewMedication] = useState({ name: '', categoryId: '', form: 'Tablet', strength: '', unit: 'pcs', quantity: '', batch: '', reorder: '', expiry: '', supplierId: '' });
 
   const [restockTarget, setRestockTarget] = useState<InventoryAlert | null>(null);
@@ -363,6 +368,37 @@ export default function CurrentStocks() {
     loadDropdowns();
     return () => { isMounted = false; };
   }, [isAddMedicationOpen]);
+
+  useEffect(() => {
+    if (!restockTarget) return;
+    let isMounted = true;
+
+    async function loadRestockSuppliers() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/suppliers`);
+        if (!response.ok) throw new Error('Failed to load suppliers.');
+        const supplierJson = (await response.json()) as { suppliers: SupplierOption[] };
+        if (!isMounted) return;
+        const nextSuppliers = supplierJson.suppliers || [];
+        setRestockSupplierDropdown(nextSuppliers);
+        setRestockDetails((prev) => ({
+          ...prev,
+          supplier:
+            prev.supplier ||
+            String(nextSuppliers[0]?.supplier_id || ''),
+        }));
+      } catch (error) {
+        if (!isMounted) return;
+        setRestockErrors((prev) => ({
+          ...prev,
+          supplier: error instanceof Error ? error.message : 'Failed to load suppliers.',
+        }));
+      }
+    }
+
+    loadRestockSuppliers();
+    return () => { isMounted = false; };
+  }, [restockTarget]);
 
   const filteredAlerts = useMemo(() => {
     return alerts.filter(a =>
@@ -524,12 +560,13 @@ export default function CurrentStocks() {
     setRestockErrors(errors);
     if (Object.values(errors).some(Boolean) || !restockTarget) return;
     const item = items.find(i => i.id === restockTarget.id);
-    if (!item?.supplierId) { setRestockErrors(prev => ({ ...prev, supplier: 'No supplier found' })); return; }
+    const supplierId = Number(restockDetails.supplier);
+    if (!Number.isInteger(supplierId) || supplierId <= 0) { setRestockErrors(prev => ({ ...prev, supplier: 'Select a supplier.' })); return; }
     try {
       setIsSubmitting(true);
       await createRestockRequest({
         medicationId: Number(restockTarget.id.replace(/^I-/, '')),
-        supplierId: item.supplierId,
+        supplierId,
         medication: restockTarget.name,
         category: restockTarget.category,
         severity: restockTarget.severity === 'critical' ? 'Critical' : 'Warning',
@@ -550,6 +587,11 @@ export default function CurrentStocks() {
       setIsSubmitting(false);
     }
   };
+
+  const selectedRestockSupplier = useMemo(
+    () => restockSupplierDropdown.find((supplier) => String(supplier.supplier_id) === restockDetails.supplier) || null,
+    [restockSupplierDropdown, restockDetails.supplier],
+  );
 
   async function handleAddMedicationSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -1017,17 +1059,25 @@ export default function CurrentStocks() {
                   </div>
                   <div>
                     <p className="text-xs text-gray-400 mb-1">Supplier</p>
-                    <input
+                    <select
                       className="w-full h-9 rounded-lg border border-gray-300 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
                       value={restockDetails.supplier}
                       onChange={e => setRestockDetails(p => ({ ...p, supplier: e.target.value }))}
-                      placeholder="Supplier name"
-                    />
+                    >
+                      <option value="">Select supplier</option>
+                      {restockSupplierDropdown.map((supplier) => (
+                        <option key={supplier.supplier_id} value={String(supplier.supplier_id)}>
+                          {supplier.supplier_name}
+                        </option>
+                      ))}
+                    </select>
                     {restockErrors.supplier && <p className="mt-1 text-xs text-red-500">{restockErrors.supplier}</p>}
                   </div>
-                  {restockItem?.supplier && restockItem.supplier !== 'N/A' && (
+                  {selectedRestockSupplier && (
                     <div className="rounded-lg bg-gray-50 border border-gray-200 p-3 space-y-1">
-                      <div><p className="text-xs text-gray-400">Supplier Name</p><p className="text-sm font-bold text-gray-800">{restockItem.supplier}</p></div>
+                      <div><p className="text-xs text-gray-400">Supplier Name</p><p className="text-sm font-bold text-gray-800">{selectedRestockSupplier.supplier_name}</p></div>
+                      <div><p className="text-xs text-gray-400">Contact Number</p><p className="text-sm font-semibold text-gray-700">{selectedRestockSupplier.contact_number?.trim() || selectedRestockSupplier.contactNumber?.trim() || 'N/A'}</p></div>
+                      <div><p className="text-xs text-gray-400">Email Address</p><p className="text-sm font-semibold text-gray-700">{selectedRestockSupplier.email_address?.trim() || selectedRestockSupplier.emailAddress?.trim() || 'N/A'}</p></div>
                     </div>
                   )}
                   <div>

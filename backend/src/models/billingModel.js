@@ -1,4 +1,45 @@
-﻿import { supabase } from "../lib/supabase.js";
+import { supabase } from "../lib/supabase.js";
+
+const BILL_SELECT = [
+  "bill_id",
+  "bill_code",
+  "patient_id",
+  "total_amount",
+  "net_amount",
+  "status",
+  "subtotal_medications",
+  "subtotal_laboratory",
+  "subtotal_miscellaneous",
+  "subtotal_room_charge",
+  "subtotal_professional_fee",
+  "discount_type",
+  "discount_rate",
+  "discount_amount",
+  "insurance_coverage",
+  "is_senior_citizen",
+  "is_pwd",
+  "admission_datetime",
+  "discharge_datetime",
+  "referred_by",
+  "discharge_status",
+  "created_at",
+  "tbl_patients(*)",
+].join(", ");
+
+const BILL_ITEM_SELECT = [
+  "bill_item_id",
+  "bill_id",
+  "service_id",
+  "medication_id",
+  "log_id",
+  "service_type",
+  "source",
+  "description",
+  "quantity",
+  "unit_price",
+  "subtotal",
+  "created_at",
+].join(", ");
 
 async function getNextCode(tableName, codeColumn, prefix) {
   const { data, error } = await supabase
@@ -20,7 +61,7 @@ async function createBill(row) {
   const { data, error } = await supabase
     .from("tbl_bills")
     .insert(row)
-    .select("bill_id, bill_code, patient_id, total_amount, discount_amount, insurance_coverage, net_amount, status")
+    .select(BILL_SELECT)
     .single();
 
   if (error) throw error;
@@ -32,7 +73,7 @@ async function updateBillById(billId, updates) {
     .from("tbl_bills")
     .update(updates)
     .eq("bill_id", billId)
-    .select("bill_id, bill_code, patient_id, total_amount, discount_amount, insurance_coverage, net_amount, status")
+    .select(BILL_SELECT)
     .single();
 
   if (error) throw error;
@@ -42,7 +83,7 @@ async function updateBillById(billId, updates) {
 async function getBillById(billId) {
   const { data, error } = await supabase
     .from("tbl_bills")
-    .select("bill_id, bill_code, patient_id, total_amount, discount_amount, insurance_coverage, net_amount, status")
+    .select(BILL_SELECT)
     .eq("bill_id", billId)
     .single();
 
@@ -53,7 +94,7 @@ async function getBillById(billId) {
 async function listBills({ status, page, pageSize }) {
   let query = supabase
     .from("tbl_bills")
-    .select("bill_id, bill_code, patient_id, total_amount, discount_amount, insurance_coverage, net_amount, status, tbl_patients(*)", {
+    .select(BILL_SELECT, {
       count: "exact",
     })
     .order("bill_id", { ascending: false });
@@ -110,7 +151,7 @@ async function createBillItems(rows) {
   const { data, error } = await supabase
     .from("tbl_bill_items")
     .insert(rows)
-    .select("bill_item_id, bill_id, service_id, medication_id, description, quantity, unit_price, subtotal, created_at");
+    .select(BILL_ITEM_SELECT);
 
   if (error) throw error;
   return data || [];
@@ -120,7 +161,7 @@ async function createBillItem(row) {
   const { data, error } = await supabase
     .from("tbl_bill_items")
     .insert(row)
-    .select("bill_item_id, bill_id, service_id, medication_id, description, quantity, unit_price, subtotal, created_at")
+    .select(BILL_ITEM_SELECT)
     .single();
 
   if (error) throw error;
@@ -130,7 +171,7 @@ async function createBillItem(row) {
 async function getBillItemById(billItemId) {
   const { data, error } = await supabase
     .from("tbl_bill_items")
-    .select("bill_item_id, bill_id, service_id, medication_id, description, quantity, unit_price, subtotal, created_at")
+    .select(BILL_ITEM_SELECT)
     .eq("bill_item_id", billItemId)
     .single();
 
@@ -143,7 +184,7 @@ async function updateBillItemById(billItemId, updates) {
     .from("tbl_bill_items")
     .update(updates)
     .eq("bill_item_id", billItemId)
-    .select("bill_item_id, bill_id, service_id, medication_id, description, quantity, unit_price, subtotal, created_at")
+    .select(BILL_ITEM_SELECT)
     .single();
 
   if (error) throw error;
@@ -158,7 +199,7 @@ async function deleteBillItemById(billItemId) {
 async function getBillItemsByBillId(billId) {
   const { data, error } = await supabase
     .from("tbl_bill_items")
-    .select("bill_item_id, bill_id, service_id, medication_id, description, quantity, unit_price, subtotal, created_at")
+    .select(BILL_ITEM_SELECT)
     .eq("bill_id", billId)
     .order("bill_item_id", { ascending: true });
 
