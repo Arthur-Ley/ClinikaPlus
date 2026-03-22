@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { billingRecords as initialBillingRecords, paymentQueue as initialPaymentQueue } from '../data/mockData';
 import { BillingPaymentsContext } from './BillingPaymentsContextObject.ts';
 
 export type BillStatus = 'Pending' | 'Paid' | 'Cancelled';
@@ -70,7 +69,7 @@ export type BillingPaymentsContextValue = {
 
 type BackendBill = {
   bill_id: number;
-  bill_code?: string | null;
+  bill_code: string;
   patient_id: number;
   tbl_patients?: Record<string, unknown> | Array<Record<string, unknown>> | null;
   tbl_payments?: Array<{
@@ -82,13 +81,16 @@ type BackendBill = {
   total_amount?: number | null;
   net_amount?: number | null;
   status: string;
+  created_at?: string | null;
   remaining_balance?: number | null;
-  latest_payment_date?: string | null;
 };
 
 
 type BillsResponse = {
   items?: BackendBill[];
+  pagination?: {
+    total_pages?: number;
+  };
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
@@ -103,20 +105,14 @@ function toMoneyTag(value: number) {
 }
 
 function toDateOnly(value: string | null | undefined) {
-  if (!value) return new Date().toISOString().slice(0, 10);
+  if (!value) return '';
   const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return new Date().toISOString().slice(0, 10);
+  if (Number.isNaN(parsed.getTime())) return '';
   return parsed.toISOString().slice(0, 10);
 }
 
 function toPaymentStatus(status: BillStatus): PaymentStatus {
   return status === 'Paid' ? 'Paid' : 'Pending';
-}
-
-function statusCode(status: BillStatus) {
-  if (status === 'Paid') return 'PD';
-  if (status === 'Cancelled') return 'CN';
-  return 'PN';
 }
 
 function isFrancoJallorina(name: string) {
@@ -140,26 +136,6 @@ function normalizeBillStatus(value: string): BillStatus {
   if (normalized === 'paid') return 'Paid';
   if (normalized === 'cancelled' || normalized === 'canceled') return 'Cancelled';
   return 'Pending';
-}
-
-function buildNormalizedBillingRecords(records: BillRecord[]) {
-  const statusCounters: Record<BillStatus, number> = {
-    Pending: 0,
-    Paid: 0,
-    Cancelled: 0,
-  };
-  const idMap = new Map<string, string>();
-
-  const normalizedRecords = records.map((record) => {
-    statusCounters[record.status] += 1;
-    const sequence = String(statusCounters[record.status]).padStart(4, '0');
-    const code = statusCode(record.status);
-    const normalizedId = `B-${code}-${sequence}`;
-    idMap.set(record.id, normalizedId);
-    return { ...record, id: normalizedId };
-  });
-
-  return { normalizedRecords, idMap };
 }
 
 function mapBackendRows(rows: BackendBill[]) {
@@ -190,9 +166,9 @@ function mapBackendRows(rows: BackendBill[]) {
   const billing = rows.map((row) => {
     const amount = Number(row.net_amount ?? row.total_amount ?? 0);
     return {
-      id: String(row.bill_code || `BILL-${row.bill_id}`),
+      id: String(row.bill_code),
       patient: resolvePatientName(row),
-      date: toDateOnly(row.latest_payment_date),
+      date: toDateOnly(row.created_at),
       total: toMoneyTag(amount),
       status: normalizeBillStatus(row.status),
       backendBillId: row.bill_id,
@@ -214,11 +190,11 @@ function mapBackendRows(rows: BackendBill[]) {
       : remaining > 0 ? remaining : Number(row.net_amount ?? row.total_amount ?? 0);
 
     return {
-      id: String(row.bill_code || `BILL-${row.bill_id}`),
+      id: String(row.bill_code),
       patient: resolvePatientName(row),
       amount,
       method: latestPayment?.payment_method ?? '-',
-      date: toDateOnly(latestPayment?.payment_date ?? row.latest_payment_date),
+      date: toDateOnly(latestPayment?.payment_date ?? row.created_at),
       status: toPaymentStatus(normalizedStatus),
       backendBillId: row.bill_id,
     } satisfies PaymentQueueRecord;
@@ -240,46 +216,41 @@ async function parseErrorMessage(response: Response) {
   return `Request failed with status ${response.status}.`;
 }
 
-export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
-  const preparedInitialData = useMemo(() => {
-    const sourceBilling = (initialBillingRecords as BillRecord[])
-      .map((record) => ({ ...record }))
-      .filter((record) => !isFrancoJallorina(record.patient));
-    const { normalizedRecords, idMap } = buildNormalizedBillingRecords(sourceBilling);
+async function fetchAllBillRows() {
+  const pageSize = 100;
+  let page = 1;
+  let totalPages = 1;
+  const allRows: BackendBill[] = [];
 
-    const sourcePaymentQueue = (initialPaymentQueue as PaymentQueueRecord[])
-      .map((record) => ({ ...record }))
-      .filter((record) => !isFrancoJallorina(record.patient))
-      .map((record) => ({ ...record, id: idMap.get(record.id) ?? record.id }));
-
-    return {
-      billingRecords: normalizedRecords,
-      paymentQueue: sourcePaymentQueue,
-    };
-  }, []);
-
-  const [billingRecords, setBillingRecords] = useState<BillRecord[]>(
-    () => preparedInitialData.billingRecords,
-  );
-  const [paymentQueue, setPaymentQueue] = useState<PaymentQueueRecord[]>(
-    () => preparedInitialData.paymentQueue,
-  );
-  const [isLoading, setIsLoading] = useState(true);
-
-  const refreshBillingData = useCallback(async () => {
-    const response = await fetch(`${API_BASE_URL}/billing/bills?page=1&page_size=100`);
+  while (page <= totalPages) {
+    const response = await fetch(`${API_BASE_URL}/billing/bills?page=${page}&page_size=${pageSize}`);
     if (!response.ok) {
       throw new Error(await parseErrorMessage(response));
     }
 
     const payload = (await response.json()) as BillsResponse;
     const rows = Array.isArray(payload.items) ? payload.items : [];
+    allRows.push(...rows);
+
+    const nextTotalPages = Number(payload.pagination?.total_pages ?? 1);
+    totalPages = Number.isInteger(nextTotalPages) && nextTotalPages > 0 ? nextTotalPages : 1;
+    page += 1;
+  }
+
+  return allRows;
+}
+
+export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
+  const [billingRecords, setBillingRecords] = useState<BillRecord[]>([]);
+  const [paymentQueue, setPaymentQueue] = useState<PaymentQueueRecord[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  const refreshBillingData = useCallback(async () => {
+    const rows = await fetchAllBillRows();
     const mapped = mapBackendRows(rows);
 
-    if (mapped.billing.length) {
-      setBillingRecords(mapped.billing);
-      setPaymentQueue(mapped.payment);
-    }
+    setBillingRecords(mapped.billing);
+    setPaymentQueue(mapped.payment);
   }, []);
 
   useEffect(() => {
@@ -287,18 +258,16 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
 
     (async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/billing/bills?page=1&page_size=100`);
-        if (!response.ok) return;
-
-        const payload = (await response.json()) as BillsResponse;
-        const rows = Array.isArray(payload.items) ? payload.items : [];
+        const rows = await fetchAllBillRows();
         const mapped = mapBackendRows(rows);
 
-        if (!active || !mapped.billing.length) return;
+        if (!active) return;
         setBillingRecords(mapped.billing);
         setPaymentQueue(mapped.payment);
       } catch {
-        // Keep mock data as fallback when API is unavailable.
+        if (!active) return;
+        setBillingRecords([]);
+        setPaymentQueue([]);
       } finally {
         if (active) {
           setIsLoading(false);

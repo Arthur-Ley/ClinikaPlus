@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, X, Pill, CheckCircle, Plus, Search, ChevronDown, CheckCircle2, Pencil, Layers, Package, Building2, RefreshCw } from 'lucide-react';
+import { AlertTriangle, X, Pill, CheckCircle, Plus, ChevronDown, CheckCircle2, Pencil, Layers, Package, Building2, RefreshCw } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { createRestockRequest, loadRestockRequests, RESTOCK_REQUESTS_CHANGED_EVENT } from './restockRequestsStore';
 import { emitGlobalSearchRefresh } from '../../context/globalSearchEvents';
 import Button from '../../components/ui/Button';
 import Pagination from '../../components/ui/Pagination';
+import SectionToolbar from '../../components/ui/SectionToolbar';
 
 type Severity = 'critical' | 'warning';
 type InventoryStatus = 'Adequate' | 'Low' | 'Critical';
@@ -24,6 +25,7 @@ interface InventoryAlert {
 interface InventoryRow {
   id: string;
   name: string;
+  categoryId: number | null;
   category: string;
   batch: string;
   stock: number;
@@ -83,6 +85,7 @@ type CreateMedicationResponse = {
 
 type MedicationApiItem = {
   medication_id: number;
+  category_id?: number | null;
   medication_name: string;
   category_name: string;
   batch_number: string | null;
@@ -109,6 +112,33 @@ type AlertApiItem = {
   severity: string;
 };
 
+type SaveMedicationPayload = {
+  medication_name: string;
+  category_id: number;
+  category_name: string;
+  form: string;
+  strength: string;
+  total_stock: number;
+  reorder_threshold: number;
+  supplier_id: number;
+  supplier_name: string;
+};
+
+type ToastState = { type: 'success' | 'error'; message: string } | null;
+type NewMedicationForm = {
+  name: string;
+  categoryId: string;
+  form: string;
+  strength: string;
+  unit: string;
+  quantity: string;
+  batch: string;
+  reorder: string;
+  expiry: string;
+  supplierId: string;
+};
+type AddMedicationFieldErrors = Partial<Record<keyof NewMedicationForm, string>>;
+
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const ALERTS_PAGE_SIZE = 6;
@@ -116,6 +146,22 @@ const DEFAULT_PAGE_SIZE = 5;
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const formOptions = ['Tablet', 'Capsule', 'Pen', 'Syrup', 'Inhaler', 'Vial'] as const;
 const unitOptions = ['pcs', 'pens', 'vials', 'bottles', 'inhalers', 'sachets'] as const;
+const MEDICATION_UPDATE_TIMEOUT_MS = 9000;
+const MEDICATION_UPDATE_RETRY_LIMIT = 2;
+const RETRYABLE_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
+const ADD_MEDICATION_TIMEOUT_MS = 12000;
+const EMPTY_NEW_MEDICATION: NewMedicationForm = {
+  name: '',
+  categoryId: '',
+  form: 'Tablet',
+  strength: '',
+  unit: 'pcs',
+  quantity: '',
+  batch: '',
+  reorder: '',
+  expiry: '',
+  supplierId: '',
+};
 
 const severityColors: Record<Severity, string> = {
   critical: 'border-red-300 bg-red-50',
@@ -173,6 +219,38 @@ function expirySortRank(expiry: string) {
   const parsed = new Date(expiry);
   if (Number.isNaN(parsed.getTime())) return Number.POSITIVE_INFINITY;
   return parsed.getTime();
+}
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function isRetryableMedicationUpdateStatus(status: number) {
+  return RETRYABLE_HTTP_STATUS.has(status);
+}
+
+function parseNonNegativeInteger(value: string) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
+function parsePositiveInteger(value: string) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
+async function parseApiErrorMessage(response: Response, fallbackMessage: string) {
+  try {
+    const json = (await response.json()) as { error?: string; message?: string };
+    const message = (json.error || json.message || '').trim();
+    return message || fallbackMessage;
+  } catch {
+    return fallbackMessage;
+  }
 }
 
 function Skeleton() {
@@ -262,15 +340,17 @@ export default function CurrentStocks() {
   const [isEditingMedication, setIsEditingMedication] = useState(false);
   const [isSavingMedicationEdit, setIsSavingMedicationEdit] = useState(false);
   const [medicationEditError, setMedicationEditError] = useState('');
-  const [medicationDraft, setMedicationDraft] = useState({ name: '', category: '', form: '', strength: '', stock: '', reorder: '', supplier: '' });
+  const [medicationDraft, setMedicationDraft] = useState({ name: '', categoryId: '', form: '', strength: '', stock: '', reorder: '', supplierId: '' });
+  const [medicationToast, setMedicationToast] = useState<ToastState>(null);
   const [isAddMedicationOpen, setIsAddMedicationOpen] = useState(false);
   const [isAddedSuccessOpen, setIsAddedSuccessOpen] = useState(false);
   const [isSubmittingMedication, setIsSubmittingMedication] = useState(false);
   const [formError, setFormError] = useState('');
+  const [addMedicationFieldErrors, setAddMedicationFieldErrors] = useState<AddMedicationFieldErrors>({});
   const [categoryDropdown, setCategoryDropdown] = useState<CategoryOption[]>([]);
   const [supplierDropdown, setSupplierDropdown] = useState<SupplierOption[]>([]);
   const [restockSupplierDropdown, setRestockSupplierDropdown] = useState<SupplierOption[]>([]);
-  const [newMedication, setNewMedication] = useState({ name: '', categoryId: '', form: 'Tablet', strength: '', unit: 'pcs', quantity: '', batch: '', reorder: '', expiry: '', supplierId: '' });
+  const [newMedication, setNewMedication] = useState<NewMedicationForm>(EMPTY_NEW_MEDICATION);
 
   const [restockTarget, setRestockTarget] = useState<InventoryAlert | null>(null);
   const [restockDetails, setRestockDetails] = useState({ supplier: '', quantity: '', neededBy: '', notes: '' });
@@ -291,6 +371,7 @@ export default function CurrentStocks() {
       const normalizedItems: InventoryRow[] = (stockRes.items || []).map((entry) => ({
         id: `I-${entry.medication_id.toString().padStart(3, '0')}`,
         name: entry.medication_name,
+        categoryId: entry.category_id ?? null,
         category: entry.category_name,
         batch: entry.batch_number || 'N/A',
         stock: entry.total_stock ?? 0,
@@ -340,34 +421,63 @@ export default function CurrentStocks() {
   }, [loadData, location.pathname]);
 
   useEffect(() => {
-    if (!isAddMedicationOpen) return;
-    let isMounted = true;
+    if (!medicationToast) return;
+    const timer = window.setTimeout(() => setMedicationToast(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [medicationToast]);
+
+  const buildInitialMedicationForm = useCallback((categories: CategoryOption[], suppliers: SupplierOption[]): NewMedicationForm => ({
+    ...EMPTY_NEW_MEDICATION,
+    categoryId: String(categories[0]?.category_id || ''),
+    supplierId: String(suppliers[0]?.supplier_id || ''),
+  }), []);
+
+  const resetAddMedicationState = useCallback((categories: CategoryOption[] = categoryDropdown, suppliers: SupplierOption[] = supplierDropdown) => {
     setFormError('');
+    setAddMedicationFieldErrors({});
+    setNewMedication(buildInitialMedicationForm(categories, suppliers));
+  }, [buildInitialMedicationForm, categoryDropdown, supplierDropdown]);
+
+  const closeAddMedicationModal = useCallback(() => {
+    if (isSubmittingMedication) return;
+    setIsAddMedicationOpen(false);
+    resetAddMedicationState();
+  }, [isSubmittingMedication, resetAddMedicationState]);
+
+  const openAddMedicationModal = useCallback(() => {
+    resetAddMedicationState();
+    setIsAddMedicationOpen(true);
+  }, [resetAddMedicationState]);
+
+  useEffect(() => {
+    if (!isAddMedicationOpen) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    setFormError('');
+    setAddMedicationFieldErrors({});
     async function loadDropdowns() {
       try {
         const [categoryRes, supplierRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/medications/categories`),
-          fetch(`${API_BASE_URL}/medications/suppliers`),
+          fetch(`${API_BASE_URL}/medications/categories`, { signal }),
+          fetch(`${API_BASE_URL}/medications/suppliers`, { signal }),
         ]);
         if (!categoryRes.ok || !supplierRes.ok) throw new Error('Failed to load category/supplier data.');
         const categoryJson = (await categoryRes.json()) as { categories: CategoryOption[] };
         const supplierJson = (await supplierRes.json()) as { suppliers: SupplierOption[] };
-        if (!isMounted) return;
-        setCategoryDropdown(categoryJson.categories || []);
-        setSupplierDropdown(supplierJson.suppliers || []);
-        setNewMedication(prev => ({
-          ...prev,
-          categoryId: prev.categoryId || String(categoryJson.categories?.[0]?.category_id || ''),
-          supplierId: prev.supplierId || String(supplierJson.suppliers?.[0]?.supplier_id || ''),
-        }));
+        if (signal.aborted) return;
+        const categories = categoryJson.categories || [];
+        const suppliers = supplierJson.suppliers || [];
+        setCategoryDropdown(categories);
+        setSupplierDropdown(suppliers);
+        resetAddMedicationState(categories, suppliers);
       } catch (error) {
-        if (!isMounted) return;
+        if (signal.aborted) return;
         setFormError(error instanceof Error ? error.message : 'Failed to load form options.');
       }
     }
     loadDropdowns();
-    return () => { isMounted = false; };
-  }, [isAddMedicationOpen]);
+    return () => controller.abort();
+  }, [isAddMedicationOpen, resetAddMedicationState]);
 
   useEffect(() => {
     if (!restockTarget) return;
@@ -399,6 +509,21 @@ export default function CurrentStocks() {
     loadRestockSuppliers();
     return () => { isMounted = false; };
   }, [restockTarget]);
+
+  useEffect(() => {
+    if (!selectedItem) return;
+    if (categoryDropdown.length && supplierDropdown.length) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        await loadMedicationEditOptions();
+      } catch (error) {
+        if (cancelled) return;
+        setMedicationEditError(error instanceof Error ? error.message : 'Failed to load edit options.');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedItem, categoryDropdown.length, supplierDropdown.length]);
 
   const filteredAlerts = useMemo(() => {
     return alerts.filter(a =>
@@ -598,76 +723,321 @@ export default function CurrentStocks() {
 
   async function handleAddMedicationSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (isSubmittingMedication) return;
+
+    const medicationName = newMedication.name.trim();
+    const form = newMedication.form.trim();
+    const strength = newMedication.strength.trim();
+    const unit = newMedication.unit.trim();
+    const batch = newMedication.batch.trim();
+    const expiry = newMedication.expiry.trim();
+    const categoryId = parsePositiveInteger(newMedication.categoryId);
+    const reorderThreshold = parsePositiveInteger(newMedication.reorder);
+    const quantity = parsePositiveInteger(newMedication.quantity);
+    const supplierId = parsePositiveInteger(newMedication.supplierId);
+    const errors: AddMedicationFieldErrors = {};
+
+    if (!medicationName) errors.name = 'Medication name is required.';
+    else if (medicationName.length > 120) errors.name = 'Medication name must be 120 characters or fewer.';
+    if (!form) errors.form = 'Form is required.';
+    else if (!formOptions.includes(form as typeof formOptions[number])) errors.form = 'Select a valid form.';
+    if (!strength) errors.strength = 'Strength is required.';
+    if (!unit) errors.unit = 'Unit is required.';
+    else if (!unitOptions.includes(unit as typeof unitOptions[number])) errors.unit = 'Select a valid unit.';
+    if (!categoryId) errors.categoryId = 'Select a valid category.';
+    else if (!categoryDropdown.some((entry) => entry.category_id === categoryId)) errors.categoryId = 'Selected category is no longer available.';
+    if (!reorderThreshold) errors.reorder = 'Reorder threshold must be a positive integer.';
+    if (!batch) errors.batch = 'Batch number is required.';
+    if (!quantity) errors.quantity = 'Quantity must be a positive integer.';
+    if (!expiry) errors.expiry = 'Expiry date is required.';
+    else if (Number.isNaN(new Date(expiry).getTime())) errors.expiry = 'Select a valid expiry date.';
+    if (!supplierId) errors.supplierId = 'Select a valid supplier.';
+    else if (!supplierDropdown.some((entry) => entry.supplier_id === supplierId)) errors.supplierId = 'Selected supplier is no longer available.';
+
+    setAddMedicationFieldErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      setFormError('Please fix the highlighted fields and try again.');
+      return;
+    }
+    if (!navigator.onLine) {
+      setFormError('You appear to be offline. Check your connection and try again.');
+      return;
+    }
+
     setIsSubmittingMedication(true);
     setFormError('');
+    setAddMedicationFieldErrors({});
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), ADD_MEDICATION_TIMEOUT_MS);
     try {
       const response = await fetch(`${API_BASE_URL}/medications`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
-          medication_name: newMedication.name,
-          category_id: Number(newMedication.categoryId),
-          form: newMedication.form,
-          strength: newMedication.strength,
-          unit: newMedication.unit,
-          reorder_threshold: Number(newMedication.reorder),
-          batch_number: newMedication.batch,
-          quantity: Number(newMedication.quantity),
-          expiry_date: newMedication.expiry,
-          supplier_id: Number(newMedication.supplierId),
+          medication_name: medicationName,
+          category_id: categoryId,
+          form,
+          strength,
+          unit,
+          reorder_threshold: reorderThreshold,
+          batch_number: batch,
+          quantity,
+          expiry_date: expiry,
+          supplier_id: supplierId,
         }),
       });
-      const json = (await response.json()) as CreateMedicationResponse | { error: string };
-      if (!response.ok) throw new Error('error' in json ? json.error : 'Failed to create medication.');
+
+      if (!response.ok) {
+        throw new Error(await parseApiErrorMessage(response, 'Failed to create medication.'));
+      }
+
+      try {
+        await response.json() as CreateMedicationResponse;
+      } catch {
+        // Some environments may return empty/invalid JSON even when the write succeeded.
+      }
+
       setIsAddMedicationOpen(false);
+      resetAddMedicationState();
       setIsAddedSuccessOpen(true);
-      setNewMedication({ name: '', categoryId: String(categoryDropdown[0]?.category_id || ''), form: 'Tablet', strength: '', unit: 'pcs', quantity: '', batch: '', reorder: '', expiry: '', supplierId: String(supplierDropdown[0]?.supplier_id || '') });
       await loadData();
       emitGlobalSearchRefresh();
       setCurrentPage(1);
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'Failed to create medication.');
+      const isAbort = error instanceof DOMException && error.name === 'AbortError';
+      const message = isAbort
+        ? 'Add medication request timed out. Please try again.'
+        : error instanceof Error
+          ? error.message
+          : 'Failed to create medication.';
+      setFormError(message);
     } finally {
+      window.clearTimeout(timeout);
       setIsSubmittingMedication(false);
     }
+  }
+
+  async function loadMedicationEditOptions() {
+    const [categoryRes, supplierRes] = await Promise.all([
+      fetch(`${API_BASE_URL}/medications/categories`),
+      fetch(`${API_BASE_URL}/medications/suppliers`),
+    ]);
+
+    if (!categoryRes.ok || !supplierRes.ok) {
+      throw new Error('Failed to load medication edit options.');
+    }
+
+    const categoryJson = (await categoryRes.json()) as { categories?: CategoryOption[] };
+    const supplierJson = (await supplierRes.json()) as { suppliers?: SupplierOption[] };
+    const categories = categoryJson.categories || [];
+    const suppliers = supplierJson.suppliers || [];
+
+    setCategoryDropdown(categories);
+    setSupplierDropdown(suppliers);
+    return { categories, suppliers };
+  }
+
+function buildMedicationUpdatePayload(
+  categories: CategoryOption[],
+  suppliers: SupplierOption[],
+): { payload: SaveMedicationPayload | null; message: string } {
+    const medicationName = medicationDraft.name.trim();
+    const form = medicationDraft.form.trim();
+    const strength = medicationDraft.strength.trim();
+    const stock = parseNonNegativeInteger(medicationDraft.stock);
+    const reorder = parseNonNegativeInteger(medicationDraft.reorder);
+    const categoryId = Number(medicationDraft.categoryId);
+    const supplierId = Number(medicationDraft.supplierId);
+
+    if (!medicationName) {
+      return { payload: null, message: 'Medication name is required.' };
+    }
+    if (medicationName.length > 120) {
+      return { payload: null, message: 'Medication name must be 120 characters or fewer.' };
+    }
+    if (!form) {
+      return { payload: null, message: 'Medication form is required.' };
+    }
+    if (!Number.isInteger(stock) || stock < 0) {
+      return { payload: null, message: 'Stock must be an integer greater than or equal to 0.' };
+    }
+    if (!Number.isInteger(reorder) || reorder < 0) {
+      return { payload: null, message: 'Threshold must be an integer greater than or equal to 0.' };
+    }
+    if (!Number.isInteger(categoryId) || categoryId <= 0) {
+      return { payload: null, message: 'Select a valid category.' };
+    }
+    if (!Number.isInteger(supplierId) || supplierId <= 0) {
+      return { payload: null, message: 'Select a valid supplier.' };
+    }
+
+    const category = categories.find((entry) => entry.category_id === categoryId);
+    if (!category) {
+      return { payload: null, message: 'Selected category is no longer available. Please refresh options.' };
+    }
+    const supplier = suppliers.find((entry) => entry.supplier_id === supplierId);
+    if (!supplier) {
+      return { payload: null, message: 'Selected supplier is no longer available. Please refresh options.' };
+    }
+
+    return {
+      payload: {
+        medication_name: medicationName,
+        category_id: categoryId,
+        category_name: category.category_name,
+        form,
+        strength,
+        total_stock: stock,
+        reorder_threshold: reorder,
+        supplier_id: supplierId,
+        supplier_name: supplier.supplier_name,
+      },
+      message: '',
+    };
+  }
+
+  async function patchMedicationWithRetry(medicationId: number, payload: SaveMedicationPayload) {
+    let lastError = new Error('Failed to update medication.');
+
+    for (let attempt = 0; attempt <= MEDICATION_UPDATE_RETRY_LIMIT; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), MEDICATION_UPDATE_TIMEOUT_MS);
+
+      try {
+        if (!navigator.onLine) {
+          throw new Error('You appear to be offline. Check your connection and try again.');
+        }
+
+        const response = await fetch(`${API_BASE_URL}/medications/${medicationId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        if (response.ok) {
+          return;
+        }
+
+        const message = await parseApiErrorMessage(response, 'Failed to update medication.');
+        const isTransient = isRetryableMedicationUpdateStatus(response.status);
+        lastError = new Error(message);
+
+        if (!isTransient || attempt >= MEDICATION_UPDATE_RETRY_LIMIT) {
+          throw lastError;
+        }
+
+        await wait(350 * (attempt + 1));
+      } catch (error) {
+        const isAbort = error instanceof DOMException && error.name === 'AbortError';
+        const isNetworkError = error instanceof TypeError || isAbort;
+        lastError = isAbort
+          ? new Error('Medication update timed out. Please try again.')
+          : error instanceof Error
+            ? error
+            : new Error('Failed to update medication.');
+
+        if (!isNetworkError || attempt >= MEDICATION_UPDATE_RETRY_LIMIT) {
+          throw lastError;
+        }
+
+        await wait(350 * (attempt + 1));
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    }
+
+    throw lastError;
   }
 
   function openMedicationDetails(item: InventoryRow) {
     setSelectedItem(item);
     setIsEditingMedication(false);
-    setMedicationDraft({ name: item.name, category: item.category, form: item.form || '', strength: item.strength || '', stock: String(item.stock), reorder: String(item.reorder), supplier: item.supplier });
+    setMedicationEditError('');
+    setMedicationDraft({
+      name: item.name,
+      categoryId: item.categoryId ? String(item.categoryId) : '',
+      form: item.form || '',
+      strength: item.strength || '',
+      stock: String(item.stock),
+      reorder: String(item.reorder),
+      supplierId: item.supplierId ? String(item.supplierId) : '',
+    });
   }
 
-  function startEditingMedication() {
+  async function startEditingMedication() {
     if (!selectedItem) return;
     setMedicationEditError('');
-    setMedicationDraft({ name: selectedItem.name, category: selectedItem.category, form: selectedItem.form || '', strength: selectedItem.strength || '', stock: String(selectedItem.stock), reorder: String(selectedItem.reorder), supplier: selectedItem.supplier });
+    try {
+      const loaded = categoryDropdown.length && supplierDropdown.length ? null : await loadMedicationEditOptions();
+      const categories = categoryDropdown.length ? categoryDropdown : (loaded?.categories || []);
+      const suppliers = supplierDropdown.length ? supplierDropdown : (loaded?.suppliers || []);
+
+      const fallbackCategoryId = selectedItem.categoryId || categories.find((entry) => entry.category_name === selectedItem.category)?.category_id || 0;
+      const fallbackSupplierId = selectedItem.supplierId || suppliers.find((entry) => entry.supplier_name === selectedItem.supplier)?.supplier_id || 0;
+
+      setMedicationDraft({
+        name: selectedItem.name,
+        categoryId: fallbackCategoryId ? String(fallbackCategoryId) : '',
+        form: selectedItem.form || '',
+        strength: selectedItem.strength || '',
+        stock: String(selectedItem.stock),
+        reorder: String(selectedItem.reorder),
+        supplierId: fallbackSupplierId ? String(fallbackSupplierId) : '',
+      });
+    } catch (error) {
+      setMedicationEditError(error instanceof Error ? error.message : 'Failed to load edit options.');
+      return;
+    }
     setIsEditingMedication(true);
   }
 
   async function saveMedicationDraft() {
     if (!selectedItem) return;
-    const nextStock = Number(medicationDraft.stock);
-    const nextReorder = Number(medicationDraft.reorder);
-    if (!medicationDraft.name.trim() || !medicationDraft.category.trim() || !medicationDraft.supplier.trim()) return;
-    if (!Number.isFinite(nextStock) || !Number.isFinite(nextReorder) || nextStock < 0 || nextReorder < 0) return;
+
+    let categories = categoryDropdown;
+    let suppliers = supplierDropdown;
+    if (!categories.length || !suppliers.length) {
+      try {
+        const loaded = await loadMedicationEditOptions();
+        categories = loaded.categories;
+        suppliers = loaded.suppliers;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to load edit options.';
+        setMedicationEditError(message);
+        setMedicationToast({ type: 'error', message });
+        return;
+      }
+    }
+
+    const validation = buildMedicationUpdatePayload(categories, suppliers);
+    if (!validation.payload) {
+      setMedicationEditError(validation.message);
+      setMedicationToast({ type: 'error', message: validation.message });
+      return;
+    }
+
     const medicationId = Number(selectedItem.id.replace('I-', ''));
-    if (!Number.isInteger(medicationId) || medicationId <= 0) return;
+    if (!Number.isInteger(medicationId) || medicationId <= 0) {
+      const message = 'Invalid medication identifier. Please reopen the medication details.';
+      setMedicationEditError(message);
+      setMedicationToast({ type: 'error', message });
+      return;
+    }
+
     setIsSavingMedicationEdit(true);
     setMedicationEditError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/medications/${medicationId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ medication_name: medicationDraft.name.trim(), category_name: medicationDraft.category.trim(), form: medicationDraft.form.trim(), strength: medicationDraft.strength.trim(), total_stock: nextStock, reorder_threshold: nextReorder, supplier_name: medicationDraft.supplier.trim() }),
-      });
-      const json = (await response.json().catch(() => null)) as { error?: string } | null;
-      if (!response.ok) throw new Error(json?.error || 'Failed to update medication.');
+      await patchMedicationWithRetry(medicationId, validation.payload);
       await loadData();
       emitGlobalSearchRefresh();
       setIsEditingMedication(false);
+      setMedicationToast({ type: 'success', message: 'Medication updated successfully.' });
     } catch (error) {
-      setMedicationEditError(error instanceof Error ? error.message : 'Failed to update medication.');
+      const message = error instanceof Error ? error.message : 'Failed to update medication.';
+      setMedicationEditError(message);
+      setMedicationToast({ type: 'error', message });
     } finally {
       setIsSavingMedicationEdit(false);
     }
@@ -678,6 +1048,13 @@ export default function CurrentStocks() {
 
   return (
     <div className="space-y-5">
+      {medicationToast && (
+        <div className="fixed right-4 top-4 z-[10000]">
+          <div className={`rounded-xl px-4 py-3 text-sm font-semibold shadow-lg ${medicationToast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
+            {medicationToast.message}
+          </div>
+        </div>
+      )}
       {showInitialSkeleton && <Skeleton />}
 
       {!showInitialSkeleton && (
@@ -685,41 +1062,34 @@ export default function CurrentStocks() {
 
           {/* ── ALERTS ── */}
           <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-            <div className="flex flex-col gap-3 mb-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-bold text-gray-800">Priority Alerts ({filteredAlerts.length})</h2>
-                {/* Fix 4: added type="button" */}
-                <button type="button" className="px-3 py-1.5 border border-gray-300 rounded-lg hover:bg-gray-200 text-sm font-medium" onClick={loadData}>Refresh</button>
-              </div>
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div className="relative w-full lg:w-72">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
-                  <input
-                    className="w-full h-10 pl-9 pr-4 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                    placeholder="Search alerts..."
-                    value={alertSearchTerm}
-                    onChange={e => setAlertSearchTerm(e.target.value)}
-                  />
-                </div>
-                <div className="flex gap-2">
-                <div className="relative">
-                  <select className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" value={severityFilter} onChange={e => setSeverityFilter(e.target.value as Severity | '')}>
-                    <option value="">All Severity</option>
-                    <option value="critical">Critical</option>
-                    <option value="warning">Warning</option>
-                  </select>
-                  <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
-                <div className="relative">
-                  <select className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}>
-                    <option value="">All Categories</option>
-                    {alertCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
-                  </select>
-                  <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
-                </div>
-              </div>
-            </div>
+            <SectionToolbar
+              className="mb-4"
+              icon={AlertTriangle}
+              title={`Priority Alerts (${filteredAlerts.length})`}
+              searchValue={alertSearchTerm}
+              onSearchChange={setAlertSearchTerm}
+              searchPlaceholder="Search alerts..."
+              rightControls={(
+                <>
+                  <button type="button" className="h-10 rounded-lg border border-gray-300 px-3 text-sm font-medium hover:bg-gray-200" onClick={loadData}>Refresh</button>
+                  <div className="relative">
+                    <select className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" value={severityFilter} onChange={e => setSeverityFilter(e.target.value as Severity | '')}>
+                      <option value="">All Severity</option>
+                      <option value="critical">Critical</option>
+                      <option value="warning">Warning</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                  <div className="relative">
+                    <select className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}>
+                      <option value="">All Categories</option>
+                      {alertCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </>
+              )}
+            />
             <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 min-h-[200px] content-start">
               {visibleAlerts.map(alert => (
                 <div
@@ -804,52 +1174,50 @@ export default function CurrentStocks() {
 
           {/* ── STOCKS TABLE ── */}
           <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-            <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between mb-5">
-              <div className="relative w-full md:w-72">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
-                <input
-                  type="text"
-                  placeholder="Search Medication"
-                  className="w-full h-10 pl-9 pr-4 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                  value={searchTerm}
-                  onChange={e => setSearchTerm(e.target.value)}
-                />
-              </div>
-              <div className="flex gap-2 flex-wrap">
-                <Button
-                  className="inline-flex h-10 items-center gap-2 whitespace-nowrap bg-green-600 pl-3 pr-4 py-1.5 text-sm text-white hover:bg-green-700"
-                  onClick={() => { setFormError(''); setIsAddMedicationOpen(true); }}
-                >
-                  <Plus size={16} className="shrink-0" />
-                  Add Medication
-                </Button>
-                <div className="relative">
-                  <select className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400" value={filterCategory} onChange={e => setFilterCategory(e.target.value)}>
-                    <option>All Categories</option>
-                    {categoryOptions.map(cat => <option key={cat}>{cat}</option>)}
-                  </select>
-                  <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
-                <div className="relative">
-                  <select className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
-                    <option>All Status</option>
-                    <option>Adequate</option>
-                    <option>Low</option>
-                    <option>Critical</option>
-                  </select>
-                  <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
-                <div className="relative">
-                  <select className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400" value={filterMonth} onChange={e => setFilterMonth(e.target.value)}>
-                    <option>This Year</option>
-                    <option>This Month</option>
-                    <option>Last Month</option>
-                    <option>Last 3 Months</option>
-                  </select>
-                  <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-                </div>
-              </div>
-            </div>
+            <SectionToolbar
+              className="mb-5"
+              icon={Pill}
+              title="Medication Stocks"
+              searchValue={searchTerm}
+              onSearchChange={setSearchTerm}
+              searchPlaceholder="Search Medication"
+              rightControls={(
+                <>
+                  <Button
+                    className="inline-flex h-10 items-center gap-2 whitespace-nowrap bg-green-600 pl-3 pr-4 py-1.5 text-sm text-white hover:bg-green-700"
+                    onClick={openAddMedicationModal}
+                  >
+                    <Plus size={16} className="shrink-0" />
+                    Add Medication
+                  </Button>
+                  <div className="relative">
+                    <select className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400" value={filterCategory} onChange={e => setFilterCategory(e.target.value)}>
+                      <option>All Categories</option>
+                      {categoryOptions.map(cat => <option key={cat}>{cat}</option>)}
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                  <div className="relative">
+                    <select className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400" value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
+                      <option>All Status</option>
+                      <option>Adequate</option>
+                      <option>Low</option>
+                      <option>Critical</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                  <div className="relative">
+                    <select className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400" value={filterMonth} onChange={e => setFilterMonth(e.target.value)}>
+                      <option>This Year</option>
+                      <option>This Month</option>
+                      <option>Last Month</option>
+                      <option>Last 3 Months</option>
+                    </select>
+                    <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  </div>
+                </>
+              )}
+            />
             <div className="overflow-x-auto rounded-xl">
               <table className="w-full table-fixed text-xs md:text-sm">
                 <thead className="bg-gray-200/90 text-gray-700">
@@ -918,17 +1286,24 @@ export default function CurrentStocks() {
                 <h2 className="text-lg font-bold text-gray-800">Medication Details</h2>
               </div>
               <div className="flex items-center gap-2">
-                <button type="button" onClick={startEditingMedication} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 transition-colors"><Pencil size={14} /></button>
+                <button type="button" onClick={() => { void startEditingMedication(); }} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 transition-colors"><Pencil size={14} /></button>
                 <button type="button" onClick={() => { if (isSavingMedicationEdit) return; setSelectedItem(null); setIsEditingMedication(false); }} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 transition-colors"><X size={14} /></button>
               </div>
             </div>
+            {isSavingMedicationEdit && (
+              <div className="px-5 pt-4">
+                <div className="rounded-lg bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700">
+                  Saving medication changes...
+                </div>
+              </div>
+            )}
             <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="rounded-xl bg-white border border-gray-200 p-4">
                 <div className="flex items-center gap-2 mb-3"><Pill size={15} className="text-gray-400" /><span className="text-sm font-bold text-gray-700">Medication</span></div>
                 <div className="space-y-2.5">
                   <div><p className="text-xs text-gray-400 mb-0.5">Medication Name</p>{isEditingMedication ? <input className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.name} onChange={e => setMedicationDraft(p => ({ ...p, name: e.target.value }))} /> : <p className="text-sm font-bold text-gray-800">{selectedItem.name}</p>}</div>
-                  <div><p className="text-xs text-gray-400 mb-0.5">Category</p>{isEditingMedication ? <input className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.category} onChange={e => setMedicationDraft(p => ({ ...p, category: e.target.value }))} /> : <p className="text-sm font-bold text-gray-800">{selectedItem.category}</p>}</div>
-                  <div><p className="text-xs text-gray-400 mb-0.5">Form</p>{isEditingMedication ? <input className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.form} onChange={e => setMedicationDraft(p => ({ ...p, form: e.target.value }))} /> : <p className="text-sm font-bold text-gray-800">{selectedItem.form || 'N/A'}</p>}</div>
+                  <div><p className="text-xs text-gray-400 mb-0.5">Category</p>{isEditingMedication ? <select className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.categoryId} onChange={e => setMedicationDraft(p => ({ ...p, categoryId: e.target.value }))}><option value="">Select category</option>{categoryDropdown.map(c => <option key={c.category_id} value={String(c.category_id)}>{c.category_name}</option>)}</select> : <p className="text-sm font-bold text-gray-800">{selectedItem.category}</p>}</div>
+                  <div><p className="text-xs text-gray-400 mb-0.5">Form</p>{isEditingMedication ? <select className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.form} onChange={e => setMedicationDraft(p => ({ ...p, form: e.target.value }))}><option value="">Select form</option>{formOptions.map(option => <option key={option} value={option}>{option}</option>)}</select> : <p className="text-sm font-bold text-gray-800">{selectedItem.form || 'N/A'}</p>}</div>
                   <div><p className="text-xs text-gray-400 mb-0.5">Strength</p>{isEditingMedication ? <input className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.strength} onChange={e => setMedicationDraft(p => ({ ...p, strength: e.target.value }))} /> : <p className="text-sm font-bold text-gray-800">{selectedItem.strength || 'N/A'}</p>}</div>
                   <div><p className="text-xs text-gray-400 mb-0.5">Unit</p><p className="text-sm font-bold text-gray-800">{selectedItem.unit}</p></div>
                 </div>
@@ -952,7 +1327,7 @@ export default function CurrentStocks() {
                 </div>
                 <div className="rounded-xl bg-white border border-gray-200 p-4">
                   <div className="flex items-center gap-2 mb-3"><Building2 size={15} className="text-gray-400" /><span className="text-sm font-bold text-gray-700">Supplier</span></div>
-                  <div><p className="text-xs text-gray-400 mb-0.5">Supplier Name</p>{isEditingMedication ? <input className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.supplier} onChange={e => setMedicationDraft(p => ({ ...p, supplier: e.target.value }))} /> : <p className="text-sm font-bold text-gray-800">{selectedItem.supplier}</p>}</div>
+                  <div><p className="text-xs text-gray-400 mb-0.5">Supplier Name</p>{isEditingMedication ? <select className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.supplierId} onChange={e => setMedicationDraft(p => ({ ...p, supplierId: e.target.value }))}><option value="">Select supplier</option>{supplierDropdown.map(s => <option key={s.supplier_id} value={String(s.supplier_id)}>{s.supplier_name}</option>)}</select> : <p className="text-sm font-bold text-gray-800">{selectedItem.supplier}</p>}</div>
                 </div>
               </div>
             </div>
@@ -972,24 +1347,32 @@ export default function CurrentStocks() {
 
       {/* ── Add Medication Modal ── */}
       {isAddMedicationOpen && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setIsAddMedicationOpen(false)}>
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={closeAddMedicationModal}>
           <form className="w-full max-w-[460px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={e => e.stopPropagation()} onSubmit={handleAddMedicationSubmit}>
             <div className="mb-4 flex items-center justify-between border-b border-gray-300 pb-3">
               <h2 className="flex items-center gap-2 text-xl font-semibold text-gray-700"><Pill size={16} />Add Medication</h2>
-              <button type="button" onClick={() => setIsAddMedicationOpen(false)} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700"><X size={14} /></button>
+              <button type="button" onClick={closeAddMedicationModal} disabled={isSubmittingMedication} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700 disabled:opacity-50"><X size={14} /></button>
             </div>
+            {isSubmittingMedication && <p className="mb-3 rounded-lg bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700">Submitting medication...</p>}
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               <label className="text-sm text-gray-700">Medication Name<input required className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.name} onChange={e => setNewMedication(p => ({ ...p, name: e.target.value }))} /></label>
               <label className="text-sm text-gray-700">Category<select required className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.categoryId} onChange={e => setNewMedication(p => ({ ...p, categoryId: e.target.value }))}><option value="">Select category</option>{categoryDropdown.map(c => <option key={c.category_id} value={String(c.category_id)}>{c.category_name}</option>)}</select></label>
               <label className="text-sm text-gray-700">Form<select required className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.form} onChange={e => setNewMedication(p => ({ ...p, form: e.target.value }))}>{formOptions.map(o => <option key={o}>{o}</option>)}</select></label>
               <label className="text-sm text-gray-700">Strength<input required placeholder="e.g., 500mg" className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.strength} onChange={e => setNewMedication(p => ({ ...p, strength: e.target.value }))} /></label>
               <label className="text-sm text-gray-700">Unit<select required className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.unit} onChange={e => setNewMedication(p => ({ ...p, unit: e.target.value }))}>{unitOptions.map(o => <option key={o}>{o}</option>)}</select></label>
-              <label className="text-sm text-gray-700">Reorder Threshold<input type="number" required min={0} className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.reorder} onChange={e => setNewMedication(p => ({ ...p, reorder: e.target.value }))} /></label>
+              <label className="text-sm text-gray-700">Reorder Threshold<input type="number" required min={1} className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.reorder} onChange={e => setNewMedication(p => ({ ...p, reorder: e.target.value }))} /></label>
               <label className="text-sm text-gray-700">Batch Number<input required className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.batch} onChange={e => setNewMedication(p => ({ ...p, batch: e.target.value }))} /></label>
               <label className="text-sm text-gray-700">Quantity<input type="number" required min={1} className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.quantity} onChange={e => setNewMedication(p => ({ ...p, quantity: e.target.value }))} /></label>
               <label className="text-sm text-gray-700">Expiry Date<input type="date" required className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.expiry} onChange={e => setNewMedication(p => ({ ...p, expiry: e.target.value }))} /></label>
               <label className="text-sm text-gray-700 md:col-span-2">Supplier<select required className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.supplierId} onChange={e => setNewMedication(p => ({ ...p, supplierId: e.target.value }))}><option value="">Select supplier</option>{supplierDropdown.map(s => <option key={s.supplier_id} value={String(s.supplier_id)}>{s.supplier_name}</option>)}</select></label>
             </div>
+            {Object.values(addMedicationFieldErrors).length > 0 && (
+              <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+                {Object.values(addMedicationFieldErrors).map((message, index) => (
+                  <p key={`${index}-${message}`} className="text-xs text-red-600">{message}</p>
+                ))}
+              </div>
+            )}
             {formError && <p className="mt-3 text-sm text-red-600">{formError}</p>}
             <button type="submit" className="mt-5 h-9 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white disabled:opacity-60" disabled={isSubmittingMedication}>{isSubmittingMedication ? 'Saving...' : 'Add Medication'}</button>
           </form>

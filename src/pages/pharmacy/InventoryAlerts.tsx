@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, ChevronDown, X, Pencil, Pill, Search } from 'lucide-react';
+import { AlertTriangle, ChevronDown, X, Pencil, Pill } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import Pagination from '../../components/ui/Pagination.tsx';
+import SectionToolbar from '../../components/ui/SectionToolbar.tsx';
 import { createRestockRequest, loadRestockRequests, RESTOCK_REQUESTS_CHANGED_EVENT } from './restockRequestsStore.ts';
 
 type Severity = 'critical' | 'warning';
@@ -533,47 +534,44 @@ export default function InventoryAlerts() {
         </div>
 
         <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-          <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="w-full md:w-72 relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
-              <input
-                type="text"
-                placeholder="Search Medication"
-                className="w-full h-10 pl-9 pr-4 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-            </div>
+          <SectionToolbar
+            className="mb-5"
+            icon={AlertTriangle}
+            title="Inventory Alerts"
+            searchValue={searchTerm}
+            onSearchChange={setSearchTerm}
+            searchPlaceholder="Search Medication"
+            rightControls={(
+              <>
+                <div className="relative">
+                  <select
+                    className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    value={severityFilter}
+                    onChange={(e) => setSeverityFilter(e.target.value)}
+                  >
+                    <option value="">Severity</option>
+                    <option value="critical">Critical</option>
+                    <option value="warning">Warning</option>
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
 
-            <div className="flex flex-wrap items-center justify-end gap-2">
-            <div className="relative">
-              <select
-                className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                value={severityFilter}
-                onChange={(e) => setSeverityFilter(e.target.value)}
-              >
-                <option value="">Severity</option>
-                <option value="critical">Critical</option>
-                <option value="warning">Warning</option>
-              </select>
-              <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-            </div>
-
-            <div className="relative">
-              <select
-                className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-                value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value)}
-              >
-                <option value="">Category</option>
-                {alertCategoryOptions.map((category) => (
-                  <option key={category} value={category}>{category}</option>
-                ))}
-              </select>
-              <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-            </div>
-            </div>
-          </div>
+                <div className="relative">
+                  <select
+                    className="appearance-none h-10 pl-3 pr-8 border border-gray-300 rounded-lg bg-gray-100 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                  >
+                    <option value="">Category</option>
+                    {alertCategoryOptions.map((category) => (
+                      <option key={category} value={category}>{category}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                </div>
+              </>
+            )}
+          />
 
           <div className="grid min-h-[340px] content-start grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             {isLoading && Array.from({ length: 6 }).map((_, index) => (

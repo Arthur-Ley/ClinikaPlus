@@ -36,7 +36,7 @@ async function listMedicationStocks() {
       strength,
       unit,
       reorder_threshold,
-      tbl_categories(category_name),
+      tbl_categories(category_id, category_name),
       tbl_inventory(total_stock, status, last_updated)
     `)
     .order("medication_id", { ascending: false });
@@ -75,6 +75,7 @@ async function listMedicationStocks() {
     return {
       medication_id: medication.medication_id,
       medication_name: medication.medication_name,
+      category_id: medication.tbl_categories?.category_id || null,
       category_name: medication.tbl_categories?.category_name || "Uncategorized",
       form: medication.form,
       strength: medication.strength,
@@ -163,31 +164,59 @@ async function createMedicationFlow(input) {
 async function updateMedicationFlow(medicationId, input) {
   const now = new Date().toISOString();
 
-  const { data: categoryRow, error: categoryError } = await supabase
-    .from("tbl_categories")
-    .select("category_id")
-    .eq("category_name", input.categoryName)
-    .maybeSingle();
-  if (categoryError) throw categoryError;
-  if (!categoryRow?.category_id) {
-    throw new Error("Category not found.");
+  let resolvedCategoryId = input.categoryId ?? null;
+  if (resolvedCategoryId) {
+    const { data: categoryById, error: categoryByIdError } = await supabase
+      .from("tbl_categories")
+      .select("category_id")
+      .eq("category_id", resolvedCategoryId)
+      .maybeSingle();
+    if (categoryByIdError) throw categoryByIdError;
+    if (!categoryById?.category_id) {
+      throw new Error("Category not found.");
+    }
+  } else {
+    const { data: categoryRow, error: categoryError } = await supabase
+      .from("tbl_categories")
+      .select("category_id")
+      .ilike("category_name", input.categoryName)
+      .maybeSingle();
+    if (categoryError) throw categoryError;
+    if (!categoryRow?.category_id) {
+      throw new Error("Category not found.");
+    }
+    resolvedCategoryId = categoryRow.category_id;
   }
 
-  const { data: supplierRow, error: supplierError } = await supabase
-    .from("tbl_suppliers")
-    .select("supplier_id")
-    .eq("supplier_name", input.supplierName)
-    .maybeSingle();
-  if (supplierError) throw supplierError;
-  if (!supplierRow?.supplier_id) {
-    throw new Error("Supplier not found.");
+  let resolvedSupplierId = input.supplierId ?? null;
+  if (resolvedSupplierId) {
+    const { data: supplierById, error: supplierByIdError } = await supabase
+      .from("tbl_suppliers")
+      .select("supplier_id")
+      .eq("supplier_id", resolvedSupplierId)
+      .maybeSingle();
+    if (supplierByIdError) throw supplierByIdError;
+    if (!supplierById?.supplier_id) {
+      throw new Error("Supplier not found.");
+    }
+  } else {
+    const { data: supplierRow, error: supplierError } = await supabase
+      .from("tbl_suppliers")
+      .select("supplier_id")
+      .ilike("supplier_name", input.supplierName)
+      .maybeSingle();
+    if (supplierError) throw supplierError;
+    if (!supplierRow?.supplier_id) {
+      throw new Error("Supplier not found.");
+    }
+    resolvedSupplierId = supplierRow.supplier_id;
   }
 
   const { error: medicationUpdateError } = await supabase
     .from("tbl_medications")
     .update({
       medication_name: input.medicationName,
-      category_id: categoryRow.category_id,
+      category_id: resolvedCategoryId,
       form: input.form,
       strength: input.strength,
       reorder_threshold: input.reorderThreshold,
@@ -240,7 +269,7 @@ async function updateMedicationFlow(medicationId, input) {
     const { error: batchUpdateError } = await supabase
       .from("tbl_batches")
       .update({
-        supplier_id: supplierRow.supplier_id,
+        supplier_id: resolvedSupplierId,
       })
       .eq("batch_id", latestBatch.batch_id);
     if (batchUpdateError) throw batchUpdateError;
