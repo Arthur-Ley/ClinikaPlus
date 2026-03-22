@@ -434,7 +434,6 @@ async function createBillFlow(payload) {
   const patientId = toPositiveInt(payload?.patient_id);
   const discountAmount = toNonNegativeNumber(payload?.discount_amount) ?? 0;
   const taxAmount = toNonNegativeNumber(payload?.tax_amount) ?? 0;
-  const insuranceCoverage = toNonNegativeNumber(payload?.insurance_coverage) ?? 0;
 
   if (!patientId) {
     throw badRequest("'patient_id' must be a positive integer.");
@@ -446,7 +445,7 @@ async function createBillFlow(payload) {
   }
 
   const normalizedItems = normalizeBillItems(payload?.items);
-  const totals = computeBillTotals(normalizedItems, discountAmount, insuranceCoverage, taxAmount);
+  const totals = computeBillTotals(normalizedItems, discountAmount, 0, taxAmount);
 
   let bill = null;
   let itemsInserted = false;
@@ -457,7 +456,6 @@ async function createBillFlow(payload) {
       patient_id: patientId,
       total_amount: totals.total_amount,
       discount_amount: discountAmount,
-      insurance_coverage: insuranceCoverage,
       net_amount: totals.net_amount,
       status: "Pending",
     });
@@ -500,7 +498,7 @@ async function createBillFlow(payload) {
 async function refreshBillTotals(billId) {
   const bill = await ensureBillExists(billId);
   const items = await getBillItemsByBillId(billId);
-  const totals = computeBillTotals(items, bill.discount_amount, bill.insurance_coverage);
+  const totals = computeBillTotals(items, bill.discount_amount, 0);
 
   const payments = await getPaymentsByBillId(billId);
   const totalPaid = roundCurrency(payments.reduce((sum, payment) => sum + Number(payment.amount_paid || 0), 0));
