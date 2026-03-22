@@ -4,7 +4,7 @@ import {
   Search, ChevronDown, PlusCircle,
   CheckCircle2, X, ReceiptText, Stethoscope, CircleGauge,
   CalendarDays, Info, CircleDollarSign, Coins, XCircle,
-  CreditCard, Hash, MinusCircle, User, Plus, Minus, Wallet, Printer, AlertTriangle,
+  CreditCard, Hash, MinusCircle, User, Plus, Minus, Wallet, Printer, AlertTriangle, Check,
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import Pagination from '../../components/ui/Pagination';
@@ -105,8 +105,8 @@ const existingBillServices: ServiceItem[] = [
 ];
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
-const G_CASH_LOGO_URL = 'https://logo.clearbit.com/gcash.com';
-const MAYA_LOGO_URL = 'https://logo.clearbit.com/maya.ph';
+const G_CASH_LOGO_URL = '/payment-logos/gcash.svg';
+const MAYA_LOGO_URL = '/payment-logos/maya.svg';
 const VAT_RATE = 0.12;
 const SENIOR_DISCOUNT_RATE = 0.2;
 const MIN_TABLE_ROWS = 1;
@@ -127,6 +127,22 @@ function toAutoIds(status: BillStatus, records: BillRow[]) { const code = status
 function toPeso(value: number) { return `\u20b1${value.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
 function toDateTimeDisplay(value: string) { const p = new Date(value); if (Number.isNaN(p.getTime())) return value; return p.toLocaleString('en-US', { month: 'short', day: '2-digit', year: 'numeric', hour: 'numeric', minute: '2-digit' }); }
 function toSortRank(status: BillStatus) { if (status === 'Pending') return 0; if (status === 'Paid') return 1; return 2; }
+function toFallbackPaymentDetails(bill: BillRow): PaymentBillDetailsResponse {
+  const amount = toAmount(bill.total);
+  return {
+    bill: {
+      bill_id: bill.backendBillId ?? 0,
+      bill_code: bill.id,
+      patient_id: bill.patientId ?? 0,
+      total_amount: amount,
+      net_amount: amount,
+      status: bill.status,
+      created_at: bill.date,
+    },
+    total_paid: 0,
+    remaining_balance: amount,
+  };
+}
 function buildDefaultBillMeta(bill: BillRow): BillUiMeta {
   const createdAt = `${bill.date}T08:30:00`;
   return {
@@ -156,6 +172,45 @@ const EMPTY_BILL_ROW: BillRow = { id: '', patient: '', date: '', total: 'P0', st
 function StatusPill({ status }: { status: string }) {
   const styles = status === 'Paid' ? 'bg-green-100 text-green-700' : status === 'Cancelled' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700';
   return <span className={`inline-flex min-w-[74px] justify-center rounded-full px-2 py-0.5 text-xs font-semibold ${styles}`}>{status}</span>;
+}
+
+const paymentProgressSteps = [
+  'Bill Details & Payment Method',
+  'Payment',
+  'Review Payment',
+] as const;
+
+function PaymentProgressTracker({ currentStep }: { currentStep: 1 | 2 | 3 }) {
+  return (
+    <div className="w-full border-b border-gray-200 bg-gray-50 px-6 py-4">
+      <div className="flex items-start">
+        {paymentProgressSteps.map((label, index) => {
+          const step = index + 1;
+          const isCompleted = currentStep > step;
+          const isActive = currentStep === step;
+
+          return (
+            <div key={label} className="flex flex-1 items-start">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-col items-center text-center">
+                  <span className={`inline-flex h-8 w-8 items-center justify-center rounded-full border text-xs font-bold ${isCompleted || isActive ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-300 bg-white text-transparent'}`}>
+                    {isCompleted ? <Check size={14} strokeWidth={3} /> : isActive ? step : ''}
+                  </span>
+                  <span className={`mt-2 text-xs font-semibold ${isActive ? 'text-blue-700' : 'text-gray-600'}`}>{label}</span>
+                </div>
+              </div>
+              {step < paymentProgressSteps.length && (
+                <div className="mx-3 mt-4 h-0.5 flex-1 overflow-hidden rounded-full bg-gray-200">
+                  <div className={`h-full ${currentStep > step ? 'w-full bg-blue-600' : 'w-0 bg-blue-600'}`} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-3 text-center text-xs font-semibold text-gray-600">Step {currentStep} of 3</p>
+    </div>
+  );
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -213,6 +268,7 @@ export default function BillingAndPayments() {
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod>('Cash');
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentReferenceInput, setPaymentReferenceInput] = useState('');
+  const [paymentNotes, setPaymentNotes] = useState('');
   const [cancelReason, setCancelReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [focusHandledKey, setFocusHandledKey] = useState('');
@@ -462,8 +518,10 @@ export default function BillingAndPayments() {
   async function fetchPaymentBillDetails(bill: BillRow) {
     const backendBillId = bill.backendBillId ?? billingRecords.find((row) => row.id === bill.id)?.backendBillId;
     if (!backendBillId) {
-      setPaymentBillDetails(null);
-      setPaymentDetailsError("Unable to load bill details for payment.");
+      const fallback = toFallbackPaymentDetails(bill);
+      setPaymentBillDetails(fallback);
+      setPaymentDetailsError('');
+      setPaymentAmount(String(fallback.remaining_balance ?? toAmount(bill.total)));
       return;
     }
 
@@ -472,17 +530,21 @@ export default function BillingAndPayments() {
       setPaymentDetailsError('');
       const response = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}`);
       if (!response.ok) {
-        throw new Error('Failed to load bill details.');
+        throw new Error(`Billing details request failed (${response.status}).`);
       }
 
-      const payload = (await response.json()) as PaymentBillDetailsResponse;
-      setPaymentBillDetails(payload);
-      const due = Number(payload.remaining_balance ?? payload.bill?.net_amount ?? payload.bill?.total_amount ?? toAmount(bill.total));
+      const payload = (await response.json()) as PaymentBillDetailsResponse | PaymentBillDetail;
+      const normalizedPayload = payload && typeof payload === 'object' && 'bill' in payload
+        ? payload as PaymentBillDetailsResponse
+        : ({ bill: payload as PaymentBillDetail } as PaymentBillDetailsResponse);
+      setPaymentBillDetails(normalizedPayload);
+      const due = Number(normalizedPayload.remaining_balance ?? normalizedPayload.bill?.net_amount ?? normalizedPayload.bill?.total_amount ?? toAmount(bill.total));
       setPaymentAmount(String(Number.isFinite(due) ? Math.max(0, due) : toAmount(bill.total)));
     } catch (error) {
-      setPaymentBillDetails(null);
-      setPaymentDetailsError(error instanceof Error ? error.message : 'Failed to load bill details.');
-      setPaymentAmount(String(toAmount(bill.total)));
+      const fallback = toFallbackPaymentDetails(bill);
+      setPaymentBillDetails(fallback);
+      setPaymentDetailsError('Unable to refresh live bill details right now. Showing the current bill snapshot.');
+      setPaymentAmount(String(fallback.remaining_balance ?? toAmount(bill.total)));
     } finally {
       setIsPaymentDetailsLoading(false);
     }
@@ -494,6 +556,7 @@ export default function BillingAndPayments() {
     setSelectedMethod('Cash');
     setPaymentAmount(String(toAmount(bill.total)));
     setPaymentReferenceInput('');
+    setPaymentNotes('');
     setPaymentDetailsError('');
     setPaymentBillDetails(null);
     setModal('payMethod');
@@ -609,6 +672,7 @@ export default function BillingAndPayments() {
     setSelectedMethod('Cash');
     setPaymentAmount('');
     setPaymentReferenceInput('');
+    setPaymentNotes('');
     setCancelReason('');
   }
 
@@ -825,7 +889,7 @@ export default function BillingAndPayments() {
   }, [focusBillId, pagedBills, focusHandledKey]);
 
   return (
-    <div className="flex min-h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col pb-4">
       {toast && (
         <div className="fixed right-4 top-4 z-[10000]">
           <div className={`rounded-xl px-4 py-3 text-sm font-semibold shadow-lg ${toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
@@ -874,7 +938,7 @@ export default function BillingAndPayments() {
               />
             )}
           </div>
-          <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto rounded-xl">
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-xl">
             {shouldShowLoading ? (
               <BillingTableSkeleton
                 columns={[
@@ -1490,25 +1554,27 @@ export default function BillingAndPayments() {
                 <h3 className="text-2xl font-bold text-gray-900">Collect Payment</h3>
                 <p className="mt-1 text-sm text-gray-600">Review bill information and select a payment channel.</p>
               </div>
+              <PaymentProgressTracker currentStep={1} />
               <div className="grid grid-cols-1 gap-6 p-6 md:grid-cols-[1.15fr_1fr]">
                 <div className="space-y-4">
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
                     <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-700"><Info size={16} />Bill Snapshot</div>
                     {isPaymentDetailsLoading ? (
                       <p className="text-sm text-gray-500">Loading bill details...</p>
-                    ) : paymentDetailsError ? (
-                      <p className="text-sm text-red-600">{paymentDetailsError}</p>
                     ) : (
-                      <div className="grid grid-cols-1 gap-3 text-sm text-gray-800 md:grid-cols-2">
-                        <div><p className="text-xs text-gray-500">Bill Code</p><p className="font-semibold">{paymentBillCode}</p></div>
-                        <div><p className="text-xs text-gray-500">Status</p><p className="font-semibold">{paymentBillStatus}</p></div>
-                        <div><p className="text-xs text-gray-500">Patient Name</p><p className="font-semibold">{paymentPatientName}</p></div>
-                        <div><p className="text-xs text-gray-500">Patient ID</p><p className="font-semibold">{paymentPatientId ?? 'N/A'}</p></div>
-                        <div><p className="text-xs text-gray-500">Net Amount</p><p className="font-semibold">{toPeso(Number(paymentBill?.net_amount ?? safePaymentAmountDue))}</p></div>
-                        <div><p className="text-xs text-gray-500">Outstanding</p><p className="font-semibold text-blue-700">{toPeso(safePaymentAmountDue)}</p></div>
-                        <div><p className="text-xs text-gray-500">Total Paid</p><p className="font-semibold">{toPeso(paymentTotalPaid)}</p></div>
-                        <div><p className="text-xs text-gray-500">Created Date</p><p className="font-semibold">{formatDateMed(paymentBillCreatedAt)}</p></div>
-                      </div>
+                      <>
+                        {paymentDetailsError && <p className="mb-3 text-sm text-amber-700">{paymentDetailsError}</p>}
+                        <div className="grid grid-cols-1 gap-3 text-sm text-gray-800 md:grid-cols-2">
+                          <div><p className="text-xs text-gray-500">Bill Code</p><p className="font-semibold">{paymentBillCode}</p></div>
+                          <div><p className="text-xs text-gray-500">Status</p><p className="font-semibold">{paymentBillStatus}</p></div>
+                          <div><p className="text-xs text-gray-500">Patient Name</p><p className="font-semibold">{paymentPatientName}</p></div>
+                          <div><p className="text-xs text-gray-500">Patient ID</p><p className="font-semibold">{paymentPatientId ?? 'N/A'}</p></div>
+                          <div><p className="text-xs text-gray-500">Net Amount</p><p className="font-semibold">{toPeso(Number(paymentBill?.net_amount ?? safePaymentAmountDue))}</p></div>
+                          <div><p className="text-xs text-gray-500">Outstanding</p><p className="font-semibold text-blue-700">{toPeso(safePaymentAmountDue)}</p></div>
+                          <div><p className="text-xs text-gray-500">Total Paid</p><p className="font-semibold">{toPeso(paymentTotalPaid)}</p></div>
+                          <div><p className="text-xs text-gray-500">Created Date</p><p className="font-semibold">{formatDateMed(paymentBillCreatedAt)}</p></div>
+                        </div>
+                      </>
                     )}
                   </div>
                   <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
@@ -1598,6 +1664,7 @@ export default function BillingAndPayments() {
                 <h3 className="flex items-center gap-2 text-2xl font-bold text-gray-900"><CircleDollarSign className="text-emerald-600" size={22} />Cash Payment</h3>
                 <p className="mt-1 text-sm text-gray-600">Collect and confirm the exact cash amount for this bill.</p>
               </div>
+              <PaymentProgressTracker currentStep={2} />
               <div className="space-y-4 px-6 py-5">
                 <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-800">
                   <div className="flex justify-between"><span>Bill Code</span><span className="font-semibold">{paymentBillCode}</span></div>
@@ -1614,6 +1681,16 @@ export default function BillingAndPayments() {
                 <div>
                   <label className="mb-1 block text-sm font-semibold text-gray-700">Change</label>
                   <div className="flex h-11 items-center rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm font-semibold text-gray-800">{toPeso(changeAmount)}</div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-semibold text-gray-700">Notes</label>
+                  <textarea
+                    value={paymentNotes}
+                    onChange={e => setPaymentNotes(e.target.value)}
+                    rows={3}
+                    placeholder="Add optional notes for this payment"
+                    className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-300"
+                  />
                 </div>
               </div>
               <div className="flex gap-2 border-t border-gray-200 px-6 py-4">
@@ -1668,6 +1745,7 @@ export default function BillingAndPayments() {
                 <h3 className="flex items-center gap-2 text-2xl font-bold text-gray-900"><CreditCard size={22} className="text-blue-700" />{selectedMethod} Payment</h3>
                 <p className="mt-1 text-sm text-gray-600">Complete the e-wallet transfer and encode the reference number.</p>
               </div>
+              <PaymentProgressTracker currentStep={2} />
               <div className="grid grid-cols-1 gap-6 p-6 md:grid-cols-[320px_1fr]">
                 <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
                   <div className="mb-4 flex items-center gap-4">
@@ -1694,6 +1772,16 @@ export default function BillingAndPayments() {
                   <div>
                     <label className="mb-1 block text-sm font-semibold text-gray-700">{selectedMethod} Reference Number</label>
                     <div className="flex items-center rounded-xl border border-gray-300 bg-white px-3"><Hash size={16} className="text-gray-500" /><input value={gcashReference} onChange={e => setGcashReference(e.target.value)} className="h-11 w-full bg-transparent px-2 text-sm outline-none" placeholder="Enter transaction reference" /></div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">Notes</label>
+                    <textarea
+                      value={paymentNotes}
+                      onChange={e => setPaymentNotes(e.target.value)}
+                      rows={3}
+                      placeholder="Add optional notes for this payment"
+                      className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-300"
+                    />
                   </div>
                 </div>
               </div>
@@ -1741,12 +1829,14 @@ export default function BillingAndPayments() {
                 <h3 className="text-2xl font-bold text-gray-900">Confirm Payment</h3>
                 <p className="mt-1 text-sm text-gray-600">Please verify details before posting this payment.</p>
               </div>
+              <PaymentProgressTracker currentStep={3} />
               <div className="space-y-3 px-6 py-5 text-sm text-gray-800">
                 <div className="flex justify-between"><span>Bill Code</span><span className="font-semibold">{paymentBillCode}</span></div>
                 <div className="flex justify-between"><span>Patient Name</span><span className="font-semibold">{paymentPatientName}</span></div>
                 <div className="flex justify-between"><span>Patient ID</span><span className="font-semibold">{paymentPatientId ?? 'N/A'}</span></div>
                 <div className="flex justify-between"><span>Payment Method</span><span className="font-semibold">{paymentMethodLabel}</span></div>
                 <div className="flex justify-between"><span>Reference Number</span><span className="font-semibold">{paymentReference}</span></div>
+                <div className="flex justify-between"><span>Notes</span><span className="max-w-[65%] text-right font-semibold">{paymentNotes.trim() || 'N/A'}</span></div>
                 <div className="flex justify-between border-t border-gray-200 pt-3 text-base font-bold"><span>Amount Paid</span><span className="text-blue-700">{toPeso(Number(paymentAmount || safePaymentAmountDue || 0))}</span></div>
               </div>
               <div className="flex gap-2 border-t border-gray-200 px-6 py-4">
