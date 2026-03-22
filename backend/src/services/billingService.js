@@ -9,6 +9,8 @@ import {
   deletePaymentById,
   fetchAnalyticsBills,
   fetchAnalyticsPayments,
+  fetchBillItemsForReports,
+  fetchPaymentsWithBillContext,
   getBillById,
   getBillItemById,
   getBillItemsByBillId,
@@ -62,6 +64,111 @@ function deriveInventoryStatus(totalStock, reorderThreshold) {
   if (totalStock <= 0) return "Critical";
   if (totalStock < reorderThreshold) return "Low";
   return "Adequate";
+}
+
+function resolvePatientName(patientRelation, patientId) {
+  const patient = Array.isArray(patientRelation) ? patientRelation[0] : patientRelation;
+  if (!patient || typeof patient !== "object") {
+    return patientId ? `Patient #${patientId}` : "Unknown Patient";
+  }
+
+  const candidates = [patient.full_name, patient.patient_name, patient.name];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  const combined = [patient.first_name, patient.middle_name, patient.last_name]
+    .filter((value) => typeof value === "string" && value.trim())
+    .join(" ")
+    .trim();
+
+  return combined || (patientId ? `Patient #${patientId}` : "Unknown Patient");
+}
+
+function normalizeMethodLabel(value) {
+  const normalized = normalizeText(value);
+  return normalized || "Unspecified";
+}
+
+function toIsoDateOnly(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
+function incrementGroupedValue(map, key, amount) {
+  map.set(key, roundCurrency((map.get(key) || 0) + amount));
+}
+
+function takeLastSortedEntries(map, limit, labelFormatter) {
+  return [...map.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .slice(-limit)
+    .map(([rawLabel, value]) => ({
+      label: labelFormatter(rawLabel),
+      value,
+    }));
+}
+
+function formatMonthLabel(isoMonth) {
+  const parsed = new Date(`${isoMonth}-01T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) return isoMonth;
+  return parsed.toLocaleDateString("en-US", { month: "short" });
+}
+
+function formatDayLabel(isoDate) {
+  const parsed = new Date(`${isoDate}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) return isoDate;
+  return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function resolveServiceBucketLabel(item) {
+  const medication = Array.isArray(item?.tbl_medications) ? item.tbl_medications[0] : item?.tbl_medications;
+  if (medication?.medication_name) {
+    return medication.medication_name;
+  }
+
+  const description = normalizeText(item?.description);
+  if (description) {
+    return description;
+  }
+
+  if (toPositiveInt(item?.service_id)) {
+    return `Service #${item.service_id}`;
+  }
+
+  if (toPositiveInt(item?.medication_id ?? item?.log_id)) {
+    return `Medication #${item.medication_id ?? item?.log_id}`;
+  }
+
+  return "Unlabeled Item";
+}
+
+function toTransactionRecord(row) {
+  const bill = Array.isArray(row?.tbl_bills) ? row.tbl_bills[0] : row?.tbl_bills;
+  const patientId = bill?.patient_id ?? null;
+  const patientName = resolvePatientName(bill?.tbl_patients, patientId);
+  const paymentDate = row?.payment_date || row?.created_at || bill?.created_at || null;
+
+  return {
+    payment_id: row.payment_id,
+    payment_code: row.payment_code || `PAY-${row.payment_id}`,
+    bill_id: row.bill_id,
+    bill_code: bill?.bill_code || `BILL-${row.bill_id}`,
+    patient_id: patientId,
+    patient_name: patientName,
+    amount: roundCurrency(Number(row.amount_paid || 0)),
+    method: normalizeMethodLabel(row.payment_method),
+    date: toIsoDateOnly(paymentDate),
+    paid_at: paymentDate,
+    reference_number: row.reference_number || null,
+    received_by: row.received_by || null,
+    bill_status: bill?.status || "Paid",
+    status: "Paid",
+  };
 }
 
 async function ensureBillExists(billId) {
@@ -203,6 +310,24 @@ function parseListParams(query) {
   }
 
   return { page, pageSize, status, startIso, endIso };
+}
+
+function parseTransactionListParams(query) {
+  const page = toPositiveInt(query?.page) || 1;
+  const pageSize = toPositiveInt(query?.limit) || toPositiveInt(query?.page_size) || 10;
+  const search = normalizeText(query?.search).toLowerCase();
+  const method = normalizeText(query?.method);
+
+  if (pageSize > 100) {
+    throw badRequest("'limit' must not exceed 100.");
+  }
+
+  return {
+    page,
+    pageSize,
+    search,
+    method: method && method.toLowerCase() !== "all" ? method : null,
+  };
 }
 
 async function updateMedicationStock(medicationId, quantityDelta) {
@@ -775,6 +900,7 @@ async function getBillingAnalyticsFlow() {
   return {
   total_pending_bills: totalPendingBills,
   total_paid_bills: totalPaidBills,
+  total_transactions: payments.length,
   total_revenue: totalRevenue,
   total_outstanding_balance: totalOutstandingBalance,
   average_bill_amount: averageBillAmount,
@@ -788,6 +914,107 @@ async function getBillingAnalyticsFlow() {
 };
 }
 
+async function listBillingTransactionsFlow(query) {
+  const params = parseTransactionListParams(query);
+  const rows = await fetchPaymentsWithBillContext();
+
+  const allTransactions = rows
+    .map(toTransactionRecord)
+    .filter((row) => row.amount > 0)
+    .sort((a, b) => new Date(b.paid_at || 0).getTime() - new Date(a.paid_at || 0).getTime());
+
+  const filtered = allTransactions.filter((row) => {
+    const matchesMethod = !params.method || row.method === params.method;
+    if (!matchesMethod) return false;
+
+    if (!params.search) return true;
+
+    const haystack = [
+      row.bill_code,
+      row.payment_code,
+      row.patient_name,
+      row.method,
+      row.reference_number,
+      `RCT-${row.bill_code}`,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    return haystack.includes(params.search);
+  });
+
+  const totalRevenue = roundCurrency(allTransactions.reduce((sum, row) => sum + row.amount, 0));
+  const cashCount = allTransactions.filter((row) => row.method === "Cash").length;
+  const digitalCount = allTransactions.filter((row) => row.method === "GCash" || row.method === "Maya").length;
+
+  const from = (params.page - 1) * params.pageSize;
+  const pagedRows = filtered.slice(from, from + params.pageSize);
+
+  return {
+    ...buildPagedResult(pagedRows, params.page, params.pageSize, filtered.length),
+    summary: {
+      total_transactions: allTransactions.length,
+      total_revenue: totalRevenue,
+      cash_count: cashCount,
+      digital_count: digitalCount,
+    },
+  };
+}
+
+async function getBillingReportsOverviewFlow() {
+  const [analytics, paymentRows, billItemRows] = await Promise.all([
+    getBillingAnalyticsFlow(),
+    fetchPaymentsWithBillContext(),
+    fetchBillItemsForReports(),
+  ]);
+
+  const transactions = paymentRows
+    .map(toTransactionRecord)
+    .filter((row) => row.amount > 0)
+    .sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime());
+
+  const revenueByMonthMap = new Map();
+  const revenueByDateMap = new Map();
+  const revenueByMethodMap = new Map();
+
+  for (const transaction of transactions) {
+    if (!transaction.date) continue;
+
+    incrementGroupedValue(revenueByMonthMap, transaction.date.slice(0, 7), transaction.amount);
+    incrementGroupedValue(revenueByDateMap, transaction.date, transaction.amount);
+    incrementGroupedValue(revenueByMethodMap, transaction.method, transaction.amount);
+  }
+
+  const revenueByServiceMap = new Map();
+  for (const item of billItemRows) {
+    const bill = Array.isArray(item?.tbl_bills) ? item.tbl_bills[0] : item?.tbl_bills;
+    if (bill?.status !== "Paid") continue;
+
+    const label = resolveServiceBucketLabel(item);
+    incrementGroupedValue(revenueByServiceMap, label, Number(item?.subtotal || 0));
+  }
+
+  return {
+    analytics,
+    charts: {
+      revenue_by_month: takeLastSortedEntries(revenueByMonthMap, 4, formatMonthLabel),
+      revenue_by_date: takeLastSortedEntries(revenueByDateMap, 7, formatDayLabel),
+      revenue_by_method: [...revenueByMethodMap.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([label, value]) => ({ label, value })),
+      revenue_by_service: [...revenueByServiceMap.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([label, value]) => ({ label, value })),
+    },
+    recent_transactions: [...transactions]
+      .sort((a, b) => new Date(b.paid_at || 0).getTime() - new Date(a.paid_at || 0).getTime())
+      .slice(0, 5),
+  };
+}
+
 export {
   addBillItemFlow,
   cancelBillFlow,
@@ -795,7 +1022,9 @@ export {
   createPaymentFlow,
   getBillDetailsFlow,
   getBillingAnalyticsFlow,
+  getBillingReportsOverviewFlow,
   listBillsFlow,
+  listBillingTransactionsFlow,
   removeBillItemFlow,
   updateBillItemFlow,
 };

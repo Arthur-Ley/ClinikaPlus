@@ -5,7 +5,9 @@ import {
   createPaymentFlow,
   getBillDetailsFlow,
   getBillingAnalyticsFlow,
+  getBillingReportsOverviewFlow,
   listBillsFlow,
+  listBillingTransactionsFlow,
   removeBillItemFlow,
   updateBillItemFlow,
 } from "../services/billingService.js";
@@ -53,4 +55,14 @@ export async function getBillDetails(req, res) {
 export async function getBillingAnalytics(_req, res) {
   const analytics = await getBillingAnalyticsFlow();
   return res.status(200).json({ analytics });
+}
+
+export async function getBillingTransactions(req, res) {
+  const result = await listBillingTransactionsFlow(req.query);
+  return res.status(200).json(result);
+}
+
+export async function getBillingReportsOverview(_req, res) {
+  const result = await getBillingReportsOverviewFlow();
+  return res.status(200).json(result);
 }

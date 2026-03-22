@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  Search, ChevronDown, PlusCircle, FileText,
+  Search, ChevronDown, PlusCircle,
   CheckCircle2, X, ReceiptText, Stethoscope, CircleGauge,
   CalendarDays, Info, CircleDollarSign, Coins, XCircle,
-  CreditCard, Hash, MinusCircle, User, Plus, Minus, Wallet,
+  CreditCard, Hash, MinusCircle, User, Plus, Minus, Wallet, Printer, AlertTriangle,
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import Pagination from '../../components/ui/Pagination';
@@ -17,11 +17,33 @@ type MedicationCatalogItem = { medication_id: number; medication_name: string; t
 type MedicationStockApiItem = { medication_id: number; medication_name: string; total_stock: number; batch_number?: string; expiry_date?: string; unit?: string; };
 type PaymentMethod = 'Cash' | 'GCash' | 'Maya';
 type BillingFilter = 'all' | 'pending' | 'paid' | 'cancelled';
+type BillingSort = 'date' | 'status' | 'amount';
 type ActiveModal =
   | 'none' | 'createBill' | 'viewBill' | 'billSuccess'
-  | 'payMethod' | 'payCash' | 'payGcash' | 'payConfirm'
-  | 'paySuccess' | 'payCancelConfirm' | 'payCancelled' | 'receipt'
+  | 'payBill' | 'cancelBill' | 'receipt'
+  | 'payMethod' | 'payCash' | 'payGcash' | 'payConfirm' | 'paySuccess' | 'payCancelConfirm' | 'payCancelled'
   | 'addService' | 'addMedication';
+type ToastState = { type: 'success' | 'error'; message: string } | null;
+type BillUiMeta = {
+  createdAt: string;
+  patientId: string;
+  age: string;
+  gender: string;
+  doctor: string;
+  diagnosis: string;
+  dueDate: string;
+  admissionDate: string;
+  dischargeDate: string;
+  services: ServiceItem[];
+  isSeniorCitizen: boolean;
+  processedBy: string;
+  paymentMethod?: PaymentMethod;
+  paymentDateTime?: string;
+  paymentReference?: string;
+  amountPaid?: number;
+  cancelledBy?: string;
+  cancelledReason?: string;
+};
 
 const serviceTypeOptions = [
   { id: 1, name: 'Consultation', services: [{ id: 1, name: 'Consultation Fee', unitPrice: 500 }, { id: 2, name: 'Follow-up Consultation', unitPrice: 300 }, { id: 3, name: 'Emergency Consultation', unitPrice: 800 }] },
@@ -62,12 +84,41 @@ function formatPhp(value: number) { return `PHP ${Math.round(value).toLocaleStri
 function formatDateForTable(value: string) { const p = new Date(value); if (Number.isNaN(p.getTime())) return value; return p.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }); }
 function formatDateLong(value: string) { const p = new Date(value); if (Number.isNaN(p.getTime())) return value; return p.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }); }
 function formatDateMed(value: string) { const p = new Date(value); if (Number.isNaN(p.getTime())) return value; return p.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }); }
+function escapeHtml(value: string) { return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
 function parsePositiveInt(value: string) { const n = value.trim(); if (!/^\d+$/.test(n)) return null; const p = Number(n); if (!Number.isInteger(p) || p <= 0) return null; return p; }
 function resolveMedicationUnitPrice(name: string) { return medicationPriceByName[name] ?? 20; }
 function toSafeQuantity(value: string) { const p = Number(value); if (!Number.isInteger(p) || p <= 0) return 1; return p; }
 function normalizeBillStatus(value: string): BillStatus { const n = value.trim().toLowerCase(); if (n === 'paid') return 'Paid'; if (n === 'cancelled' || n === 'canceled') return 'Cancelled'; return 'Pending'; }
 function statusCode(status: BillStatus) { if (status === 'Paid') return 'PD'; if (status === 'Cancelled') return 'CN'; return 'PN'; }
 function toAutoIds(status: BillStatus, records: BillRow[]) { const code = statusCode(status); const next = records.filter(r => r.status === status).length + 1; return { billId: `B-${code}-${String(next).padStart(4, '0')}` }; }
+function toPeso(value: number) { return `\u20b1${value.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
+function toDateTimeDisplay(value: string) { const p = new Date(value); if (Number.isNaN(p.getTime())) return value; return p.toLocaleString('en-US', { month: 'short', day: '2-digit', year: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+function toSortRank(status: BillStatus) { if (status === 'Pending') return 0; if (status === 'Paid') return 1; return 2; }
+function buildDefaultBillMeta(bill: BillRow): BillUiMeta {
+  const createdAt = `${bill.date}T08:30:00`;
+  return {
+    createdAt,
+    patientId: 'P-1021',
+    age: '45',
+    gender: 'Male',
+    doctor: 'Dr. Henry G. Malibiran',
+    diagnosis: 'Community Acquired Pneumonia',
+    dueDate: new Date(new Date(bill.date).getTime() + 7 * 86400000).toISOString().slice(0, 10),
+    admissionDate: bill.date,
+    dischargeDate: bill.date,
+    services: existingBillServices,
+    isSeniorCitizen: false,
+    processedBy: 'Staff',
+    paymentMethod: bill.status === 'Paid' ? 'Cash' : undefined,
+    paymentDateTime: bill.status === 'Paid' ? `${bill.date}T09:15:00` : undefined,
+    paymentReference: bill.status === 'Paid' ? `REF-${bill.id}` : undefined,
+    amountPaid: bill.status === 'Paid' ? toAmount(bill.total) : undefined,
+    cancelledBy: bill.status === 'Cancelled' ? 'Staff' : undefined,
+    cancelledReason: bill.status === 'Cancelled' ? 'Cancelled at front desk.' : undefined,
+  };
+}
+
+const EMPTY_BILL_ROW: BillRow = { id: '', patient: '', date: '', total: 'P0', status: 'Pending' };
 
 function StatusPill({ status }: { status: string }) {
   const styles = status === 'Paid' ? 'bg-green-100 text-green-700' : status === 'Cancelled' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700';
@@ -77,16 +128,19 @@ function StatusPill({ status }: { status: string }) {
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function BillingAndPayments() {
-  const { billingRecords, addBill, paymentQueue, markPaymentPaid, setPaymentProcessing, isLoading } = useBillingPayments();
+  const { billingRecords, addBill, markPaymentPaid, paymentQueue, isLoading, cancelBill } = useBillingPayments();
   const location = useLocation();
 
   const [modal, setModal] = useState<ActiveModal>('none');
   const [prevModal, setPrevModal] = useState<ActiveModal>('none');
   const [searchTerm, setSearchTerm] = useState('');
   const [billingFilter, setBillingFilter] = useState<BillingFilter>('all');
+  const [sortBy, setSortBy] = useState<BillingSort>('date');
   const [currentPage, setCurrentPage] = useState(1);
+  const [toast, setToast] = useState<ToastState>(null);
 
   const [selectedBill, setSelectedBill] = useState<BillRow | null>(null);
+  const [billMetaById, setBillMetaById] = useState<Record<string, BillUiMeta>>({});
   const [billIdInput, setBillIdInput] = useState('');
   const [billStatusInput, setBillStatusInput] = useState('');
   const [patientIdInput, setPatientIdInput] = useState('');
@@ -119,10 +173,11 @@ export default function BillingAndPayments() {
   const [medicationUnitPrice, setMedicationUnitPrice] = useState(0);
   const [showMedicationDropdown, setShowMedicationDropdown] = useState(false);
 
-  const [selectedPayRow, setSelectedPayRow] = useState<BillRow | null>(null);
+  const [selectedPayRow, setSelectedPayRow] = useState<BillRow>(EMPTY_BILL_ROW);
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod>('Cash');
-  const [amountReceived, setAmountReceived] = useState('');
-  const [gcashReference, setGcashReference] = useState('');
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentReferenceInput, setPaymentReferenceInput] = useState('');
+  const [cancelReason, setCancelReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [focusHandledKey, setFocusHandledKey] = useState('');
 
@@ -140,20 +195,65 @@ export default function BillingAndPayments() {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    setBillMetaById((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const bill of billingRecords) {
+        if (!next[bill.id]) {
+          next[bill.id] = buildDefaultBillMeta(bill);
+          changed = true;
+          continue;
+        }
+        if (bill.status === 'Paid' && !next[bill.id].paymentDateTime) {
+          next[bill.id] = {
+            ...next[bill.id],
+            paymentMethod: next[bill.id].paymentMethod ?? 'Cash',
+            paymentDateTime: `${bill.date}T09:15:00`,
+            paymentReference: next[bill.id].paymentReference ?? `REF-${bill.id}`,
+            amountPaid: next[bill.id].amountPaid ?? toAmount(bill.total),
+          };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [billingRecords]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
   const filteredBills = useMemo(() => {
     const normalized = searchTerm.trim().toLowerCase();
-    return billingRecords.filter(bill => {
+    const visible = billingRecords.filter(bill => {
       const matchesSearch = !normalized || bill.patient.toLowerCase().includes(normalized) || bill.id.toLowerCase().includes(normalized);
       const matchesFilter = billingFilter === 'all' || (billingFilter === 'pending' && bill.status === 'Pending') || (billingFilter === 'paid' && bill.status === 'Paid') || (billingFilter === 'cancelled' && bill.status === 'Cancelled');
       return matchesSearch && matchesFilter;
     });
-  }, [billingRecords, searchTerm, billingFilter]);
+    return [...visible].sort((a, b) => {
+      if (sortBy === 'amount') return toAmount(b.total) - toAmount(a.total);
+      if (sortBy === 'status') return toSortRank(a.status) - toSortRank(b.status) || new Date(b.date).getTime() - new Date(a.date).getTime();
+      return new Date(b.date).getTime() - new Date(a.date).getTime();
+    });
+  }, [billingRecords, searchTerm, billingFilter, sortBy]);
 
-  useEffect(() => { setCurrentPage(1); }, [searchTerm, billingFilter]);
+  useEffect(() => { setCurrentPage(1); }, [searchTerm, billingFilter, sortBy]);
   const totalPages = Math.max(1, Math.ceil(filteredBills.length / PAGE_SIZE));
   useEffect(() => { if (currentPage > totalPages) setCurrentPage(totalPages); }, [currentPage, totalPages]);
   const startIndex = (currentPage - 1) * PAGE_SIZE;
   const pagedBills = filteredBills.slice(startIndex, startIndex + PAGE_SIZE);
+
+  const selectedBillMeta = useMemo(
+    () => (selectedBill ? billMetaById[selectedBill.id] : undefined),
+    [billMetaById, selectedBill],
+  );
+  const selectedPaymentRecord = useMemo(
+    () => (selectedBill ? paymentQueue.find((item) => item.id === selectedBill.id) : undefined),
+    [paymentQueue, selectedBill],
+  );
 
   const subtotal = useMemo(() => services.reduce((acc, s) => acc + s.quantity * s.unitPrice, 0), [services]);
   const discount = isSeniorCitizen ? subtotal * SENIOR_DISCOUNT_RATE : 0;
@@ -235,17 +335,49 @@ export default function BillingAndPayments() {
 
   function openCreateModal() { resetCreateForm(); setSelectedBill(null); setModal('createBill'); }
 
-  function openViewModal(bill: BillRow) {
+  function loadBillDetails(bill: BillRow) {
+    const meta = billMetaById[bill.id] ?? buildDefaultBillMeta(bill);
     setSelectedBill(bill);
-    setBillIdInput(bill.id); setBillStatusInput(bill.status);
-    setPatientIdInput('P-1021'); setPatientNameInput(bill.patient);
-    setPatientAgeInput('45'); setPatientGenderInput('Male');
-    setDoctorInput('Dr. Henry G. Malibiran'); setDiagnosisInput('Community Acquired Pneumonia');
+    setBillIdInput(bill.id);
+    setBillStatusInput(bill.status);
+    setPatientIdInput(meta.patientId);
+    setPatientNameInput(bill.patient);
+    setPatientAgeInput(meta.age);
+    setPatientGenderInput(meta.gender);
+    setDoctorInput(meta.doctor);
+    setDiagnosisInput(meta.diagnosis);
     setVisitDateInput(bill.date);
-    setDueDateInput(new Date(new Date(bill.date).getTime() + 7 * 86400000).toISOString().slice(0, 10));
-    setAdmissionDateInput(bill.date); setDischargeDateInput(bill.date);
-    setServices(existingBillServices);
+    setDueDateInput(meta.dueDate);
+    setAdmissionDateInput(meta.admissionDate);
+    setDischargeDateInput(meta.dischargeDate);
+    setServices(meta.services);
+    setIsSeniorCitizen(meta.isSeniorCitizen);
+  }
+
+  function openViewModal(bill: BillRow) {
+    loadBillDetails(bill);
     setModal('viewBill');
+  }
+
+  function openPaymentModal(bill: BillRow) {
+    loadBillDetails(bill);
+    setSelectedPayRow(bill);
+    setSelectedMethod('Cash');
+    setPaymentAmount(String(toAmount(bill.total)));
+    setPaymentReferenceInput('');
+    setModal('payMethod');
+  }
+
+  function openCancelModal(bill: BillRow) {
+    loadBillDetails(bill);
+    setCancelReason('');
+    setModal('cancelBill');
+  }
+
+  function openReceiptModal(bill: BillRow) {
+    loadBillDetails(bill);
+    setSelectedPayRow(bill);
+    setModal('receipt');
   }
 
   function updateServiceQuantity(index: number, rawValue: string) {
@@ -303,33 +435,164 @@ export default function BillingAndPayments() {
     }
   }
 
-  const changeAmount = useMemo(() => {
-    if (!selectedPayRow) return 0;
-    const received = Number(amountReceived || 0);
-    if (Number.isNaN(received)) return 0;
-    return Math.max(0, received - toAmount(selectedPayRow.total));
-  }, [amountReceived, selectedPayRow]);
-
-  const isWalletMethod = selectedMethod === 'GCash' || selectedMethod === 'Maya';
   const paymentMethodLabel = selectedMethod === 'Cash' ? 'Cash' : selectedMethod === 'Maya' ? 'E-Wallet (Maya)' : 'E-Wallet (GCash)';
-  const paymentReference = isWalletMethod ? gcashReference || selectedPayRow?.id || 'N/A' : 'N/A';
 
-  function openPayModal(bill: BillRow) { setSelectedPayRow(bill); setSelectedMethod('Cash'); setAmountReceived(''); setGcashReference(''); setModal('payMethod'); }
-  function openReceiptModal(bill: BillRow) { setSelectedPayRow(bill); setModal('receipt'); }
-  function closePayModals() { setModal('none'); setSelectedPayRow(null); setAmountReceived(''); setGcashReference(''); setSelectedMethod('Cash'); }
+  function closeAuxiliaryModals() {
+    setModal('none');
+    setSelectedPayRow(EMPTY_BILL_ROW);
+    setSelectedMethod('Cash');
+    setPaymentAmount('');
+    setPaymentReferenceInput('');
+    setCancelReason('');
+  }
 
-  function handleProceedFromMethod() {
-    if (selectedPayRow) void setPaymentProcessing({ id: selectedPayRow.id, method: selectedMethod });
-    setModal(selectedMethod === 'Cash' ? 'payCash' : 'payGcash');
+  function printBillDocument(kind: 'bill' | 'receipt') {
+    const activeBill = selectedBill ?? selectedPayRow;
+    if (!activeBill) return;
+    const meta = billMetaById[activeBill.id] ?? buildDefaultBillMeta(activeBill);
+    const resolvedTotal = meta.services.length
+      ? meta.services.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
+      : toAmount(activeBill.total);
+    const resolvedDiscount = meta.isSeniorCitizen ? resolvedTotal * SENIOR_DISCOUNT_RATE : 0;
+    const resolvedTax = meta.isSeniorCitizen ? 0 : resolvedTotal * VAT_RATE;
+    const finalTotal = meta.services.length ? resolvedTotal - resolvedDiscount + resolvedTax : toAmount(activeBill.total);
+    const receiptNumber = `RCT-${activeBill.id}`;
+
+    const printWindow = window.open('', '_blank', 'width=760,height=900');
+    if (!printWindow) {
+      window.alert(`Please allow pop-ups to print the ${kind}.`);
+      return;
+    }
+
+    const serviceRows = meta.services.length
+      ? meta.services.map((service) => `
+          <tr>
+            <td>${escapeHtml(service.name)}</td>
+            <td style="text-align:center;">${service.quantity}</td>
+            <td style="text-align:right;">${formatPhp(service.unitPrice)}</td>
+            <td style="text-align:right;">${formatPhp(service.quantity * service.unitPrice)}</td>
+          </tr>
+        `).join('')
+      : `
+        <tr>
+          <td colspan="4" style="text-align:center; color:#6b7280;">No billed items recorded.</td>
+        </tr>
+      `;
+
+    printWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <title>${kind === 'receipt' ? 'Receipt' : 'Bill'} ${escapeHtml(activeBill.id)}</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 32px; color: #111827; }
+            .header { margin-bottom: 24px; }
+            .title { font-size: 24px; font-weight: 700; margin: 0 0 6px; }
+            .subtitle { color: #4b5563; margin: 0; }
+            .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; margin: 24px 0; }
+            .label { font-size: 12px; color: #6b7280; text-transform: uppercase; margin-bottom: 4px; }
+            .value { font-size: 14px; font-weight: 600; }
+            table { width: 100%; border-collapse: collapse; margin: 24px 0; }
+            th, td { border-bottom: 1px solid #e5e7eb; padding: 10px 8px; font-size: 14px; }
+            th { text-align: left; color: #4b5563; }
+            .summary { margin-left: auto; width: 280px; }
+            .summary-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
+            .summary-row.total { border-top: 2px solid #d1d5db; margin-top: 6px; padding-top: 12px; font-size: 16px; font-weight: 700; }
+            .footer { margin-top: 32px; font-size: 12px; color: #6b7280; text-align: center; }
+            @media print { body { margin: 20px; } }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <p class="title">CliniKaPlus</p>
+            <p class="subtitle">${kind === 'receipt' ? 'OFFICIAL RECEIPT' : 'BILLING STATEMENT'}</p>
+          </div>
+
+          <div class="meta">
+            <div>
+              <div class="label">${kind === 'receipt' ? 'Receipt No.' : 'Bill ID'}</div>
+              <div class="value">${escapeHtml(kind === 'receipt' ? receiptNumber : activeBill.id)}</div>
+            </div>
+            <div>
+              <div class="label">${kind === 'receipt' ? 'Date & Time' : 'Date Created'}</div>
+              <div class="value">${escapeHtml(kind === 'receipt' ? toDateTimeDisplay(meta.paymentDateTime || meta.createdAt) : toDateTimeDisplay(meta.createdAt))}</div>
+            </div>
+            <div>
+              <div class="label">Patient</div>
+              <div class="value">${escapeHtml(activeBill.patient)}</div>
+            </div>
+            <div>
+              <div class="label">Patient ID</div>
+              <div class="value">${escapeHtml(meta.patientId)}</div>
+            </div>
+            <div>
+              <div class="label">Doctor</div>
+              <div class="value">${escapeHtml(meta.doctor || 'N/A')}</div>
+            </div>
+            <div>
+              <div class="label">${kind === 'receipt' ? 'Payment Method' : 'Status'}</div>
+              <div class="value">${escapeHtml(kind === 'receipt' ? (meta.paymentMethod || 'N/A') : activeBill.status)}</div>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th style="text-align:center;">Qty</th>
+                <th style="text-align:right;">Unit Price</th>
+                <th style="text-align:right;">Subtotal</th>
+              </tr>
+            </thead>
+            <tbody>${serviceRows}</tbody>
+          </table>
+
+          <div class="summary">
+            <div class="summary-row"><span>Subtotal</span><strong>${formatPhp(resolvedTotal)}</strong></div>
+            <div class="summary-row"><span>Discount</span><strong>${formatPhp(resolvedDiscount)}</strong></div>
+            <div class="summary-row"><span>Tax</span><strong>${formatPhp(resolvedTax)}</strong></div>
+            <div class="summary-row total"><span>${kind === 'receipt' ? 'Amount Paid' : 'Total Amount'}</span><span>${formatPhp(finalTotal)}</span></div>
+          </div>
+
+          <div class="footer">
+            ${kind === 'receipt'
+              ? `Reference Number: ${escapeHtml(meta.paymentReference || 'N/A')} | Processed by: ${escapeHtml(meta.processedBy)}`
+              : `Processed by: ${escapeHtml(meta.processedBy)}${meta.cancelledBy ? ` | Cancelled by: ${escapeHtml(meta.cancelledBy)}` : ''}`}
+          </div>
+          <script>
+            window.onload = function () {
+              window.print();
+              window.onafterprint = function () { window.close(); };
+            };
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
   }
 
   async function handleConfirmPayment() {
-    if (!selectedPayRow || isSubmitting) return;
-    if (selectedMethod === 'Cash') { const received = Number(amountReceived || 0); if (Number.isNaN(received) || received < toAmount(selectedPayRow.total)) { window.alert('Amount received is not enough.'); return; } }
-    if (isWalletMethod && !gcashReference.trim()) { window.alert('Reference number is required for GCash/Maya payments.'); return; }
+    if (!selectedPayRow.id || isSubmitting) return;
+    const amountPaid = Number(paymentAmount || 0);
+    if (Number.isNaN(amountPaid) || amountPaid <= 0) { window.alert('Enter a valid payment amount.'); return; }
     try {
       setIsSubmitting(true);
-      await markPaymentPaid({ id: selectedPayRow.id, method: selectedMethod, reference: isWalletMethod ? gcashReference.trim() : undefined, paidDate: new Date().toISOString() });
+      const paidDate = new Date().toISOString();
+      await markPaymentPaid({ id: selectedPayRow.id, method: selectedMethod, reference: paymentReferenceInput.trim() || undefined, paidDate });
+      const updatedBill: BillRow = { ...selectedPayRow, status: 'Paid', date: paidDate };
+      setBillMetaById((prev) => ({
+        ...prev,
+        [selectedPayRow.id]: {
+          ...(prev[selectedPayRow.id] ?? buildDefaultBillMeta(selectedPayRow)),
+          paymentMethod: selectedMethod,
+          paymentDateTime: paidDate,
+          paymentReference: paymentReferenceInput.trim() || undefined,
+          amountPaid,
+          processedBy: 'Staff',
+        },
+      }));
+      setSelectedBill(updatedBill);
+      setToast({ type: 'success', message: 'Payment successful.' });
       setModal('paySuccess');
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'Unable to record payment.');
@@ -337,6 +600,48 @@ export default function BillingAndPayments() {
       setIsSubmitting(false);
     }
   }
+
+  async function handleCancelBill() {
+    if (!selectedBill) return;
+    if (!cancelReason.trim()) {
+      window.alert('Cancellation reason is required.');
+      return;
+    }
+    try {
+      await cancelBill(selectedBill.id);
+      setBillMetaById((prev) => ({
+        ...prev,
+        [selectedBill.id]: {
+          ...(prev[selectedBill.id] ?? buildDefaultBillMeta(selectedBill)),
+          cancelledBy: 'Staff',
+          cancelledReason: cancelReason.trim(),
+        },
+      }));
+      const updatedBill: BillRow = { ...selectedBill, status: 'Cancelled' };
+      setSelectedBill(updatedBill);
+      setBillStatusInput('Cancelled');
+      setToast({ type: 'success', message: 'Bill cancelled.' });
+      setModal('viewBill');
+      setCancelReason('');
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Unable to cancel bill.');
+    }
+  }
+
+  const amountReceived = paymentAmount;
+  const setAmountReceived = setPaymentAmount;
+  const gcashReference = paymentReferenceInput;
+  const setGcashReference = setPaymentReferenceInput;
+  const changeAmount = useMemo(() => {
+    if (!selectedPayRow.id) return 0;
+    const received = Number(paymentAmount || 0);
+    if (Number.isNaN(received)) return 0;
+    return Math.max(0, received - toAmount(selectedPayRow.total));
+  }, [paymentAmount, selectedPayRow]);
+  const paymentReference = paymentReferenceInput || 'N/A';
+  function handleProceedFromMethod() { setModal(selectedMethod === 'Cash' ? 'payCash' : 'payGcash'); }
+  function closePayModals() { closeAuxiliaryModals(); }
+  function printBillReceipt() { printBillDocument('receipt'); }
 
   const isEditingExisting = modal === 'viewBill';
 
@@ -355,6 +660,13 @@ export default function BillingAndPayments() {
 
   return (
     <div className="space-y-5">
+      {toast && (
+        <div className="fixed right-4 top-4 z-[10000]">
+          <div className={`rounded-xl px-4 py-3 text-sm font-semibold shadow-lg ${toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
+            {toast.message}
+          </div>
+        </div>
+      )}
 
       <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
         {/* Billing Table */}
@@ -369,6 +681,14 @@ export default function BillingAndPayments() {
               <button type="button" onClick={openCreateModal} className="flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl bg-green-500 px-3.5 text-sm font-semibold text-white hover:bg-green-600">
                 <PlusCircle size={16} /> Create New Bill
               </button>
+              <div className="relative">
+                <select value={sortBy} onChange={e => setSortBy(e.target.value as BillingSort)} className="h-10 appearance-none rounded-xl border border-gray-300 bg-gray-100 pl-3 pr-9 text-sm font-medium text-gray-600 outline-none focus:ring-2 focus:ring-blue-300">
+                  <option value="date">Sort: Date</option>
+                  <option value="status">Sort: Status</option>
+                  <option value="amount">Sort: Amount</option>
+                </select>
+                <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-500" />
+              </div>
               <div className="relative">
                 <select value={billingFilter} onChange={e => setBillingFilter(e.target.value as BillingFilter)} className="h-10 appearance-none rounded-xl border border-gray-300 bg-gray-100 pl-3 pr-9 text-sm font-medium text-gray-600 outline-none focus:ring-2 focus:ring-blue-300">
                   <option value="all">All Statuses</option>
@@ -399,14 +719,20 @@ export default function BillingAndPayments() {
                     <td className="px-3 py-2 font-semibold">{bill.patient}</td>
                     <td className="px-3 py-2 font-semibold">{formatDateForTable(bill.date)}</td>
                     <td className="px-3 py-2 font-semibold">{bill.total.replace('P', '₱')}</td>
-                    <td className="px-3 py-2 font-semibold">{bill.status}</td>
+                    <td className="px-3 py-2 font-semibold"><StatusPill status={bill.status} /></td>
                     <td className="px-3 py-2 flex items-center gap-3">
                       <button type="button" onClick={() => openViewModal(bill)} className="font-semibold text-blue-600 hover:text-blue-700">View</button>
-                      {bill.status === 'Pending' && <button type="button" onClick={() => openPayModal(bill)} className="font-semibold text-green-600 hover:text-green-700">Pay</button>}
+                      {bill.status === 'Pending' && <button type="button" onClick={() => openPaymentModal(bill)} className="font-semibold text-green-600 hover:text-green-700">Pay</button>}
+                      {bill.status === 'Pending' && <button type="button" onClick={() => openCancelModal(bill)} className="font-semibold text-red-600 hover:text-red-700">Cancel</button>}
                       {bill.status === 'Paid' && <button type="button" onClick={() => openReceiptModal(bill)} className="font-semibold text-gray-600 hover:text-gray-700">Receipt</button>}
                     </td>
                   </tr>
                 ))}
+                {!pagedBills.length && !isLoading && (
+                  <tr>
+                    <td colSpan={6} className="px-3 py-10 text-center text-sm text-gray-500">No billing records found.</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -422,16 +748,16 @@ export default function BillingAndPayments() {
         <div
           className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md"
           onClick={() => {
-            if (['payMethod','payCash','payGcash','payConfirm','payCancelConfirm','payCancelled','paySuccess','receipt'].includes(modal)) closePayModals();
+            if (['payBill', 'payMethod', 'payCash', 'payGcash', 'payConfirm', 'paySuccess', 'payCancelConfirm', 'payCancelled', 'cancelBill', 'receipt'].includes(modal)) closeAuxiliaryModals();
             else if (modal === 'addService' || modal === 'addMedication') setModal(prevModal);
             else setModal('none');
           }}
         >
           {/* ── Create / View Bill Modal ── */}
-          {(modal === 'createBill' || modal === 'viewBill') && (
+          {modal === 'createBill' && (
             <div className="w-full max-w-[960px] rounded-2xl border border-gray-200 bg-white shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
               <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
-                <h3 className="flex items-center gap-2 text-lg font-bold text-gray-800"><ReceiptText size={18} className="text-gray-500" />Bill Details</h3>
+                <h3 className="flex items-center gap-2 text-lg font-bold text-gray-800"><ReceiptText size={18} className="text-gray-500" />Create Bill</h3>
                 <button type="button" onClick={() => setModal('none')} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"><X size={15} /></button>
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr]">
@@ -492,9 +818,9 @@ export default function BillingAndPayments() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="text-xs text-gray-500 border-b border-gray-200">
-                          <th className="pb-2 text-left font-medium">Service Name</th>
+                          <th className="pb-2 text-left font-medium">Service</th>
                           <th className="pb-2 text-center font-medium">Quantity</th>
-                          <th className="pb-2 text-right font-medium">Unit Price</th>
+                          <th className="pb-2 text-right font-medium">Price</th>
                           <th className="pb-2 text-right font-medium">Subtotal</th>
                           {!isEditingExisting && <th className="pb-2"></th>}
                         </tr>
@@ -560,21 +886,139 @@ export default function BillingAndPayments() {
                       <div className="flex justify-between text-gray-700"><span className="font-medium">Discount</span><span className="font-semibold">₱{discount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</span></div>
                       <div className="flex justify-between text-gray-700"><span className="font-medium">Tax</span><span className="font-semibold">₱{tax.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</span></div>
                       <div className="border-t border-gray-300 pt-2 flex justify-between font-bold text-gray-900 text-base">
-                        <span>Final Bill</span>
+                        <span>Total Amount</span>
                         <span>₱{total.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</span>
                       </div>
                     </div>
                   </div>
 
-                  <button type="button" onClick={handleSubmitBill} className="h-10 w-full rounded-xl bg-blue-600 text-sm font-bold text-white hover:bg-blue-700 transition-colors">
-                    {isEditingExisting ? 'Save Changes' : 'Create New Bill'}
-                  </button>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <button type="button" onClick={handleSubmitBill} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-bold text-white hover:bg-blue-700 transition-colors">
+                      Create New Bill
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
           )}
 
           {/* ── Add Service Modal ── */}
+          {modal === 'viewBill' && selectedBill && selectedBillMeta && (
+            <div className="w-full max-w-[1080px] rounded-2xl border border-gray-200 bg-white shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="border-b border-gray-200 px-6 py-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400">Bill Control Panel</p>
+                    <h3 className="mt-1 text-2xl font-bold text-gray-900">{selectedBill.id}</h3>
+                    <p className="mt-1 text-sm text-gray-500">Date created: {toDateTimeDisplay(selectedBillMeta.createdAt)}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <StatusPill status={selectedBill.status} />
+                    <button type="button" onClick={() => setModal('none')} className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"><X size={16} /></button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-5 p-6 lg:grid-cols-[1.25fr_0.95fr]">
+                <div className="space-y-5">
+                  <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                    <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700"><User size={15} className="text-gray-400" />Patient Info</h4>
+                    <div className="mt-3 grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
+                      <div><p className="text-xs text-gray-400">Name</p><p className="font-bold text-gray-800">{selectedBill.patient}</p></div>
+                      <div><p className="text-xs text-gray-400">Patient ID</p><p className="font-bold text-gray-800">{selectedBillMeta.patientId}</p></div>
+                      <div><p className="text-xs text-gray-400">Doctor</p><p className="font-bold text-gray-800">{selectedBillMeta.doctor}</p></div>
+                      <div><p className="text-xs text-gray-400">Diagnosis</p><p className="font-bold text-gray-800">{selectedBillMeta.diagnosis}</p></div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                    <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><Stethoscope size={15} className="text-gray-400" />Services Table</h4>
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-200 text-xs text-gray-500">
+                          <th className="pb-2 text-left font-medium">Service</th>
+                          <th className="pb-2 text-center font-medium">Quantity</th>
+                          <th className="pb-2 text-right font-medium">Price</th>
+                          <th className="pb-2 text-right font-medium">Subtotal</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedBillMeta.services.map((service, idx) => (
+                          <tr key={`${service.name}-${idx}`} className="border-b border-gray-100 text-gray-800 last:border-b-0">
+                            <td className="py-2">{service.name}</td>
+                            <td className="py-2 text-center">{service.quantity}</td>
+                            <td className="py-2 text-right">{toPeso(service.unitPrice)}</td>
+                            <td className="py-2 text-right font-semibold">{toPeso(service.quantity * service.unitPrice)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="space-y-5">
+                  <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                    <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><ReceiptText size={15} className="text-gray-400" />Bill Summary</h4>
+                    <div className="space-y-2 text-sm text-gray-700">
+                      <div className="flex justify-between"><span>Subtotal</span><span className="font-semibold">{toPeso(subtotal)}</span></div>
+                      <div className="flex justify-between"><span>Discount</span><span className="font-semibold">{toPeso(discount)}</span></div>
+                      <div className="flex justify-between"><span>Tax</span><span className="font-semibold">{toPeso(tax)}</span></div>
+                      <div className="border-t border-gray-300 pt-2 flex justify-between text-base font-bold text-gray-900">
+                        <span>Total Amount</span>
+                        <span>{toPeso(total)}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                    <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><Wallet size={15} className="text-gray-400" />Payment Section</h4>
+                    {selectedBill.status === 'Paid' ? (
+                      <div className="space-y-2 text-sm text-gray-700">
+                        <div className="flex justify-between"><span>Payment Method</span><span className="font-semibold">{selectedBillMeta.paymentMethod || selectedPaymentRecord?.method || 'N/A'}</span></div>
+                        <div className="flex justify-between"><span>Payment Date &amp; Time</span><span className="font-semibold">{toDateTimeDisplay(selectedBillMeta.paymentDateTime || selectedBill.date)}</span></div>
+                        <div className="flex justify-between"><span>Reference Number</span><span className="font-semibold">{selectedBillMeta.paymentReference || 'N/A'}</span></div>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-500">No payment recorded yet.</p>
+                    )}
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                    <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><Info size={15} className="text-gray-400" />Activity / Verification</h4>
+                    <div className="space-y-2 text-sm text-gray-700">
+                      <div className="flex justify-between"><span>Processed by</span><span className="font-semibold">{selectedBillMeta.processedBy}</span></div>
+                      {selectedBill.status === 'Cancelled' && (
+                        <>
+                          <div className="flex justify-between"><span>Cancelled by</span><span className="font-semibold">{selectedBillMeta.cancelledBy || 'Staff'}</span></div>
+                          <div><p className="text-xs text-gray-400">Reason</p><p className="mt-1 rounded-lg bg-white px-3 py-2 text-sm text-gray-700">{selectedBillMeta.cancelledReason || 'No reason provided.'}</p></div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {selectedBill.status === 'Pending' && (
+                      <>
+                        <button type="button" onClick={() => openPaymentModal(selectedBill)} className="h-10 flex-1 rounded-xl bg-green-600 px-4 text-sm font-bold text-white hover:bg-green-700">Pay</button>
+                        <button type="button" onClick={() => openCancelModal(selectedBill)} className="h-10 flex-1 rounded-xl bg-red-600 px-4 text-sm font-bold text-white hover:bg-red-700">Cancel</button>
+                        <button type="button" onClick={() => printBillDocument('bill')} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
+                      </>
+                    )}
+                    {selectedBill.status === 'Paid' && (
+                      <>
+                        <button type="button" onClick={() => openReceiptModal(selectedBill)} className="h-10 flex-1 rounded-xl bg-blue-600 px-4 text-sm font-bold text-white hover:bg-blue-700">View Receipt</button>
+                        <button type="button" onClick={() => printBillDocument('bill')} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
+                      </>
+                    )}
+                    {selectedBill.status === 'Cancelled' && (
+                      <button type="button" onClick={() => printBillDocument('bill')} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {modal === 'addService' && (
             <div className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white shadow-2xl p-6" onClick={e => e.stopPropagation()}>
               <div className="flex items-center gap-3 mb-5">
@@ -726,6 +1170,122 @@ export default function BillingAndPayments() {
             </div>
           )}
 
+          {modal === 'payBill' && selectedPayRow && (
+            <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+              <h3 className="text-xl font-bold text-gray-900">Record Payment</h3>
+              <p className="mt-1 text-sm text-gray-500">Complete the payment details for {selectedPayRow.id}.</p>
+              <div className="mt-5 space-y-4 text-sm">
+                <div>
+                  <label className="mb-1 block font-semibold text-gray-700">Amount</label>
+                  <input value={paymentAmount} onChange={e => setPaymentAmount(e.target.value)} className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50 px-3" />
+                </div>
+                <div>
+                  <label className="mb-1 block font-semibold text-gray-700">Payment Method</label>
+                  <select value={selectedMethod} onChange={e => setSelectedMethod(e.target.value as PaymentMethod)} className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50 px-3">
+                    <option value="Cash">Cash</option>
+                    <option value="GCash">GCash</option>
+                    <option value="Maya">Maya</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block font-semibold text-gray-700">Reference Number</label>
+                  <input value={paymentReferenceInput} onChange={e => setPaymentReferenceInput(e.target.value)} placeholder="Optional" className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50 px-3" />
+                </div>
+              </div>
+              <div className="mt-6 flex gap-2">
+                <button type="button" onClick={closeAuxiliaryModals} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50">Back</button>
+                <button type="button" onClick={handleConfirmPayment} disabled={isSubmitting} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60">{isSubmitting ? 'Processing...' : 'Confirm Payment'}</button>
+              </div>
+            </div>
+          )}
+
+          {modal === 'cancelBill' && selectedBill && (
+            <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center gap-3">
+                <div className="rounded-full bg-red-100 p-2 text-red-600"><AlertTriangle size={18} /></div>
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900">Cancel Bill</h3>
+                  <p className="text-sm text-gray-500">Are you sure you want to cancel this bill?</p>
+                </div>
+              </div>
+              <div className="mt-5">
+                <label className="mb-1 block text-sm font-semibold text-gray-700">Reason</label>
+                <textarea value={cancelReason} onChange={e => setCancelReason(e.target.value)} rows={4} className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm" placeholder="Enter cancellation reason" />
+              </div>
+              <div className="mt-6 flex gap-2">
+                <button type="button" onClick={closeAuxiliaryModals} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50">Back</button>
+                <button type="button" onClick={handleCancelBill} className="h-10 flex-1 rounded-xl bg-red-600 text-sm font-semibold text-white hover:bg-red-700">Confirm Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {modal === 'receipt' && selectedBill && selectedBillMeta && (
+            <div className="w-full max-w-3xl rounded-2xl border border-gray-200 bg-white shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
+              <div className="border-b border-gray-200 bg-gray-50 px-6 py-5">
+                <p className="text-sm font-semibold tracking-[0.2em] text-gray-500">CliniKaPlus</p>
+                <h3 className="mt-1 text-3xl font-bold text-gray-900">OFFICIAL RECEIPT</h3>
+              </div>
+              <div className="space-y-5 p-6">
+                <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
+                  <div><p className="text-xs text-gray-400">Receipt No.</p><p className="font-bold text-gray-800">{`RCT-${selectedBill.id}`}</p></div>
+                  <div><p className="text-xs text-gray-400">Date &amp; Time</p><p className="font-bold text-gray-800">{toDateTimeDisplay(selectedBillMeta.paymentDateTime || selectedBill.date)}</p></div>
+                  <div><p className="text-xs text-gray-400">Patient Info</p><p className="font-bold text-gray-800">{selectedBill.patient} ({selectedBillMeta.patientId})</p></div>
+                  <div><p className="text-xs text-gray-400">Processed by</p><p className="font-bold text-gray-800">{selectedBillMeta.processedBy}</p></div>
+                </div>
+
+                <div className="rounded-2xl border border-gray-200">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50">
+                      <tr className="text-xs text-gray-500">
+                        <th className="px-4 py-3 text-left font-medium">Service</th>
+                        <th className="px-4 py-3 text-center font-medium">Quantity</th>
+                        <th className="px-4 py-3 text-right font-medium">Price</th>
+                        <th className="px-4 py-3 text-right font-medium">Subtotal</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedBillMeta.services.map((service, idx) => (
+                        <tr key={`${service.name}-${idx}`} className="border-t border-gray-100 text-gray-800">
+                          <td className="px-4 py-3">{service.name}</td>
+                          <td className="px-4 py-3 text-center">{service.quantity}</td>
+                          <td className="px-4 py-3 text-right">{toPeso(service.unitPrice)}</td>
+                          <td className="px-4 py-3 text-right font-semibold">{toPeso(service.quantity * service.unitPrice)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="grid grid-cols-1 gap-5 md:grid-cols-[1.2fr_0.8fr]">
+                  <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">Footer</p>
+                    <div className="mt-3 space-y-2">
+                      <div className="flex justify-between"><span>Payment Method</span><span className="font-semibold">{selectedBillMeta.paymentMethod || 'N/A'}</span></div>
+                      <div className="flex justify-between"><span>Reference Number</span><span className="font-semibold">{selectedBillMeta.paymentReference || 'N/A'}</span></div>
+                      <div className="flex justify-between"><span>Processed by</span><span className="font-semibold">{selectedBillMeta.processedBy}</span></div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-400">Payment Summary</p>
+                    <div className="mt-3 space-y-2">
+                      <div className="flex justify-between"><span>Total</span><span className="font-semibold">{toPeso(total)}</span></div>
+                      <div className="flex justify-between"><span>Amount Paid</span><span className="font-semibold">{toPeso(selectedBillMeta.amountPaid ?? total)}</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div className="border-t border-gray-200 px-6 py-4">
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => printBillDocument('receipt')} className="flex h-10 flex-1 items-center justify-center gap-2 rounded-xl border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50">
+                    <Printer size={16} />
+                    Print Receipt
+                  </button>
+                  <button type="button" onClick={closeAuxiliaryModals} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">Done</button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* ── Pay: Select Method ── */}
           {modal === 'payMethod' && selectedPayRow && (
             <div className="w-full max-w-2xl rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-xl" onClick={e => e.stopPropagation()}>
@@ -864,7 +1424,7 @@ export default function BillingAndPayments() {
           )}
 
           {/* ── Receipt ── */}
-          {modal === 'receipt' && selectedPayRow && (
+          {false && modal === 'receipt' && selectedPayRow && (
             <div className="w-full max-w-md rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-xl" onClick={e => e.stopPropagation()}>
               <div className="flex items-center gap-2 text-2xl font-bold text-gray-800"><ReceiptText size={20} />Payment Receipt</div>
               <p className="mt-1 text-sm text-gray-600">Official payment summary for this transaction.</p>
@@ -877,8 +1437,12 @@ export default function BillingAndPayments() {
                   <div className="mt-3 flex justify-between border-t border-gray-400 pt-3 font-bold"><span>Total Paid</span><span>{selectedPayRow.total.replace('P', '₱')}</span></div>
                 </div>
               </div>
-              <div className="mt-4">
-                <button type="button" onClick={closePayModals} className="h-9 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white">Done</button>
+              <div className="mt-4 flex gap-2">
+                <button type="button" onClick={printBillReceipt} className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50">
+                  <Printer size={16} />
+                  Print Receipt
+                </button>
+                <button type="button" onClick={closePayModals} className="h-9 flex-1 rounded-lg bg-blue-600 text-sm font-semibold text-white">Done</button>
               </div>
             </div>
           )}

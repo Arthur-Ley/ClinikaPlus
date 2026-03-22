@@ -291,6 +291,68 @@ async function fetchAnalyticsPayments() {
   return data || [];
 }
 
+async function fetchPaymentsWithBillContext() {
+  const { data, error } = await supabase
+    .from("tbl_payments")
+    .select(`
+      payment_id,
+      payment_code,
+      bill_id,
+      payment_method,
+      amount_paid,
+      reference_number,
+      payment_date,
+      received_by,
+      notes,
+      created_at,
+      tbl_bills (
+        bill_id,
+        bill_code,
+        patient_id,
+        status,
+        net_amount,
+        total_amount,
+        created_at,
+        tbl_patients (*)
+      )
+    `)
+    .order("payment_date", { ascending: false })
+    .order("payment_id", { ascending: false });
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function fetchBillItemsForReports() {
+  const { data, error } = await supabase
+    .from("tbl_bill_items")
+    .select(`
+      bill_item_id,
+      bill_id,
+      service_id,
+      medication_id,
+      log_id,
+      description,
+      quantity,
+      unit_price,
+      subtotal,
+      created_at,
+      tbl_bills (
+        bill_id,
+        status
+      ),
+      tbl_medications (
+        medication_id,
+        medication_name
+      )
+    `)
+    .order("created_at", { ascending: false })
+    .order("bill_item_id", { ascending: false });
+
+  if (error) throw error;
+  return data || [];
+}
+
 async function getInventoryByMedicationId(medicationId) {
   const { data, error } = await supabase
     .from("tbl_inventory")
@@ -363,6 +425,8 @@ export {
   deletePaymentById,
   fetchAnalyticsBills,
   fetchAnalyticsPayments,
+  fetchBillItemsForReports,
+  fetchPaymentsWithBillContext,
   getBillById,
   getBillItemById,
   getBillItemsByBillId,

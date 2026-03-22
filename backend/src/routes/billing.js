@@ -7,6 +7,8 @@ import {
   createPayment,
   getBillDetails,
   getBillingAnalytics,
+  getBillingReportsOverview,
+  getBillingTransactions,
   getBills,
   removeBillItem,
   updateBillItem,
@@ -15,6 +17,8 @@ import {
 export const billingRouter = Router();
 
 billingRouter.get("/dashboard/analytics", asyncHandler(getBillingAnalytics));
+billingRouter.get("/reports/overview", asyncHandler(getBillingReportsOverview));
+billingRouter.get("/transactions", asyncHandler(getBillingTransactions));
 billingRouter.get("/bills", asyncHandler(getBills));
 billingRouter.get("/bills/:billId", asyncHandler(getBillDetails));
 billingRouter.post("/bills", asyncHandler(createBill));

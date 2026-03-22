@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard';
 import CurrentStocks from './pages/pharmacy/CurrentStocks';
 import RestockSuppliers from './pages/pharmacy/RestockSuppliers';
 import BillingAndPayments from './pages/billing/BillingandPayments';
+import Transactions from './pages/billing/Transactions';
 import RevenueReports from './pages/billing/RevenueReports';
 import Settings from './pages/Settings';
 
@@ -26,7 +27,9 @@ const router = createBrowserRouter([
       { path: 'billing', element: <BillingAndPayments /> },
       { path: 'billing/records', element: <BillingAndPayments /> },
       { path: 'billing/payments', element: <BillingAndPayments /> },
+      { path: 'billing/transactions', element: <Transactions /> },
       { path: 'billing/reports', element: <RevenueReports /> },
+      { path: 'transactions', element: <Transactions /> },
       { path: 'reports', element: <RevenueReports /> },
       // Settings
       { path: 'settings', element: <Settings /> },

@@ -413,7 +413,6 @@ export default function CurrentStocks() {
 
   const alertCategories = useMemo(() => Array.from(new Set(alerts.map(a => a.category))).sort(), [alerts]);
   const alertTotalPages = Math.ceil(filteredAlerts.length / ALERTS_PAGE_SIZE);
-  const pagedAlerts = filteredAlerts.slice((alertPage - 1) * ALERTS_PAGE_SIZE, alertPage * ALERTS_PAGE_SIZE);
   const canCollapseAlerts = filteredAlerts.length > 3;
   const visibleAlerts = showAllAlerts ? filteredAlerts : filteredAlerts.slice(0, 3);
 
@@ -559,7 +558,11 @@ export default function CurrentStocks() {
     };
     setRestockErrors(errors);
     if (Object.values(errors).some(Boolean) || !restockTarget) return;
-    const item = items.find(i => i.id === restockTarget.id);
+  const item = items.find(i => i.id === restockTarget.id);
+    if (!item) {
+      setRestockErrors(prev => ({ ...prev, supplier: 'Unable to find the selected medication.' }));
+      return;
+    }
     const supplierId = Number(restockDetails.supplier);
     if (!Number.isInteger(supplierId) || supplierId <= 0) { setRestockErrors(prev => ({ ...prev, supplier: 'Select a supplier.' })); return; }
     try {

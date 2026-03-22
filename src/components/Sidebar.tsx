@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -11,6 +11,7 @@ import {
   Boxes,
   Truck,
   FileText,
+  ArrowLeftRight,
 } from 'lucide-react';
 import { RESTOCK_REQUESTS_CHANGED_EVENT } from '../pages/pharmacy/restockRequestsStore';
 
@@ -196,6 +197,7 @@ export default function Sidebar() {
 
         <Group to="/billing" active={billingActive} label="Billing & Reports" icon={Receipt}>
           <SubLink to="/billing" label="Billing & Payments" icon={FileText} />
+          <SubLink to="/billing/transactions" label="Transactions" icon={ArrowLeftRight} />
           <SubLink to="/billing/reports" label="Reports" icon={BarChart3} />
         </Group>
       </nav>

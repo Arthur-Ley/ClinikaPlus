@@ -65,6 +65,7 @@ export type BillingPaymentsContextValue = {
   updateBill: (id: string, updates: UpdateBillInput) => void;
   markPaymentPaid: (input: MarkPaymentPaidInput) => Promise<void>;
   setPaymentProcessing: (input: SetPaymentProcessingInput) => Promise<void>;
+  cancelBill: (id: string) => Promise<void>;
 };
 
 type BackendBill = {
@@ -449,6 +450,29 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
     );
   }, [paymentQueue, refreshBillingData]);
 
+  const cancelBill = useCallback(async (id: string) => {
+    const row = billingRecords.find((item) => item.id === id);
+    if (!row) {
+      throw new Error('Bill record not found.');
+    }
+
+    const backendBillId = toPositiveInteger(row.backendBillId) ?? extractPositiveInteger(row.id);
+    if (!backendBillId) {
+      throw new Error('Unable to resolve bill ID for cancellation.');
+    }
+
+    const response = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}/cancel`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      throw new Error(await parseErrorMessage(response));
+    }
+
+    await refreshBillingData();
+  }, [billingRecords, refreshBillingData]);
+
   const value = useMemo(
     () => ({
       billingRecords,
@@ -458,8 +482,9 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
       updateBill,
       markPaymentPaid,
       setPaymentProcessing,
+      cancelBill,
     }),
-    [billingRecords, paymentQueue, isLoading, addBill, updateBill, markPaymentPaid, setPaymentProcessing],
+    [billingRecords, paymentQueue, isLoading, addBill, updateBill, markPaymentPaid, setPaymentProcessing, cancelBill],
   );
 
   return <BillingPaymentsContext.Provider value={value}>{children}</BillingPaymentsContext.Provider>;

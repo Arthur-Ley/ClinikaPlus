@@ -27,8 +27,9 @@ const NAVIGATION_ENTRIES: NavigationEntry[] = [
 { id: 'nav-pharmacy-inventory', label: 'Pharmacy Inventory', path: '/pharmacy/inventory', keywords: ['stocks', 'inventory', 'medicines', 'medication', 'alerts', 'warnings'] },
   { id: 'nav-restock-requests', label: 'Restock Requests', path: '/pharmacy/restock', keywords: ['restock', 'requests', 'purchase', 'order'] },
   { id: 'nav-suppliers', label: 'Suppliers', path: '/pharmacy/restock', keywords: ['suppliers', 'vendor', 'pharma'] },
-  { id: 'nav-billing', label: 'Billing', path: '/billing', keywords: ['billing', 'bills', 'charges', 'invoice'] },
+  { id: 'nav-billing', label: 'Billing & Payments', path: '/billing', keywords: ['billing', 'bills', 'charges', 'invoice'] },
   { id: 'nav-payments', label: 'Payments', path: '/billing/payments', keywords: ['payments', 'cash', 'gcash', 'maya'] },
+  { id: 'nav-transactions', label: 'Transactions', path: '/billing/transactions', keywords: ['transactions', 'receipt', 'history', 'audit trail'] },
   { id: 'nav-revenue', label: 'Revenue Reports', path: '/billing/reports', keywords: ['revenue', 'reports', 'analytics', 'finance'] },
 
 ];
@@ -94,6 +95,9 @@ function getPageTitle(pathname: string) {
   }
   if (pathname.startsWith('/billing/reports') || pathname.startsWith('/reports')) {
   return 'Billing & Reports | Reports';
+  }
+  if (pathname.startsWith('/billing/transactions') || pathname.startsWith('/transactions')) {
+    return 'Billing & Reports | Transactions';
   }
   if (pathname.startsWith('/billing')) return 'Billing & Reports | Billing & Payments';
   return 'Overview';
@@ -394,7 +398,7 @@ export default function Header() {
               if (debouncedQuery || rawQuery.trim()) setIsOpen(true);
             }}
             onKeyDown={onInputKeyDown}
-            placeholder="Search pages, medications, alerts, requests, suppliers, bills"
+            placeholder="Search pages, medications, alerts, requests, suppliers, bills, receipts"
             className="w-full h-10 rounded-lg border border-blue-100 bg-blue-100 pl-9 pr-10 text-sm text-gray-700 outline-none focus:ring-2 focus:ring-blue-300"
           />
           {rawQuery.trim() && (

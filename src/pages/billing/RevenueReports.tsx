@@ -9,7 +9,6 @@ import {
   PieChart,
   BarChartHorizontal,
 } from 'lucide-react';
-import { useBillingPayments } from '../../context/useBillingPayments.ts';
 
 type RevenueCard = {
   title: string;
@@ -27,36 +26,26 @@ type ChartPoint = {
 type BillingAnalytics = {
   total_pending_bills: number;
   total_paid_bills: number;
+  total_transactions?: number;
   total_revenue: number;
   total_outstanding_balance: number;
   average_bill_amount: number;
 };
 
-type BillingAnalyticsResponse = {
+type BillingReportsOverviewResponse = {
   analytics?: BillingAnalytics;
+  charts?: {
+    revenue_by_month?: ChartPoint[];
+    revenue_by_date?: ChartPoint[];
+    revenue_by_method?: ChartPoint[];
+    revenue_by_service?: ChartPoint[];
+  };
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 function formatMoney(value: number) {
   return `PHP ${Math.round(value).toLocaleString()}`;
-}
-
-function formatMonthLabel(isoDate: string) {
-  const parsed = new Date(isoDate);
-  if (Number.isNaN(parsed.getTime())) return isoDate;
-  return parsed.toLocaleDateString('en-US', { month: 'short' });
-}
-
-function formatDayLabel(isoDate: string) {
-  const parsed = new Date(isoDate);
-  if (Number.isNaN(parsed.getTime())) return isoDate;
-  return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-function parseBillingAmount(total: string) {
-  const parsed = Number(total.replace(/[^\d.-]/g, ''));
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function getPointsForLine(data: ChartPoint[]) {
@@ -111,7 +100,7 @@ function RevenueOverTimeChart({ data }: { data: ChartPoint[] }) {
           </div>
         ))}
       </div>
-      <p className="mt-3 text-xs text-gray-600">Source: paid rows grouped by month from payments data.</p>
+      <p className="mt-3 text-xs text-gray-600">Source: backend-paid rows grouped by month.</p>
     </div>
   );
 }
@@ -147,7 +136,7 @@ function DailyCollectionsChart({ data }: { data: ChartPoint[] }) {
           </span>
         ))}
       </div>
-      <p className="mt-2 text-xs text-gray-600">Source: paid rows grouped by date from payments data.</p>
+      <p className="mt-2 text-xs text-gray-600">Source: backend-paid rows grouped by date.</p>
     </div>
   );
 }
@@ -190,7 +179,7 @@ function PaymentMethodChart({ data }: { data: ChartPoint[] }) {
           </div>
         ))}
       </div>
-      <p className="mt-3 text-xs text-gray-600">Source: paid rows grouped by payment method from payments data.</p>
+      <p className="mt-3 text-xs text-gray-600">Source: backend payments grouped by method.</p>
     </div>
   );
 }
@@ -217,9 +206,7 @@ function RevenueByServiceChart({ data }: { data: ChartPoint[] }) {
           </div>
         ))}
       </div>
-      <p className="mt-3 text-xs text-gray-600">
-        Source: paid bill totals allocated across available service buckets because no direct service-level payment table exists.
-      </p>
+      <p className="mt-3 text-xs text-gray-600">Source: backend paid bill items grouped by labeled service or medication.</p>
     </div>
   );
 }
@@ -261,32 +248,46 @@ function RevenueReportsSkeleton() {
 }
 
 export default function RevenueReports() {
-  const { paymentQueue, billingRecords, isLoading } = useBillingPayments();
   const [analytics, setAnalytics] = useState<BillingAnalytics | null>(null);
-  const [pageLoading, setPageLoading] = useState(true);
-
-  const paidPayments = useMemo(
-    () => paymentQueue.filter((row) => row.status === 'Paid' && row.amount > 0),
-    [paymentQueue],
-  );
-
-  const paidBills = useMemo(
-    () => billingRecords.filter((row) => row.status === 'Paid' && parseBillingAmount(row.total) > 0),
-    [billingRecords],
-  );
+  const [charts, setCharts] = useState({
+    revenue_by_month: [] as ChartPoint[],
+    revenue_by_date: [] as ChartPoint[],
+    revenue_by_method: [] as ChartPoint[],
+    revenue_by_service: [] as ChartPoint[],
+  });
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
 
     (async () => {
       try {
-        const response = await fetch(`${API_BASE_URL}/billing/dashboard/analytics`);
-        if (!response.ok) return;
-        const payload = (await response.json()) as BillingAnalyticsResponse;
-        if (!active || !payload.analytics) return;
-        setAnalytics(payload.analytics);
+        const response = await fetch(`${API_BASE_URL}/billing/reports/overview`);
+        if (!response.ok) throw new Error('Failed to load billing reports.');
+
+        const payload = (await response.json()) as BillingReportsOverviewResponse;
+        if (!active) return;
+
+        setAnalytics(payload.analytics || null);
+        setCharts({
+          revenue_by_month: payload.charts?.revenue_by_month || [],
+          revenue_by_date: payload.charts?.revenue_by_date || [],
+          revenue_by_method: payload.charts?.revenue_by_method || [],
+          revenue_by_service: payload.charts?.revenue_by_service || [],
+        });
       } catch {
-        // Keep client-side computed fallback if analytics endpoint is unavailable.
+        if (!active) return;
+        setAnalytics(null);
+        setCharts({
+          revenue_by_month: [],
+          revenue_by_date: [],
+          revenue_by_method: [],
+          revenue_by_service: [],
+        });
+      } finally {
+        if (active) {
+          setIsLoading(false);
+        }
       }
     })();
 
@@ -296,18 +297,10 @@ export default function RevenueReports() {
   }, []);
 
   const cards = useMemo<RevenueCard[]>(() => {
-    const computedTotalRevenue = paidPayments.reduce((sum, row) => sum + row.amount, 0);
-    const computedOutstanding = paymentQueue
-      .filter((row) => row.status !== 'Paid')
-      .reduce((sum, row) => sum + row.amount, 0);
-    const computedAverage = paidPayments.length > 0 ? computedTotalRevenue / paidPayments.length : 0;
-
-    const totalRevenue = analytics?.total_revenue ?? computedTotalRevenue;
-    const outstanding = analytics?.total_outstanding_balance ?? computedOutstanding;
-    const avgPayment = analytics?.average_bill_amount ?? computedAverage;
-    const totalTransactions = analytics
-      ? analytics.total_paid_bills + analytics.total_pending_bills
-      : paymentQueue.length;
+    const totalRevenue = analytics?.total_revenue ?? 0;
+    const outstanding = analytics?.total_outstanding_balance ?? 0;
+    const avgPayment = analytics?.average_bill_amount ?? 0;
+    const totalTransactions = analytics?.total_transactions ?? ((analytics?.total_paid_bills ?? 0) + (analytics?.total_pending_bills ?? 0));
 
     return [
       {
@@ -339,83 +332,11 @@ export default function RevenueReports() {
         icon: Coins,
       },
     ];
-  }, [analytics, paymentQueue, paidPayments]);
-
-  const revenueByMonth = useMemo<ChartPoint[]>(() => {
-    const grouped = paidPayments.reduce<Record<string, number>>((acc, row) => {
-      const key = row.date.slice(0, 7);
-      acc[key] = (acc[key] || 0) + row.amount;
-      return acc;
-    }, {});
-
-    return Object.entries(grouped)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .slice(-4)
-      .map(([month, value]) => ({
-        label: formatMonthLabel(`${month}-01`),
-        value,
-      }));
-  }, [paidPayments]);
-
-  const revenueByDate = useMemo<ChartPoint[]>(() => {
-    const grouped = paidPayments.reduce<Record<string, number>>((acc, row) => {
-      acc[row.date] = (acc[row.date] || 0) + row.amount;
-      return acc;
-    }, {});
-
-    return Object.entries(grouped)
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .slice(-7)
-      .map(([date, value]) => ({
-        label: formatDayLabel(date),
-        value,
-      }));
-  }, [paidPayments]);
-
-  const revenueByMethod = useMemo<ChartPoint[]>(() => {
-    const grouped = paidPayments.reduce<Record<string, number>>((acc, row) => {
-      const method = row.method === '-' ? 'Unspecified' : row.method;
-      acc[method] = (acc[method] || 0) + row.amount;
-      return acc;
-    }, {});
-
-    return Object.entries(grouped)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 4)
-      .map(([label, value]) => ({ label, value }));
-  }, [paidPayments]);
-
-  const revenueByService = useMemo<ChartPoint[]>(() => {
-    const serviceBuckets = ['Consultation', 'Lab Test', 'X-Ray', 'Vaccination'];
-    const seeded = serviceBuckets.reduce<Record<string, number>>((acc, key) => {
-      acc[key] = 0;
-      return acc;
-    }, {});
-
-    paidBills.forEach((bill, idx) => {
-      const targetService = serviceBuckets[idx % serviceBuckets.length];
-      seeded[targetService] += parseBillingAmount(bill.total);
-    });
-
-    return Object.entries(seeded)
-      .map(([label, value]) => ({ label, value }))
-      .sort((a, b) => b.value - a.value);
-  }, [paidBills]);
-
-  const showSkeleton = isLoading || pageLoading;
-
-  useEffect(() => {
-    if (isLoading) {
-      setPageLoading(true);
-      return;
-    }
-    const timeout = window.setTimeout(() => setPageLoading(false), 350);
-    return () => window.clearTimeout(timeout);
-  }, [isLoading]);
+  }, [analytics]);
 
   return (
     <div className="space-y-5">
-      {showSkeleton ? (
+      {isLoading ? (
         <RevenueReportsSkeleton />
       ) : (
         <section className="rounded-2xl bg-gray-300/80 p-4 space-y-4">
@@ -426,10 +347,10 @@ export default function RevenueReports() {
           </div>
 
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            <RevenueOverTimeChart data={revenueByMonth} />
-            <DailyCollectionsChart data={revenueByDate} />
-            <PaymentMethodChart data={revenueByMethod} />
-            <RevenueByServiceChart data={revenueByService} />
+            <RevenueOverTimeChart data={charts.revenue_by_month} />
+            <DailyCollectionsChart data={charts.revenue_by_date} />
+            <PaymentMethodChart data={charts.revenue_by_method} />
+            <RevenueByServiceChart data={charts.revenue_by_service} />
           </div>
         </section>
       )}
