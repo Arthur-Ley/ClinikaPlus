@@ -21,6 +21,7 @@ import {
   CircleDot,
 } from 'lucide-react';
 import Button from '../../components/ui/Button.tsx';
+import SectionToolbar from '../../components/ui/SectionToolbar.tsx';
 import {
   loadRestockRequests,
   RESTOCK_REQUESTS_CHANGED_EVENT,
@@ -153,6 +154,8 @@ export default function RestockSuppliers() {
   const [requestSeverityFilter, setRequestSeverityFilter] = useState('All Severity');
   const [requestCategoryFilter, setRequestCategoryFilter] = useState('All Categories');
   const [statusFilter, setStatusFilter] = useState('All Status');
+  const [requestSearchTerm, setRequestSearchTerm] = useState('');
+  const [supplierSearchTerm, setSupplierSearchTerm] = useState('');
   const [supplierRows, setSupplierRows] = useState<Supplier[]>([]);
   const [restockRequests, setRestockRequests] = useState<RestockRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -386,18 +389,23 @@ export default function RestockSuppliers() {
 
   const filteredRestockRequests = useMemo(() => {
     const severityRank: Record<RequestSeverity, number> = { Critical: 0, Warning: 1 };
+    const normalizedSearch = requestSearchTerm.trim().toLowerCase();
     return restockRequests
       .filter((r) => {
         const matchesSeverity = requestSeverityFilter === 'All Severity' || r.severity === requestSeverityFilter;
         const matchesCategory = requestCategoryFilter === 'All Categories' || r.category === requestCategoryFilter;
-        return matchesSeverity && matchesCategory;
+        const matchesSearch = !normalizedSearch
+          || r.id.toLowerCase().includes(normalizedSearch)
+          || r.medication.toLowerCase().includes(normalizedSearch)
+          || r.supplier.toLowerCase().includes(normalizedSearch);
+        return matchesSeverity && matchesCategory && matchesSearch;
       })
       .sort((a, b) => {
         const severityDiff = severityRank[a.severity] - severityRank[b.severity];
         if (severityDiff !== 0) return severityDiff;
         return new Date(b.requestedOnIso).getTime() - new Date(a.requestedOnIso).getTime();
       });
-  }, [restockRequests, requestSeverityFilter, requestCategoryFilter]);
+  }, [restockRequests, requestSeverityFilter, requestCategoryFilter, requestSearchTerm]);
 
   const requestsByStatus = useMemo(() => ({
     Completed: filteredRestockRequests.filter((r) => r.status === 'Completed'),
@@ -423,8 +431,17 @@ export default function RestockSuppliers() {
   }, [supplierRows, supplierRequestStats]);
 
   const displayedSuppliers = useMemo(() => {
-    return alignedSuppliers.filter((s) => statusFilter === 'All Status' || s.status === statusFilter);
-  }, [alignedSuppliers, statusFilter]);
+    const normalizedSearch = supplierSearchTerm.trim().toLowerCase();
+    return alignedSuppliers.filter((s) => {
+      const matchesStatus = statusFilter === 'All Status' || s.status === statusFilter;
+      const matchesSearch = !normalizedSearch
+        || s.id.toLowerCase().includes(normalizedSearch)
+        || s.name.toLowerCase().includes(normalizedSearch)
+        || (s.email || '').toLowerCase().includes(normalizedSearch)
+        || (s.contact || '').toLowerCase().includes(normalizedSearch);
+      return matchesStatus && matchesSearch;
+    });
+  }, [alignedSuppliers, statusFilter, supplierSearchTerm]);
 
   const focusRequestCode = useMemo(() => new URLSearchParams(location.search).get('focusRequestCode') || '', [location.search]);
   const focusSupplierId = useMemo(() => new URLSearchParams(location.search).get('focusSupplierId') || '', [location.search]);
@@ -436,6 +453,7 @@ export default function RestockSuppliers() {
     if (!target) return;
     setRequestSeverityFilter('All Severity');
     setRequestCategoryFilter('All Categories');
+    setRequestSearchTerm('');
     setStatusFilter('All Status');
     setTimeout(() => {
       const node = document.querySelector(`[data-search-request-code="${focusRequestCode}"]`);
@@ -451,6 +469,7 @@ export default function RestockSuppliers() {
     if (!focusSupplierId) return;
     if (focusHandledKey === `supplier:${focusSupplierId}`) return;
     setStatusFilter('All Status');
+    setSupplierSearchTerm('');
     setTimeout(() => {
       const node = document.querySelector(`[data-search-supplier-id="${focusSupplierId}"]`);
       if (node instanceof HTMLElement) {
@@ -648,29 +667,32 @@ export default function RestockSuppliers() {
           {/* ── Restock Requests ── */}
           <div className="rounded-2xl bg-gray-100 p-4">
             <div className="space-y-3">
-              <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <Boxes className="h-6 w-6 text-gray-500" />
-                  <h2 className="text-xl font-semibold text-gray-700">Restock Requests</h2>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="relative">
-                    <select value={requestSeverityFilter} onChange={(e) => setRequestSeverityFilter(e.target.value)} className="h-10 appearance-none rounded-lg border border-gray-300 bg-gray-100 pl-3 pr-8 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400">
-                      <option>All Severity</option>
-                      <option>Critical</option>
-                      <option>Warning</option>
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
-                  </div>
-                  <div className="relative">
-                    <select value={requestCategoryFilter} onChange={(e) => setRequestCategoryFilter(e.target.value)} className="h-10 appearance-none rounded-lg border border-gray-300 bg-gray-100 pl-3 pr-8 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400">
-                      <option>All Categories</option>
-                      {requestCategories.map((cat) => <option key={cat}>{cat}</option>)}
-                    </select>
-                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
-                  </div>
-                </div>
-              </div>
+              <SectionToolbar
+                icon={Boxes}
+                title="Restock Requests"
+                searchValue={requestSearchTerm}
+                onSearchChange={setRequestSearchTerm}
+                searchPlaceholder="Search Request ID, Medication, Supplier"
+                rightControls={(
+                  <>
+                    <div className="relative">
+                      <select value={requestSeverityFilter} onChange={(e) => setRequestSeverityFilter(e.target.value)} className="h-10 appearance-none rounded-lg border border-gray-300 bg-gray-100 pl-3 pr-8 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400">
+                        <option>All Severity</option>
+                        <option>Critical</option>
+                        <option>Warning</option>
+                      </select>
+                      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+                    </div>
+                    <div className="relative">
+                      <select value={requestCategoryFilter} onChange={(e) => setRequestCategoryFilter(e.target.value)} className="h-10 appearance-none rounded-lg border border-gray-300 bg-gray-100 pl-3 pr-8 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400">
+                        <option>All Categories</option>
+                        {requestCategories.map((cat) => <option key={cat}>{cat}</option>)}
+                      </select>
+                      <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+                    </div>
+                  </>
+                )}
+              />
 
               <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
                 {(['Completed', 'Pending', 'Cancelled'] as RequestStatus[]).map((status) => (
@@ -752,27 +774,31 @@ export default function RestockSuppliers() {
 
           {/* ── Supplier Table ── */}
           <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-            <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-              <div className="flex items-center gap-2">
-                <Building2 className="h-5 w-5 text-gray-500" />
-                <h2 className="text-xl font-semibold text-gray-700">Supplier Table</h2>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 md:justify-end">
-                <Button className="inline-flex h-10 items-center gap-2 whitespace-nowrap bg-green-500 pl-3 pr-4 py-1.5 text-sm hover:bg-green-600" onClick={() => { resetNewSupplierForm(); setModal('add'); }}>
-                  <PlusCircle className="h-4 w-4 shrink-0" />
-                  Add Supplier
-                </Button>
-                <div className="relative">
-                  <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="h-10 appearance-none rounded-lg border border-gray-300 bg-gray-100 pl-3 pr-8 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400">
-                    <option>All Status</option>
-                    <option>Preferred</option>
-                    <option>Active</option>
-                    <option>Review</option>
-                  </select>
-                  <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
-                </div>
-              </div>
-            </div>
+            <SectionToolbar
+              className="mb-3"
+              icon={Building2}
+              title="Supplier Table"
+              searchValue={supplierSearchTerm}
+              onSearchChange={setSupplierSearchTerm}
+              searchPlaceholder="Search Supplier ID, Name, Contact"
+              rightControls={(
+                <>
+                  <Button className="inline-flex h-10 items-center gap-2 whitespace-nowrap bg-green-500 pl-3 pr-4 py-1.5 text-sm hover:bg-green-600" onClick={() => { resetNewSupplierForm(); setModal('add'); }}>
+                    <PlusCircle className="h-4 w-4 shrink-0" />
+                    Add Supplier
+                  </Button>
+                  <div className="relative">
+                    <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="h-10 appearance-none rounded-lg border border-gray-300 bg-gray-100 pl-3 pr-8 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400">
+                      <option>All Status</option>
+                      <option>Preferred</option>
+                      <option>Active</option>
+                      <option>Review</option>
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+                  </div>
+                </>
+              )}
+            />
             <div className="overflow-x-auto rounded-xl border border-gray-200">
               <table className="min-w-full table-fixed text-sm">
                 <thead className="bg-gray-200/90 text-gray-700">
@@ -1215,3 +1241,5 @@ export default function RestockSuppliers() {
     </div>
   );
 }
+
+

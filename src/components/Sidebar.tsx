@@ -53,10 +53,23 @@ function TopLink({ to, label, icon: Icon }: { to: string; label: string; icon: L
   );
 }
 
-function SubLink({ to, label, icon: Icon, badgeCount = 0 }: { to: string; label: string; icon: LinkIcon; badgeCount?: BadgeCount }) {
+function SubLink({
+  to,
+  label,
+  icon: Icon,
+  badgeCount = 0,
+  end = false,
+}: {
+  to: string;
+  label: string;
+  icon: LinkIcon;
+  badgeCount?: BadgeCount;
+  end?: boolean;
+}) {
   return (
     <NavLink
       to={to}
+      end={end}
       className={({ isActive }) =>
         `flex items-center gap-2.5 px-3 py-2 text-sm font-semibold transition ${
           isActive ? 'bg-white/15 text-white' : 'text-blue-100 hover:bg-white/10'
@@ -127,8 +140,9 @@ export default function Sidebar() {
   const navigate = useNavigate();
   const [inventoryAlertCount, setInventoryAlertCount] = useState(0);
 
-  const pharmacyActive = pathname.startsWith('/pharmacy') || pathname.startsWith('/inventory') || pathname.startsWith('/restock') || pathname.startsWith('/suppliers');
-  const billingActive = pathname.startsWith('/billing') || pathname.startsWith('/reports');
+  const matchesRoute = (base: string) => pathname === base || pathname.startsWith(`${base}/`);
+  const pharmacyActive = ['/pharmacy', '/inventory', '/restock', '/suppliers'].some(matchesRoute);
+  const billingActive = matchesRoute('/billing') || pathname === '/reports' || pathname === '/transactions';
 
   useEffect(() => {
     let isMounted = true;
@@ -174,45 +188,47 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="relative z-30 w-[250px] bg-[#F5F7FA] flex flex-col h-full px-5 py-5">
+    <aside className="relative z-30 flex h-full w-[250px] flex-col overflow-hidden bg-[#F5F7FA] px-5 pt-5">
       <div className="flex items-center gap-2.5 text-blue-600 mb-7">
         <HeartPulse size={30} />
         <span className="text-xl font-bold tracking-tight">CLINIKA+</span>
       </div>
 
-      <div className="text-lg font-bold text-gray-500 mb-2">Main Menu</div>
-      <nav className="space-y-2">
-        <TopLink to="/dashboard" label="Overview" icon={LayoutDashboard} />
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="text-lg font-bold text-gray-500 mb-2">Main Menu</div>
+        <nav className="space-y-2 overflow-y-auto pb-4">
+          <TopLink to="/dashboard" label="Overview" icon={LayoutDashboard} />
 
-        <Group
-          to="/pharmacy/inventory"
-          active={pharmacyActive}
-          label="Pharmacy"
-          icon={Package}
-          badgeCount={inventoryAlertCount}
-        >
-          <SubLink to="/pharmacy/inventory" label="Inventory & Alerts" icon={Boxes} badgeCount={inventoryAlertCount} />
-          <SubLink to="/pharmacy/restock" label="Restock & Suppliers" icon={Truck} />
-        </Group>
+          <Group
+            to="/pharmacy/inventory"
+            active={pharmacyActive}
+            label="Pharmacy"
+            icon={Package}
+            badgeCount={inventoryAlertCount}
+          >
+            <SubLink to="/pharmacy/inventory" label="Inventory & Alerts" icon={Boxes} badgeCount={inventoryAlertCount} />
+            <SubLink to="/pharmacy/restock" label="Restock & Suppliers" icon={Truck} />
+          </Group>
 
-        <Group to="/billing" active={billingActive} label="Billing & Reports" icon={Receipt}>
-          <SubLink to="/billing" label="Billing & Payments" icon={FileText} />
-          <SubLink to="/billing/transactions" label="Transactions" icon={ArrowLeftRight} />
-          <SubLink to="/billing/reports" label="Reports" icon={BarChart3} />
-        </Group>
-      </nav>
+          <Group to="/billing" active={billingActive} label="Billing & Reports" icon={Receipt}>
+            <SubLink to="/billing" label="Billing & Payments" icon={FileText} end />
+            <SubLink to="/billing/transactions" label="Transactions" icon={ArrowLeftRight} />
+            <SubLink to="/billing/reports" label="Reports" icon={BarChart3} />
+          </Group>
+        </nav>
 
-      <div className="mt-auto pt-6">
-        <div className="text-lg font-bold text-gray-500 mb-2">Others</div>
-        <div className="space-y-2">
-          <button type="button" onClick={handleOpenSettings} className="w-full flex items-center gap-2.5 px-3 py-2 text-base font-semibold text-gray-800 text-left rounded-lg hover:bg-gray-200 transition">
-            <Settings size={18} />
-            Settings
-          </button>
-          <button type="button" onClick={handleLogout} className="w-full flex items-center gap-2.5 px-3 py-2 text-base font-semibold text-gray-800 text-left rounded-lg hover:bg-gray-200 transition">
-            <LogOut size={18} />
-            Logout
-          </button>
+        <div className="mt-auto border-t border-gray-200 pt-4 pb-4">
+          <div className="text-lg font-bold text-gray-500 mb-2">Others</div>
+          <div className="space-y-2">
+            <button type="button" onClick={handleOpenSettings} className="w-full flex items-center gap-2.5 px-3 py-2 text-base font-semibold text-gray-800 text-left rounded-lg hover:bg-gray-200 transition">
+              <Settings size={18} />
+              Settings
+            </button>
+            <button type="button" onClick={handleLogout} className="w-full flex items-center gap-2.5 px-3 py-2 text-base font-semibold text-gray-800 text-left rounded-lg hover:bg-gray-200 transition">
+              <LogOut size={18} />
+              Logout
+            </button>
+          </div>
         </div>
       </div>
     </aside>

@@ -43,6 +43,15 @@ export async function updateMedication(req, res) {
     return res.status(400).json({ error: validation.message });
   }
 
-  await updateMedicationFlow(medicationId, validation.data);
+  try {
+    await updateMedicationFlow(medicationId, validation.data);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to update medication.";
+    if (message === "Category not found." || message === "Supplier not found.") {
+      return res.status(400).json({ error: message });
+    }
+    throw error;
+  }
+
   return res.status(200).json({ ok: true });
 }

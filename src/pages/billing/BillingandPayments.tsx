@@ -8,13 +8,43 @@ import {
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import Pagination from '../../components/ui/Pagination';
+import SectionToolbar from '../../components/ui/SectionToolbar';
+import {
+  BillingPaginationSkeleton,
+  BillingTableSkeleton,
+  BillingToolbarSkeleton,
+  SkeletonBlock,
+} from './BillingSkeletonParts';
 import { type BillStatus } from '../../context/BillingPaymentsContext';
 import { useBillingPayments } from '../../context/useBillingPayments';
 
-type BillRow = { id: string; patient: string; date: string; total: string; status: BillStatus; };
+type BillRow = {
+  id: string;
+  patient: string;
+  date: string;
+  total: string;
+  status: BillStatus;
+  backendBillId?: number;
+  patientId?: number;
+};
 type ServiceItem = { type: 'service' | 'medication'; name: string; quantity: number; unitPrice: number; serviceId?: number | null; logId?: number | null; };
 type MedicationCatalogItem = { medication_id: number; medication_name: string; total_stock: number; batch_number?: string; expiry_date?: string; unit?: string; };
 type MedicationStockApiItem = { medication_id: number; medication_name: string; total_stock: number; batch_number?: string; expiry_date?: string; unit?: string; };
+type PaymentBillDetail = {
+  bill_id: number;
+  bill_code: string;
+  patient_id: number;
+  total_amount?: number | null;
+  net_amount?: number | null;
+  status?: string;
+  created_at?: string | null;
+  tbl_patients?: Record<string, unknown> | Array<Record<string, unknown>> | null;
+};
+type PaymentBillDetailsResponse = {
+  bill?: PaymentBillDetail;
+  total_paid?: number;
+  remaining_balance?: number;
+};
 type PaymentMethod = 'Cash' | 'GCash' | 'Maya';
 type BillingFilter = 'all' | 'pending' | 'paid' | 'cancelled';
 type BillingSort = 'date' | 'status' | 'amount';
@@ -74,10 +104,13 @@ const existingBillServices: ServiceItem[] = [
   { type: 'service', name: 'X-Ray', quantity: 1, unitPrice: 1200, serviceId: null, logId: null },
 ];
 
-const PAGE_SIZE = 5;
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+const G_CASH_LOGO_URL = 'https://logo.clearbit.com/gcash.com';
+const MAYA_LOGO_URL = 'https://logo.clearbit.com/maya.ph';
 const VAT_RATE = 0.12;
 const SENIOR_DISCOUNT_RATE = 0.2;
+const MIN_TABLE_ROWS = 1;
+const MAX_TABLE_ROWS = 100;
 
 function toAmount(total: string) { const p = Number(total.replace(/[^\d.-]/g, '')); return Number.isFinite(p) ? p : 0; }
 function formatPhp(value: number) { return `PHP ${Math.round(value).toLocaleString()}`; }
@@ -130,13 +163,13 @@ function StatusPill({ status }: { status: string }) {
 export default function BillingAndPayments() {
   const { billingRecords, addBill, markPaymentPaid, paymentQueue, isLoading, cancelBill } = useBillingPayments();
   const location = useLocation();
+  const [forceSkeletonVisible, setForceSkeletonVisible] = useState(true);
 
   const [modal, setModal] = useState<ActiveModal>('none');
   const [prevModal, setPrevModal] = useState<ActiveModal>('none');
   const [searchTerm, setSearchTerm] = useState('');
   const [billingFilter, setBillingFilter] = useState<BillingFilter>('all');
   const [sortBy, setSortBy] = useState<BillingSort>('date');
-  const [currentPage, setCurrentPage] = useState(1);
   const [toast, setToast] = useState<ToastState>(null);
 
   const [selectedBill, setSelectedBill] = useState<BillRow | null>(null);
@@ -174,12 +207,21 @@ export default function BillingAndPayments() {
   const [showMedicationDropdown, setShowMedicationDropdown] = useState(false);
 
   const [selectedPayRow, setSelectedPayRow] = useState<BillRow>(EMPTY_BILL_ROW);
+  const [paymentBillDetails, setPaymentBillDetails] = useState<PaymentBillDetailsResponse | null>(null);
+  const [isPaymentDetailsLoading, setIsPaymentDetailsLoading] = useState(false);
+  const [paymentDetailsError, setPaymentDetailsError] = useState('');
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod>('Cash');
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentReferenceInput, setPaymentReferenceInput] = useState('');
   const [cancelReason, setCancelReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [focusHandledKey, setFocusHandledKey] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [tablePageSize, setTablePageSize] = useState(8);
+  const tableCardRef = useRef<HTMLDivElement | null>(null);
+  const tableToolbarRef = useRef<HTMLDivElement | null>(null);
+  const tableFooterRef = useRef<HTMLDivElement | null>(null);
+  const tableHeadRef = useRef<HTMLTableSectionElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -226,6 +268,11 @@ export default function BillingAndPayments() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setForceSkeletonVisible(false), 550);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   const filteredBills = useMemo(() => {
     const normalized = searchTerm.trim().toLowerCase();
     const visible = billingRecords.filter(bill => {
@@ -240,11 +287,64 @@ export default function BillingAndPayments() {
     });
   }, [billingRecords, searchTerm, billingFilter, sortBy]);
 
-  useEffect(() => { setCurrentPage(1); }, [searchTerm, billingFilter, sortBy]);
-  const totalPages = Math.max(1, Math.ceil(filteredBills.length / PAGE_SIZE));
-  useEffect(() => { if (currentPage > totalPages) setCurrentPage(totalPages); }, [currentPage, totalPages]);
-  const startIndex = (currentPage - 1) * PAGE_SIZE;
-  const pagedBills = filteredBills.slice(startIndex, startIndex + PAGE_SIZE);
+  useEffect(() => {
+    function measureRowsThatFit() {
+      const card = tableCardRef.current;
+      const toolbar = tableToolbarRef.current;
+      const footer = tableFooterRef.current;
+      const tableHead = tableHeadRef.current;
+      if (!card || !toolbar) return;
+
+      const cardHeight = card.clientHeight;
+      if (!cardHeight) return;
+
+      const toolbarHeight = toolbar.offsetHeight;
+      const footerHeight = footer?.offsetHeight ?? 0;
+      const headerHeight = tableHead?.getBoundingClientRect().height || 40;
+      const rowNode = card.querySelector<HTMLTableRowElement>('tbody tr[data-bill-row="true"]');
+      const rowHeight = rowNode?.getBoundingClientRect().height || 40;
+      const verticalPaddingReserve = 28;
+      const availableTableBodyHeight = cardHeight - toolbarHeight - footerHeight - headerHeight - verticalPaddingReserve;
+      const nextPageSize = Math.max(MIN_TABLE_ROWS, Math.min(MAX_TABLE_ROWS, Math.floor(availableTableBodyHeight / Math.max(rowHeight, 1))));
+      setTablePageSize(prev => (prev === nextPageSize ? prev : nextPageSize));
+    }
+
+    measureRowsThatFit();
+    const frame = window.requestAnimationFrame(() => measureRowsThatFit());
+    const settleTimer = window.setTimeout(() => measureRowsThatFit(), 120);
+    const observer = new ResizeObserver(() => measureRowsThatFit());
+    const mutationObserver = new MutationObserver(() => measureRowsThatFit());
+    if (tableCardRef.current) observer.observe(tableCardRef.current);
+    if (tableToolbarRef.current) observer.observe(tableToolbarRef.current);
+    if (tableFooterRef.current) observer.observe(tableFooterRef.current);
+    if (tableCardRef.current) mutationObserver.observe(tableCardRef.current, { childList: true, subtree: true });
+    window.addEventListener('resize', measureRowsThatFit);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+      observer.disconnect();
+      mutationObserver.disconnect();
+      window.removeEventListener('resize', measureRowsThatFit);
+    };
+  }, [filteredBills.length, isLoading, forceSkeletonVisible]);
+
+  const effectivePageSize = Math.max(MIN_TABLE_ROWS, tablePageSize);
+  const shouldShowLoading = isLoading || forceSkeletonVisible;
+  const usePagination = filteredBills.length > effectivePageSize;
+  const totalPages = usePagination ? Math.max(1, Math.ceil(filteredBills.length / effectivePageSize)) : 1;
+  const startIndex = (currentPage - 1) * effectivePageSize;
+  const pagedBills = usePagination ? filteredBills.slice(startIndex, startIndex + effectivePageSize) : filteredBills;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, billingFilter, sortBy, effectivePageSize]);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const selectedBillMeta = useMemo(
     () => (selectedBill ? billMetaById[selectedBill.id] : undefined),
@@ -359,13 +459,45 @@ export default function BillingAndPayments() {
     setModal('viewBill');
   }
 
+  async function fetchPaymentBillDetails(bill: BillRow) {
+    const backendBillId = bill.backendBillId ?? billingRecords.find((row) => row.id === bill.id)?.backendBillId;
+    if (!backendBillId) {
+      setPaymentBillDetails(null);
+      setPaymentDetailsError("Unable to load bill details for payment.");
+      return;
+    }
+
+    try {
+      setIsPaymentDetailsLoading(true);
+      setPaymentDetailsError('');
+      const response = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}`);
+      if (!response.ok) {
+        throw new Error('Failed to load bill details.');
+      }
+
+      const payload = (await response.json()) as PaymentBillDetailsResponse;
+      setPaymentBillDetails(payload);
+      const due = Number(payload.remaining_balance ?? payload.bill?.net_amount ?? payload.bill?.total_amount ?? toAmount(bill.total));
+      setPaymentAmount(String(Number.isFinite(due) ? Math.max(0, due) : toAmount(bill.total)));
+    } catch (error) {
+      setPaymentBillDetails(null);
+      setPaymentDetailsError(error instanceof Error ? error.message : 'Failed to load bill details.');
+      setPaymentAmount(String(toAmount(bill.total)));
+    } finally {
+      setIsPaymentDetailsLoading(false);
+    }
+  }
+
   function openPaymentModal(bill: BillRow) {
     loadBillDetails(bill);
     setSelectedPayRow(bill);
     setSelectedMethod('Cash');
     setPaymentAmount(String(toAmount(bill.total)));
     setPaymentReferenceInput('');
+    setPaymentDetailsError('');
+    setPaymentBillDetails(null);
     setModal('payMethod');
+    void fetchPaymentBillDetails(bill);
   }
 
   function openCancelModal(bill: BillRow) {
@@ -437,9 +569,43 @@ export default function BillingAndPayments() {
 
   const paymentMethodLabel = selectedMethod === 'Cash' ? 'Cash' : selectedMethod === 'Maya' ? 'E-Wallet (Maya)' : 'E-Wallet (GCash)';
 
+  const paymentBill = paymentBillDetails?.bill ?? null;
+  const paymentAmountDue = Number(
+    paymentBillDetails?.remaining_balance ??
+      paymentBill?.net_amount ??
+      paymentBill?.total_amount ??
+      toAmount(selectedPayRow.total)
+  );
+  const safePaymentAmountDue = Number.isFinite(paymentAmountDue) ? Math.max(0, paymentAmountDue) : 0;
+  const paymentBillCode = paymentBill?.bill_code || selectedPayRow.id;
+  const paymentPatientId = paymentBill?.patient_id ?? selectedPayRow.patientId ?? null;
+  const paymentBillStatus = paymentBill?.status || selectedPayRow.status;
+  const paymentBillCreatedAt = paymentBill?.created_at || selectedPayRow.date;
+  const paymentTotalPaid = Number(paymentBillDetails?.total_paid ?? 0);
+
+  const paymentPatientName = useMemo(() => {
+    const relation = Array.isArray(paymentBill?.tbl_patients) ? paymentBill.tbl_patients[0] : paymentBill?.tbl_patients;
+    const patient = relation && typeof relation === 'object' ? relation : null;
+    if (patient) {
+      const candidates = [patient.full_name, patient.patient_name, patient.name];
+      for (const value of candidates) {
+        if (typeof value === 'string' && value.trim()) return value.trim();
+      }
+      const combined = [patient.first_name, patient.middle_name, patient.last_name]
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .join(' ')
+        .trim();
+      if (combined) return combined;
+    }
+    return selectedPayRow.patient || 'Unknown Patient';
+  }, [paymentBill, selectedPayRow.patient]);
+
   function closeAuxiliaryModals() {
     setModal('none');
     setSelectedPayRow(EMPTY_BILL_ROW);
+    setPaymentBillDetails(null);
+    setIsPaymentDetailsLoading(false);
+    setPaymentDetailsError('');
     setSelectedMethod('Cash');
     setPaymentAmount('');
     setPaymentReferenceInput('');
@@ -636,8 +802,8 @@ export default function BillingAndPayments() {
     if (!selectedPayRow.id) return 0;
     const received = Number(paymentAmount || 0);
     if (Number.isNaN(received)) return 0;
-    return Math.max(0, received - toAmount(selectedPayRow.total));
-  }, [paymentAmount, selectedPayRow]);
+    return Math.max(0, received - safePaymentAmountDue);
+  }, [paymentAmount, selectedPayRow.id, safePaymentAmountDue]);
   const paymentReference = paymentReferenceInput || 'N/A';
   function handleProceedFromMethod() { setModal(selectedMethod === 'Cash' ? 'payCash' : 'payGcash'); }
   function closePayModals() { closeAuxiliaryModals(); }
@@ -659,7 +825,7 @@ export default function BillingAndPayments() {
   }, [focusBillId, pagedBills, focusHandledKey]);
 
   return (
-    <div className="space-y-5">
+    <div className="flex min-h-full flex-col">
       {toast && (
         <div className="fixed right-4 top-4 z-[10000]">
           <div className={`rounded-xl px-4 py-3 text-sm font-semibold shadow-lg ${toast.type === 'success' ? 'bg-green-600 text-white' : 'bg-red-600 text-white'}`}>
@@ -668,41 +834,62 @@ export default function BillingAndPayments() {
         </div>
       )}
 
-      <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5">
+      <section className="flex flex-1 min-h-0 flex-col rounded-2xl bg-gray-300/80 p-5 space-y-5">
         {/* Billing Table */}
-        <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-          <h2 className="mb-3 text-2xl font-bold text-gray-800">Billing Queue</h2>
-          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="relative w-full lg:max-w-xl">
-              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={16} />
-              <input placeholder="Search Patient or Bill ID" className="h-10 w-full rounded-xl border border-gray-300 bg-gray-100 pl-9 pr-3 text-sm outline-none focus:ring-2 focus:ring-blue-300" value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
-            </div>
-            <div className="flex gap-2">
-              <button type="button" onClick={openCreateModal} className="flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl bg-green-500 px-3.5 text-sm font-semibold text-white hover:bg-green-600">
-                <PlusCircle size={16} /> Create New Bill
-              </button>
-              <div className="relative">
-                <select value={sortBy} onChange={e => setSortBy(e.target.value as BillingSort)} className="h-10 appearance-none rounded-xl border border-gray-300 bg-gray-100 pl-3 pr-9 text-sm font-medium text-gray-600 outline-none focus:ring-2 focus:ring-blue-300">
-                  <option value="date">Sort: Date</option>
-                  <option value="status">Sort: Status</option>
-                  <option value="amount">Sort: Amount</option>
-                </select>
-                <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-500" />
-              </div>
-              <div className="relative">
-                <select value={billingFilter} onChange={e => setBillingFilter(e.target.value as BillingFilter)} className="h-10 appearance-none rounded-xl border border-gray-300 bg-gray-100 pl-3 pr-9 text-sm font-medium text-gray-600 outline-none focus:ring-2 focus:ring-blue-300">
-                  <option value="all">All Statuses</option>
-                  <option value="pending">Pending</option>
-                  <option value="paid">Paid</option>
-                  <option value="cancelled">Cancelled</option>
-                </select>
-                <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-500" />
-              </div>
-            </div>
+        <div ref={tableCardRef} className="flex min-h-0 flex-1 flex-col rounded-2xl bg-gray-100 p-4 md:p-5">
+          <div ref={tableToolbarRef}>
+            {shouldShowLoading ? <SkeletonBlock className="mb-3 h-8 w-44" /> : (
+              <SectionToolbar
+                className="mb-4"
+                icon={ReceiptText}
+                title="Billing Queue"
+                searchValue={searchTerm}
+                onSearchChange={setSearchTerm}
+                searchPlaceholder="Search Patient or Bill ID"
+                searchWidthClass="w-full md:w-[420px]"
+                rightControls={(
+                  <>
+                    <button type="button" onClick={openCreateModal} className="flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl bg-green-500 px-3.5 text-sm font-semibold text-white hover:bg-green-600">
+                      <PlusCircle size={16} /> Create New Bill
+                    </button>
+                    <div className="relative">
+                      <select value={sortBy} onChange={e => setSortBy(e.target.value as BillingSort)} className="h-10 appearance-none rounded-lg border border-gray-300 bg-gray-100 pl-3 pr-9 text-sm font-medium text-gray-600 outline-none focus:ring-2 focus:ring-blue-300">
+                        <option value="date">Sort: Date</option>
+                        <option value="status">Sort: Status</option>
+                        <option value="amount">Sort: Amount</option>
+                      </select>
+                      <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                    </div>
+                    <div className="relative">
+                      <select value={billingFilter} onChange={e => setBillingFilter(e.target.value as BillingFilter)} className="h-10 appearance-none rounded-lg border border-gray-300 bg-gray-100 pl-3 pr-9 text-sm font-medium text-gray-600 outline-none focus:ring-2 focus:ring-blue-300">
+                        <option value="all">All Statuses</option>
+                        <option value="pending">Pending</option>
+                        <option value="paid">Paid</option>
+                        <option value="cancelled">Cancelled</option>
+                      </select>
+                      <ChevronDown size={16} className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-500" />
+                    </div>
+                  </>
+                )}
+              />
+            )}
           </div>
-          <div className="overflow-x-auto rounded-xl">
+          <div className="min-h-0 flex-1 overflow-x-auto overflow-y-auto rounded-xl">
+            {shouldShowLoading ? (
+              <BillingTableSkeleton
+                columns={[
+                  { headerWidthClass: 'w-10', cellWidthClass: 'w-24' },
+                  { headerWidthClass: 'w-28', cellWidthClass: 'w-44' },
+                  { headerWidthClass: 'w-14', cellWidthClass: 'w-24' },
+                  { headerWidthClass: 'w-14', cellWidthClass: 'w-20' },
+                  { headerWidthClass: 'w-16', cellWidthClass: 'w-16' },
+                  { headerWidthClass: 'w-16', cellWidthClass: 'w-28' },
+                ]}
+                rowCount={Math.max(5, Math.min(effectivePageSize, 12))}
+              />
+            ) : (
             <table className="min-w-full text-sm">
-              <thead className="bg-gray-200/90 text-gray-700">
+              <thead ref={tableHeadRef} className="bg-gray-200/90 text-gray-700">
                 <tr>
                   <th className="px-3 py-2 text-left font-semibold">ID</th>
                   <th className="px-3 py-2 text-left font-semibold">Patient Name</th>
@@ -714,7 +901,7 @@ export default function BillingAndPayments() {
               </thead>
               <tbody>
                 {pagedBills.map(bill => (
-                  <tr key={bill.id} data-search-bill-id={bill.id} className="border-t border-gray-200 text-gray-800 hover:bg-gray-200/40">
+                  <tr key={bill.id} data-search-bill-id={bill.id} data-bill-row="true" className="border-t border-gray-200 text-gray-800 hover:bg-gray-200/40">
                     <td className="px-3 py-2 font-semibold">{bill.id}</td>
                     <td className="px-3 py-2 font-semibold">{bill.patient}</td>
                     <td className="px-3 py-2 font-semibold">{formatDateForTable(bill.date)}</td>
@@ -728,17 +915,27 @@ export default function BillingAndPayments() {
                     </td>
                   </tr>
                 ))}
-                {!pagedBills.length && !isLoading && (
+                  {!pagedBills.length && !shouldShowLoading && (
                   <tr>
                     <td colSpan={6} className="px-3 py-10 text-center text-sm text-gray-500">No billing records found.</td>
                   </tr>
                 )}
               </tbody>
             </table>
+            )}
           </div>
-          <div className="mt-4 flex flex-col gap-2.5 text-sm text-gray-600 md:flex-row md:items-center md:justify-between">
-            <p>Showing <span className="rounded-md bg-gray-300 px-2">{pagedBills.length}</span> out of {filteredBills.length}</p>
-            <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />
+          <div ref={tableFooterRef} className="mt-4 flex flex-col gap-2.5 text-sm text-gray-600 md:flex-row md:items-center md:justify-between">
+            {shouldShowLoading ? (
+              <>
+                <SkeletonBlock className="h-4 w-52" />
+                <BillingPaginationSkeleton />
+              </>
+            ) : (
+              <>
+                <p>Showing <span className="rounded-md bg-gray-300 px-2">{pagedBills.length}</span> out of {filteredBills.length}</p>
+                {usePagination && <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} />}
+              </>
+            )}
           </div>
         </div>
       </section>
@@ -1288,7 +1485,84 @@ export default function BillingAndPayments() {
 
           {/* ── Pay: Select Method ── */}
           {modal === 'payMethod' && selectedPayRow && (
-            <div className="w-full max-w-2xl rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-xl" onClick={e => e.stopPropagation()}>
+            <div className="w-full max-w-4xl overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="border-b border-gray-200 px-6 py-5">
+                <h3 className="text-2xl font-bold text-gray-900">Collect Payment</h3>
+                <p className="mt-1 text-sm text-gray-600">Review bill information and select a payment channel.</p>
+              </div>
+              <div className="grid grid-cols-1 gap-6 p-6 md:grid-cols-[1.15fr_1fr]">
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                    <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-700"><Info size={16} />Bill Snapshot</div>
+                    {isPaymentDetailsLoading ? (
+                      <p className="text-sm text-gray-500">Loading bill details...</p>
+                    ) : paymentDetailsError ? (
+                      <p className="text-sm text-red-600">{paymentDetailsError}</p>
+                    ) : (
+                      <div className="grid grid-cols-1 gap-3 text-sm text-gray-800 md:grid-cols-2">
+                        <div><p className="text-xs text-gray-500">Bill Code</p><p className="font-semibold">{paymentBillCode}</p></div>
+                        <div><p className="text-xs text-gray-500">Status</p><p className="font-semibold">{paymentBillStatus}</p></div>
+                        <div><p className="text-xs text-gray-500">Patient Name</p><p className="font-semibold">{paymentPatientName}</p></div>
+                        <div><p className="text-xs text-gray-500">Patient ID</p><p className="font-semibold">{paymentPatientId ?? 'N/A'}</p></div>
+                        <div><p className="text-xs text-gray-500">Net Amount</p><p className="font-semibold">{toPeso(Number(paymentBill?.net_amount ?? safePaymentAmountDue))}</p></div>
+                        <div><p className="text-xs text-gray-500">Outstanding</p><p className="font-semibold text-blue-700">{toPeso(safePaymentAmountDue)}</p></div>
+                        <div><p className="text-xs text-gray-500">Total Paid</p><p className="font-semibold">{toPeso(paymentTotalPaid)}</p></div>
+                        <div><p className="text-xs text-gray-500">Created Date</p><p className="font-semibold">{formatDateMed(paymentBillCreatedAt)}</p></div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="rounded-xl border border-blue-200 bg-blue-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-700">Amount To Collect</p>
+                    <p className="mt-2 text-3xl font-bold text-blue-800">{toPeso(safePaymentAmountDue)}</p>
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <div className="mb-1 flex items-center gap-2 text-sm font-semibold text-gray-700"><Wallet size={16} />Payment Method</div>
+
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-gray-500">Cash Payment</p>
+                    <button type="button" onClick={() => setSelectedMethod('Cash')} className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition ${selectedMethod === 'Cash' ? 'border-blue-600 bg-blue-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
+                      <span className="flex items-center gap-3">
+                        <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700"><CircleDollarSign size={20} /></span>
+                        <span><p className="text-sm font-semibold text-gray-900">Cash</p><p className="text-xs text-gray-500">Front desk cash payment</p></span>
+                      </span>
+                      <span className={`h-4 w-4 rounded-full border ${selectedMethod === 'Cash' ? 'border-blue-600 bg-blue-600' : 'border-gray-300 bg-white'}`} />
+                    </button>
+                  </div>
+
+                  <div className="my-2 border-t border-gray-200" />
+
+                  <div>
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-gray-500">E-Wallets</p>
+                    <div className="space-y-3">
+                      <button type="button" onClick={() => setSelectedMethod('GCash')} className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition ${selectedMethod === 'GCash' ? 'border-blue-600 bg-blue-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
+                        <span className="flex items-center gap-4">
+                          <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-blue-100 p-1"><img src={G_CASH_LOGO_URL} alt="GCash logo" className="h-8 w-8 object-contain" /></span>
+                          <span><p className="text-sm font-semibold text-gray-900">GCash</p><p className="text-xs text-gray-500">Mobile wallet</p></span>
+                        </span>
+                        <span className={`h-4 w-4 rounded-full border ${selectedMethod === 'GCash' ? 'border-blue-600 bg-blue-600' : 'border-gray-300 bg-white'}`} />
+                      </button>
+                      <button type="button" onClick={() => setSelectedMethod('Maya')} className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition ${selectedMethod === 'Maya' ? 'border-blue-600 bg-blue-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
+                        <span className="flex items-center gap-4">
+                          <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 p-1"><img src={MAYA_LOGO_URL} alt="Maya logo" className="h-8 w-8 object-contain" /></span>
+                          <span><p className="text-sm font-semibold text-gray-900">Maya</p><p className="text-xs text-gray-500">Mobile wallet</p></span>
+                        </span>
+                        <span className={`h-4 w-4 rounded-full border ${selectedMethod === 'Maya' ? 'border-blue-600 bg-blue-600' : 'border-gray-300 bg-white'}`} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 pt-3">
+                    <button type="button" onClick={handleProceedFromMethod} className="h-10 flex-1 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700">Continue</button>
+                    <button type="button" onClick={closePayModals} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">Cancel</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {false && modal === 'payMethod' && selectedPayRow && (
+            <div className="w-full max-w-4xl rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl" onClick={e => e.stopPropagation()}>
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                 <div className="space-y-3 border-r border-gray-300 pr-4">
                   <h3 className="flex items-center gap-2 text-2xl font-bold text-gray-800"><Info size={20} />Patient Information</h3>
@@ -1319,6 +1593,37 @@ export default function BillingAndPayments() {
 
           {/* ── Pay: Cash ── */}
           {modal === 'payCash' && selectedPayRow && (
+            <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="border-b border-gray-200 px-6 py-5">
+                <h3 className="flex items-center gap-2 text-2xl font-bold text-gray-900"><CircleDollarSign className="text-emerald-600" size={22} />Cash Payment</h3>
+                <p className="mt-1 text-sm text-gray-600">Collect and confirm the exact cash amount for this bill.</p>
+              </div>
+              <div className="space-y-4 px-6 py-5">
+                <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-800">
+                  <div className="flex justify-between"><span>Bill Code</span><span className="font-semibold">{paymentBillCode}</span></div>
+                  <div className="mt-2 flex justify-between"><span>Patient</span><span className="font-semibold">{paymentPatientName}</span></div>
+                  <div className="mt-2 flex justify-between border-t border-gray-200 pt-2"><span>Amount Due</span><span className="font-semibold text-blue-700">{toPeso(safePaymentAmountDue)}</span></div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-semibold text-gray-700">Amount Received</label>
+                  <div className="flex items-center rounded-xl border border-gray-300 bg-white px-3">
+                    <span className="text-sm font-bold text-gray-700">₱</span>
+                    <input type="number" value={amountReceived} onChange={e => setAmountReceived(e.target.value)} className="h-11 w-full bg-transparent px-2 text-sm outline-none" />
+                  </div>
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-semibold text-gray-700">Change</label>
+                  <div className="flex h-11 items-center rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm font-semibold text-gray-800">{toPeso(changeAmount)}</div>
+                </div>
+              </div>
+              <div className="flex gap-2 border-t border-gray-200 px-6 py-4">
+                <button type="button" onClick={() => setModal('payCancelConfirm')} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50">Cancel</button>
+                <button type="button" onClick={() => setModal('payConfirm')} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">Review Payment</button>
+              </div>
+            </div>
+          )}
+
+          {false && modal === 'payCash' && selectedPayRow && (
             <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-xl" onClick={e => e.stopPropagation()}>
               <h3 className="flex items-center gap-2 text-2xl font-bold text-gray-800"><CircleDollarSign className="text-green-500" size={22} />Cash Payment</h3>
               <div className="mt-4 space-y-4 text-sm">
@@ -1358,6 +1663,48 @@ export default function BillingAndPayments() {
 
           {/* ── Pay: GCash / Maya ── */}
           {modal === 'payGcash' && selectedPayRow && (
+            <div className="w-full max-w-5xl overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="border-b border-gray-200 px-6 py-5">
+                <h3 className="flex items-center gap-2 text-2xl font-bold text-gray-900"><CreditCard size={22} className="text-blue-700" />{selectedMethod} Payment</h3>
+                <p className="mt-1 text-sm text-gray-600">Complete the e-wallet transfer and encode the reference number.</p>
+              </div>
+              <div className="grid grid-cols-1 gap-6 p-6 md:grid-cols-[320px_1fr]">
+                <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                  <div className="mb-4 flex items-center gap-4">
+                    {selectedMethod === 'GCash' ? (
+                      <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-blue-100 p-1">
+                        <img src={G_CASH_LOGO_URL} alt="GCash logo" className="h-8 w-8 object-contain" />
+                      </span>
+                    ) : (
+                      <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 p-1">
+                        <img src={MAYA_LOGO_URL} alt="Maya logo" className="h-8 w-8 object-contain" />
+                      </span>
+                    )}
+                    <p className="text-sm font-semibold text-gray-800">{selectedMethod}</p>
+                  </div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-gray-500">Scan To Pay</p>
+                  <div className="mt-2 flex h-[250px] items-center justify-center rounded-xl border border-dashed border-gray-300 bg-white text-center text-sm text-gray-400">QR placeholder</div>
+                </div>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 gap-3 text-sm text-gray-800 md:grid-cols-2">
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4"><p className="text-xs text-gray-500">Bill Code</p><p className="font-semibold">{paymentBillCode}</p></div>
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4"><p className="text-xs text-gray-500">Amount Due</p><p className="font-semibold text-blue-700">{toPeso(safePaymentAmountDue)}</p></div>
+                    <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 md:col-span-2"><p className="text-xs text-gray-500">Patient</p><p className="font-semibold">{paymentPatientName}</p></div>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">{selectedMethod} Reference Number</label>
+                    <div className="flex items-center rounded-xl border border-gray-300 bg-white px-3"><Hash size={16} className="text-gray-500" /><input value={gcashReference} onChange={e => setGcashReference(e.target.value)} className="h-11 w-full bg-transparent px-2 text-sm outline-none" placeholder="Enter transaction reference" /></div>
+                  </div>
+                </div>
+              </div>
+              <div className="flex gap-2 border-t border-gray-200 px-6 py-4">
+                <button type="button" onClick={() => setModal('payMethod')} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50">Back</button>
+                <button type="button" onClick={() => setModal('payConfirm')} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">Review Payment</button>
+              </div>
+            </div>
+          )}
+
+          {false && modal === 'payGcash' && selectedPayRow && (
             <div className="w-full max-w-4xl rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-xl md:p-6" onClick={e => e.stopPropagation()}>
               <div className="grid grid-cols-1 gap-6 md:grid-cols-[330px_1fr]">
                 <div>
@@ -1389,6 +1736,27 @@ export default function BillingAndPayments() {
 
           {/* ── Pay: Confirm ── */}
           {modal === 'payConfirm' && selectedPayRow && (
+            <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="border-b border-gray-200 px-6 py-5">
+                <h3 className="text-2xl font-bold text-gray-900">Confirm Payment</h3>
+                <p className="mt-1 text-sm text-gray-600">Please verify details before posting this payment.</p>
+              </div>
+              <div className="space-y-3 px-6 py-5 text-sm text-gray-800">
+                <div className="flex justify-between"><span>Bill Code</span><span className="font-semibold">{paymentBillCode}</span></div>
+                <div className="flex justify-between"><span>Patient Name</span><span className="font-semibold">{paymentPatientName}</span></div>
+                <div className="flex justify-between"><span>Patient ID</span><span className="font-semibold">{paymentPatientId ?? 'N/A'}</span></div>
+                <div className="flex justify-between"><span>Payment Method</span><span className="font-semibold">{paymentMethodLabel}</span></div>
+                <div className="flex justify-between"><span>Reference Number</span><span className="font-semibold">{paymentReference}</span></div>
+                <div className="flex justify-between border-t border-gray-200 pt-3 text-base font-bold"><span>Amount Paid</span><span className="text-blue-700">{toPeso(Number(paymentAmount || safePaymentAmountDue || 0))}</span></div>
+              </div>
+              <div className="flex gap-2 border-t border-gray-200 px-6 py-4">
+                <button type="button" onClick={closePayModals} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50">Cancel</button>
+                <button type="button" onClick={handleConfirmPayment} disabled={isSubmitting} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60">{isSubmitting ? 'Processing...' : 'Confirm Payment'}</button>
+              </div>
+            </div>
+          )}
+
+          {false && modal === 'payConfirm' && selectedPayRow && (
             <div className="w-full max-w-md rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-xl" onClick={e => e.stopPropagation()}>
               <h3 className="text-2xl font-bold text-gray-800">Confirm your payment</h3>
               <p className="mt-1 text-sm text-gray-600">Please confirm to securely process your payment.</p>
@@ -1410,6 +1778,25 @@ export default function BillingAndPayments() {
 
           {/* ── Pay: Success ── */}
           {modal === 'paySuccess' && selectedPayRow && (
+            <div className="w-full max-w-md overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="px-6 pb-5 pt-6 text-center">
+                <CheckCircle2 className="mx-auto h-14 w-14 text-green-500" strokeWidth={2} />
+                <h3 className="mt-3 text-2xl font-bold text-gray-900">Payment Successful</h3>
+                <p className="mt-1 text-sm text-gray-600">The payment has been recorded successfully.</p>
+              </div>
+              <div className="mx-6 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-800">
+                <div className="flex justify-between"><span>Bill Code</span><span className="font-semibold">{paymentBillCode}</span></div>
+                <div className="mt-2 flex justify-between"><span>Amount Paid</span><span className="font-semibold">{toPeso(Number(paymentAmount || safePaymentAmountDue || 0))}</span></div>
+                <div className="mt-2 flex justify-between"><span>Payment Method</span><span className="font-semibold">{paymentMethodLabel}</span></div>
+                <div className="mt-2 flex justify-between"><span>Date</span><span className="font-semibold">{formatDateMed(new Date().toISOString())}</span></div>
+              </div>
+              <div className="px-6 py-4">
+                <button type="button" onClick={closePayModals} className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">Done</button>
+              </div>
+            </div>
+          )}
+
+          {false && modal === 'paySuccess' && selectedPayRow && (
             <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-gray-100 p-6 text-center shadow-xl" onClick={e => e.stopPropagation()}>
               <CheckCircle2 className="mx-auto h-14 w-14 text-green-500" strokeWidth={2} />
               <h3 className="mt-3 text-2xl font-bold text-gray-800">Payment Successful!</h3>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, BellRing, Truck, HandCoins, Boxes, TrendingUp } from 'lucide-react';
+import { AlertTriangle, BellRing, Truck, HandCoins, Boxes, TrendingUp, ChevronDown } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import SectionToolbar from '../components/ui/SectionToolbar';
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 type Tone = 'critical' | 'warning';
@@ -160,6 +161,8 @@ export default function Dashboard() {
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
+  const [inventorySearchTerm, setInventorySearchTerm] = useState('');
+  const [inventoryStatusFilter, setInventoryStatusFilter] = useState<'All Status' | InventoryStatus>('All Status');
 
   useEffect(() => {
     let isMounted = true;
@@ -197,6 +200,16 @@ export default function Dashboard() {
   const visibleSuggestedOrders = suggestedOrders.slice(0, 2);
   const visibleNextSupply = nextSupply ? [nextSupply].slice(0, 2) : [];
   const nearExpiryItems = overview?.near_expiry_items || [];
+  const filteredInventoryRows = useMemo(() => {
+    const normalizedSearch = inventorySearchTerm.trim().toLowerCase();
+    return inventoryRows.filter((row) => {
+      const matchesSearch = !normalizedSearch
+        || row.medication_name.toLowerCase().includes(normalizedSearch)
+        || row.expiry_label.toLowerCase().includes(normalizedSearch);
+      const matchesStatus = inventoryStatusFilter === 'All Status' || row.status === inventoryStatusFilter;
+      return matchesSearch && matchesStatus;
+    });
+  }, [inventoryRows, inventorySearchTerm, inventoryStatusFilter]);
 
   const summary = useMemo(() => {
     return {
@@ -312,19 +325,38 @@ export default function Dashboard() {
 
         <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_1fr] gap-4">
           <div className="rounded-2xl bg-gray-100 p-5">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-xl font-semibold text-gray-500 flex items-center gap-2">
-                <Boxes size={21} />
-                Inventory Highlights
-              </h3>
-              <button
-                type="button"
-                onClick={() => navigate('/inventory')}
-                className="text-blue-600 text-base font-semibold"
-              >
-                See All
-              </button>
-            </div>
+            <SectionToolbar
+              className="mb-4"
+              icon={Boxes}
+              title="Inventory Highlights"
+              searchValue={inventorySearchTerm}
+              onSearchChange={setInventorySearchTerm}
+              searchPlaceholder="Search Medication"
+              rightControls={(
+                <>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/inventory')}
+                    className="inline-flex h-10 items-center rounded-lg bg-green-500 px-4 text-sm font-semibold text-white hover:bg-green-600"
+                  >
+                    See All
+                  </button>
+                  <div className="relative">
+                    <select
+                      value={inventoryStatusFilter}
+                      onChange={(event) => setInventoryStatusFilter(event.target.value as 'All Status' | InventoryStatus)}
+                      className="h-10 appearance-none rounded-lg border border-gray-300 bg-gray-100 pl-3 pr-8 text-sm text-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    >
+                      <option>All Status</option>
+                      <option>Adequate</option>
+                      <option>Low</option>
+                      <option>Critical</option>
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-500" />
+                  </div>
+                </>
+              )}
+            />
 
             <table className="w-full text-sm border-separate border-spacing-y-2">
               <thead>
@@ -336,12 +368,12 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {inventoryRows.length === 0 && (
+                {filteredInventoryRows.length === 0 && (
                   <tr className="bg-gray-300/70 text-gray-700">
                     <td className="px-3 py-2 rounded-xl" colSpan={4}>No inventory records available.</td>
                   </tr>
                 )}
-                {inventoryRows.map((row) => (
+                {filteredInventoryRows.map((row) => (
                   <tr
                     key={row.medication_name}
                     role="button"
@@ -434,7 +466,7 @@ export default function Dashboard() {
                 <h3 className="text-xl leading-tight font-semibold">Financial Summary</h3>
                 <button
                   type="button"
-                  onClick={() => navigate('/reports/revenue')}
+                  onClick={() => navigate('/reports')}
                   className="mt-2 text-sm font-semibold text-blue-600 hover:text-blue-700"
                 >
                   View Reports

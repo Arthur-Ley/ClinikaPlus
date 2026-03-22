@@ -213,37 +213,32 @@ function RevenueByServiceChart({ data }: { data: ChartPoint[] }) {
 
 function RevenueReportsSkeleton() {
   return (
-    <section className="rounded-2xl bg-gray-300/80 p-5 space-y-5 animate-pulse">
-      <div className="flex items-center justify-between">
-        <div className="h-8 w-40 rounded bg-gray-300" />
-        <div className="h-9 w-28 rounded-xl bg-gray-300" />
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+    <div className="space-y-5 animate-pulse">
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
         {[1, 2, 3, 4].map((item) => (
           <article key={item} className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
             <div className="flex items-start justify-between">
-              <div className="h-5 w-28 rounded bg-gray-300" />
+              <div className="h-6 w-32 rounded bg-gray-300" />
               <div className="h-8 w-8 rounded-xl bg-gray-300" />
             </div>
-            <div className="mt-8 h-10 w-32 rounded bg-gray-300" />
+            <div className="mt-6 h-10 w-36 rounded bg-gray-300" />
           </article>
         ))}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
         {[1, 2, 3, 4].map((item) => (
-          <div key={item} className="rounded-2xl border border-gray-200 bg-gray-100 p-4">
+          <div key={item} className="rounded-2xl border border-gray-200 bg-gray-100 p-3">
             <div className="mb-3 flex items-center gap-2">
               <div className="h-4 w-4 rounded bg-gray-300" />
               <div className="h-5 w-40 rounded bg-gray-300" />
             </div>
-            <div className="h-[180px] rounded-xl bg-gray-200" />
-            <div className="mt-3 h-3 w-48 rounded bg-gray-300" />
+            <div className="h-[140px] rounded-xl border border-gray-200 bg-gray-200" />
+            <div className="mt-3 h-3 w-44 rounded bg-gray-300" />
           </div>
         ))}
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -335,25 +330,29 @@ export default function RevenueReports() {
   }, [analytics]);
 
   return (
-    <div className="space-y-5">
-      {isLoading ? (
-        <RevenueReportsSkeleton />
-      ) : (
-        <section className="rounded-2xl bg-gray-300/80 p-4 space-y-4">
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {cards.map((card) => (
-              <SummaryCard key={card.title} card={card} />
-            ))}
-          </div>
+    <div className="flex min-h-full flex-col">
+      <section className="flex min-h-0 flex-1 flex-col rounded-2xl bg-gray-300/80 p-5">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto">
+          {isLoading ? (
+            <RevenueReportsSkeleton />
+          ) : (
+            <>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {cards.map((card) => (
+                  <SummaryCard key={card.title} card={card} />
+                ))}
+              </div>
 
-          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            <RevenueOverTimeChart data={charts.revenue_by_month} />
-            <DailyCollectionsChart data={charts.revenue_by_date} />
-            <PaymentMethodChart data={charts.revenue_by_method} />
-            <RevenueByServiceChart data={charts.revenue_by_service} />
-          </div>
-        </section>
-      )}
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                <RevenueOverTimeChart data={charts.revenue_by_month} />
+                <DailyCollectionsChart data={charts.revenue_by_date} />
+                <PaymentMethodChart data={charts.revenue_by_method} />
+                <RevenueByServiceChart data={charts.revenue_by_service} />
+              </div>
+            </>
+          )}
+        </div>
+      </section>
     </div>
   );
 }

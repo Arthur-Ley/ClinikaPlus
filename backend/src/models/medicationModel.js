@@ -82,6 +82,8 @@ export function validateUpdateMedicationInput(payload) {
   const form = toTrimmedString(payload?.form);
   const strength = toTrimmedString(payload?.strength);
   const supplierName = toTrimmedString(payload?.supplier_name);
+  const categoryId = toPositiveInt(payload?.category_id);
+  const supplierId = toPositiveInt(payload?.supplier_id);
 
   const totalStock = toNonNegativeInt(payload?.total_stock);
   const reorderThreshold = toNonNegativeInt(payload?.reorder_threshold);
@@ -89,8 +91,8 @@ export function validateUpdateMedicationInput(payload) {
   if (!medicationName) {
     return { ok: false, message: "'medication_name' is required." };
   }
-  if (!categoryName) {
-    return { ok: false, message: "'category_name' is required." };
+  if (!categoryName && !categoryId) {
+    return { ok: false, message: "Provide either 'category_id' or 'category_name'." };
   }
   if (!form) {
     return { ok: false, message: "'form' is required." };
@@ -101,19 +103,21 @@ export function validateUpdateMedicationInput(payload) {
   if (reorderThreshold === null) {
     return { ok: false, message: "'reorder_threshold' must be an integer greater than or equal to 0." };
   }
-  if (!supplierName) {
-    return { ok: false, message: "'supplier_name' is required." };
+  if (!supplierName && !supplierId) {
+    return { ok: false, message: "Provide either 'supplier_id' or 'supplier_name'." };
   }
 
   return {
     ok: true,
     data: {
       medicationName,
+      categoryId: categoryId || null,
       categoryName,
       form,
       strength: strength || null,
       totalStock,
       reorderThreshold,
+      supplierId: supplierId || null,
       supplierName,
     },
   };
