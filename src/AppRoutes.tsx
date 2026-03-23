@@ -7,13 +7,17 @@ import BillingAndPayments from './pages/billing/BillingandPayments';
 import Transactions from './pages/billing/Transactions';
 import RevenueReports from './pages/billing/RevenueReports';
 import Settings from './pages/Settings';
+import SignInPage from './pages/SignInPage';
+import SignUpPage from './pages/SignUpPage';
 
 const router = createBrowserRouter([
+  { path: '/', element: <SignInPage /> },
+  { path: '/signin', element: <SignInPage /> },
+  { path: '/signup', element: <SignUpPage /> },
   {
     path: '/',
     element: <MainLayout />,
     children: [
-      { index: true, element: <Dashboard /> },
       { path: 'dashboard', element: <Dashboard /> },
       // Pharmacy — Inventory & Alerts
       { path: 'pharmacy/inventory', element: <CurrentStocks /> },

@@ -179,12 +179,13 @@ export default function Sidebar() {
   function handleLogout() {
     try {
       window.sessionStorage.clear();
+      window.localStorage.removeItem('isLoggedIn');
       window.localStorage.removeItem('auth');
       window.localStorage.removeItem('token');
     } catch {
       // No-op
     }
-    navigate('/dashboard');
+    navigate('/signin');
   }
 
   return (
