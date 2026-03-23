@@ -4,10 +4,15 @@ import {
   addBillItem,
   cancelBill,
   createBill,
+  createPatient,
   createPayment,
+  getPayments,
+  getPaymentsByBillId,
   getBillDetails,
   getBillingAnalytics,
   getBillingReportsOverview,
+  getPatients,
+  getServices,
   getBillingTransactions,
   getBills,
   removeBillItem,
@@ -19,9 +24,15 @@ export const billingRouter = Router();
 billingRouter.get("/dashboard/analytics", asyncHandler(getBillingAnalytics));
 billingRouter.get("/reports/overview", asyncHandler(getBillingReportsOverview));
 billingRouter.get("/transactions", asyncHandler(getBillingTransactions));
+billingRouter.get("/services", asyncHandler(getServices));
+billingRouter.get("/patients", asyncHandler(getPatients));
+billingRouter.get("/payments", asyncHandler(getPayments));
+billingRouter.get("/payments/:billId", asyncHandler(getPaymentsByBillId));
 billingRouter.get("/bills", asyncHandler(getBills));
 billingRouter.get("/bills/:billId", asyncHandler(getBillDetails));
 billingRouter.post("/bills", asyncHandler(createBill));
+billingRouter.post("/patients", asyncHandler(createPatient));
+billingRouter.post("/payments", asyncHandler(createPayment));
 billingRouter.post("/bills/:billId/items", asyncHandler(addBillItem));
 billingRouter.patch("/bills/:billId/items/:billItemId", asyncHandler(updateBillItem));
 billingRouter.delete("/bills/:billId/items/:billItemId", asyncHandler(removeBillItem));

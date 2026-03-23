@@ -206,6 +206,11 @@ export default function RestockSuppliers() {
   const [isPhonePanelOpen, setIsPhonePanelOpen] = useState(false);
   const [isPhoneCopied, setIsPhoneCopied] = useState(false);
   const [focusHandledKey, setFocusHandledKey] = useState('');
+  const [showAllRequestsByStatus, setShowAllRequestsByStatus] = useState<Record<RequestStatus, boolean>>({
+    Completed: false,
+    Pending: false,
+    Cancelled: false,
+  });
 
   function resetNewSupplierForm() {
     setNewSupplier({ name: '', status: '', contact: '', email: '', address: '', avatarUrl: '' });
@@ -718,7 +723,7 @@ export default function RestockSuppliers() {
                       <span className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-700">{requestsByStatus[status].length}</span>
                     </div>
                     <div className="space-y-2">
-                      {requestsByStatus[status].map((request) => (
+                      {(showAllRequestsByStatus[status] ? requestsByStatus[status] : requestsByStatus[status].slice(0, 3)).map((request) => (
                         <article
                           key={request.id}
                           data-search-request-code={request.id}
@@ -758,6 +763,20 @@ export default function RestockSuppliers() {
                           )}
                         </article>
                       ))}
+                      {requestsByStatus[status].length > 3 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setShowAllRequestsByStatus((prev) => ({
+                              ...prev,
+                              [status]: !prev[status],
+                            }))
+                          }
+                          className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-100"
+                        >
+                          {showAllRequestsByStatus[status] ? 'Show less' : 'Show more'}
+                        </button>
+                      )}
                       {requestsByStatus[status].length === 0 && (
                         <article className="rounded-lg border border-gray-300 bg-white p-3 text-xs text-gray-600">No {status.toLowerCase()} requests.</article>
                       )}

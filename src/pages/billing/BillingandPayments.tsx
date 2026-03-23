@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Search, ChevronDown, PlusCircle,
   CheckCircle2, X, ReceiptText, Stethoscope, CircleGauge,
-  CalendarDays, Info, CircleDollarSign, Coins, XCircle,
-  CreditCard, Hash, MinusCircle, User, Plus, Minus, Wallet, Printer, AlertTriangle, Check,
+  Info, CircleDollarSign, Coins, XCircle,
+  CreditCard, Hash, MinusCircle, User, Plus, Minus, Wallet, Printer, AlertTriangle, Check, Maximize2,
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import Pagination from '../../components/ui/Pagination';
@@ -12,7 +12,6 @@ import SectionToolbar from '../../components/ui/SectionToolbar';
 import {
   BillingPaginationSkeleton,
   BillingTableSkeleton,
-  BillingToolbarSkeleton,
   SkeletonBlock,
 } from './BillingSkeletonParts';
 import { type BillStatus } from '../../context/BillingPaymentsContext';
@@ -27,7 +26,7 @@ type BillRow = {
   backendBillId?: number;
   patientId?: number;
 };
-type ServiceItem = { type: 'service' | 'medication'; name: string; quantity: number; unitPrice: number; serviceId?: number | null; logId?: number | null; };
+type ServiceItem = { type: 'service' | 'medication'; name: string; quantity: number; unitPrice: number; serviceId?: number | null; logId?: number | null; serviceType?: string | null; };
 type MedicationCatalogItem = { medication_id: number; medication_name: string; total_stock: number; batch_number?: string; expiry_date?: string; unit?: string; };
 type MedicationStockApiItem = { medication_id: number; medication_name: string; total_stock: number; batch_number?: string; expiry_date?: string; unit?: string; };
 type PaymentBillDetail = {
@@ -45,15 +44,61 @@ type PaymentBillDetailsResponse = {
   total_paid?: number;
   remaining_balance?: number;
 };
+type ViewBillItem = {
+  bill_item_id?: number;
+  service_type?: string | null;
+  service_id?: number | null;
+  medication_id?: number | null;
+  log_id?: number | null;
+  description?: string | null;
+  quantity?: number | null;
+  unit_price?: number | null;
+  subtotal?: number | null;
+};
+type ViewBillPayment = {
+  payment_id?: number;
+  payment_method?: string | null;
+  amount_paid?: number | null;
+  reference_number?: string | null;
+  payment_date?: string | null;
+  received_by?: string | null;
+};
+type ViewBillDetailsResponse = {
+  bill?: Record<string, unknown> | null;
+  items?: ViewBillItem[];
+  payments?: ViewBillPayment[];
+  total_paid?: number;
+  remaining_balance?: number;
+};
 type PaymentMethod = 'Cash' | 'GCash' | 'Maya';
+type PatientLookup = {
+  patient_id: number;
+  first_name: string;
+  last_name: string;
+  date_of_birth: string;
+  gender: string;
+  contact_number?: string | null;
+  email_address?: string | null;
+  full_name: string;
+};
+type ServiceCatalogOption = {
+  id: string;
+  name: string;
+  services: Array<{ id: number; name: string; unitPrice: number }>;
+};
 type BillingFilter = 'all' | 'pending' | 'paid' | 'cancelled';
 type BillingSort = 'date' | 'status' | 'amount';
 type ActiveModal =
   | 'none' | 'createBill' | 'viewBill' | 'billSuccess'
   | 'payBill' | 'cancelBill' | 'receipt'
   | 'payMethod' | 'payCash' | 'payGcash' | 'payConfirm' | 'paySuccess' | 'payCancelConfirm' | 'payCancelled'
-  | 'addService' | 'addMedication';
+  | 'addService' | 'addMedication' | 'viewBillServicesFull';
 type ToastState = { type: 'success' | 'error'; message: string } | null;
+type PaymentValidationErrors = {
+  payment_method?: string;
+  amount_paid?: string;
+  reference_number?: string;
+};
 type BillUiMeta = {
   createdAt: string;
   patientId: string;
@@ -61,7 +106,6 @@ type BillUiMeta = {
   gender: string;
   doctor: string;
   diagnosis: string;
-  dueDate: string;
   admissionDate: string;
   dischargeDate: string;
   services: ServiceItem[];
@@ -74,13 +118,6 @@ type BillUiMeta = {
   cancelledBy?: string;
   cancelledReason?: string;
 };
-
-const serviceTypeOptions = [
-  { id: 1, name: 'Consultation', services: [{ id: 1, name: 'Consultation Fee', unitPrice: 500 }, { id: 2, name: 'Follow-up Consultation', unitPrice: 300 }, { id: 3, name: 'Emergency Consultation', unitPrice: 800 }] },
-  { id: 2, name: 'Laboratory / X-Ray', services: [{ id: 4, name: 'X-Ray', unitPrice: 1200 }, { id: 5, name: 'Blood Tests', unitPrice: 350 }, { id: 6, name: 'Laboratory', unitPrice: 450 }] },
-  { id: 3, name: 'Urinalysis', services: [{ id: 7, name: 'Urinalysis', unitPrice: 200 }, { id: 8, name: 'Complete Urinalysis', unitPrice: 300 }] },
-  { id: 4, name: 'Therapy', services: [{ id: 9, name: 'Physical Therapy', unitPrice: 850 }, { id: 10, name: 'Oral Examination', unitPrice: 300 }, { id: 11, name: 'Dentistry', unitPrice: 700 }] },
-];
 
 const fallbackMedicationCatalog: MedicationCatalogItem[] = [
   { medication_id: 1, medication_name: 'Amoxicillin 250mg', total_stock: 999, batch_number: 'L2408AMX01', expiry_date: '2026-04-03', unit: 'pcs' },
@@ -99,9 +136,9 @@ const medicationPriceByName: Record<string, number> = {
 };
 
 const existingBillServices: ServiceItem[] = [
-  { type: 'service', name: 'Consultation', quantity: 1, unitPrice: 500, serviceId: null, logId: null },
-  { type: 'medication', name: 'Amoxicillin 250mg', quantity: 10, unitPrice: 20, serviceId: null, logId: 1 },
-  { type: 'service', name: 'X-Ray', quantity: 1, unitPrice: 1200, serviceId: null, logId: null },
+  { type: 'service', name: 'Consultation', quantity: 1, unitPrice: 500, serviceId: null, logId: null, serviceType: 'Professional Fee' },
+  { type: 'medication', name: 'Amoxicillin 250mg', quantity: 10, unitPrice: 20, serviceId: null, logId: 1, serviceType: 'Medications' },
+  { type: 'service', name: 'X-Ray', quantity: 1, unitPrice: 1200, serviceId: null, logId: null, serviceType: 'Laboratory' },
 ];
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
@@ -111,6 +148,7 @@ const VAT_RATE = 0.12;
 const SENIOR_DISCOUNT_RATE = 0.2;
 const MIN_TABLE_ROWS = 1;
 const MAX_TABLE_ROWS = 100;
+const BILL_QUEUE_PAGE_SIZE = 10;
 
 function toAmount(total: string) { const p = Number(total.replace(/[^\d.-]/g, '')); return Number.isFinite(p) ? p : 0; }
 function formatPhp(value: number) { return `PHP ${Math.round(value).toLocaleString()}`; }
@@ -119,6 +157,18 @@ function formatDateLong(value: string) { const p = new Date(value); if (Number.i
 function formatDateMed(value: string) { const p = new Date(value); if (Number.isNaN(p.getTime())) return value; return p.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }); }
 function escapeHtml(value: string) { return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
 function parsePositiveInt(value: string) { const n = value.trim(); if (!/^\d+$/.test(n)) return null; const p = Number(n); if (!Number.isInteger(p) || p <= 0) return null; return p; }
+function toNonNegativeInputNumber(value: string) { const p = Number(value); if (!Number.isFinite(p) || p < 0) return 0; return p; }
+function toAgeFromBirthDate(value: string) {
+  if (!value) return '';
+  const dob = new Date(value);
+  if (Number.isNaN(dob.getTime())) return '';
+  const now = new Date();
+  let age = now.getFullYear() - dob.getFullYear();
+  const monthDiff = now.getMonth() - dob.getMonth();
+  const dayDiff = now.getDate() - dob.getDate();
+  if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) age -= 1;
+  return age >= 0 ? String(age) : '';
+}
 function resolveMedicationUnitPrice(name: string) { return medicationPriceByName[name] ?? 20; }
 function toSafeQuantity(value: string) { const p = Number(value); if (!Number.isInteger(p) || p <= 0) return 1; return p; }
 function normalizeBillStatus(value: string): BillStatus { const n = value.trim().toLowerCase(); if (n === 'paid') return 'Paid'; if (n === 'cancelled' || n === 'canceled') return 'Cancelled'; return 'Pending'; }
@@ -126,7 +176,38 @@ function statusCode(status: BillStatus) { if (status === 'Paid') return 'PD'; if
 function toAutoIds(status: BillStatus, records: BillRow[]) { const code = statusCode(status); const next = records.filter(r => r.status === status).length + 1; return { billId: `B-${code}-${String(next).padStart(4, '0')}` }; }
 function toPeso(value: number) { return `\u20b1${value.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
 function toDateTimeDisplay(value: string) { const p = new Date(value); if (Number.isNaN(p.getTime())) return value; return p.toLocaleString('en-US', { month: 'short', day: '2-digit', year: 'numeric', hour: 'numeric', minute: '2-digit' }); }
+function toDateTimeDisplayNoTimezoneShift(value: string) {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})/);
+  if (match) {
+    const [, y, m, d, hh, mm] = match;
+    const localDate = new Date(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm));
+    if (!Number.isNaN(localDate.getTime())) {
+      return localDate.toLocaleString('en-US', {
+        month: 'short',
+        day: '2-digit',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+    }
+  }
+  return toDateTimeDisplay(value);
+}
 function toSortRank(status: BillStatus) { if (status === 'Pending') return 0; if (status === 'Paid') return 1; return 2; }
+function normalizeBreakdownType(service: ServiceItem) {
+  if (service.type === 'medication') return 'Medications';
+  const raw = (service.serviceType || '').trim().toLowerCase();
+  if (raw.includes('room')) return 'Room Charge';
+  if (raw.includes('laboratory') || raw.includes('lab') || raw.includes('x-ray') || raw.includes('xray') || raw.includes('urinalysis')) return 'Laboratory';
+  if (raw.includes('professional') || raw.includes('consult')) return 'Professional Fee';
+  if (raw.includes('misc')) return 'Miscellaneous';
+
+  const fallback = service.name.trim().toLowerCase();
+  if (fallback.includes('room')) return 'Room Charge';
+  if (fallback.includes('laboratory') || fallback.includes('lab') || fallback.includes('x-ray') || fallback.includes('xray') || fallback.includes('urinalysis') || fallback.includes('blood')) return 'Laboratory';
+  if (fallback.includes('consult') || fallback.includes('professional') || fallback.includes('doctor')) return 'Professional Fee';
+  return 'Miscellaneous';
+}
 function toFallbackPaymentDetails(bill: BillRow): PaymentBillDetailsResponse {
   const amount = toAmount(bill.total);
   return {
@@ -152,7 +233,6 @@ function buildDefaultBillMeta(bill: BillRow): BillUiMeta {
     gender: 'Male',
     doctor: 'Dr. Henry G. Malibiran',
     diagnosis: 'Community Acquired Pneumonia',
-    dueDate: new Date(new Date(bill.date).getTime() + 7 * 86400000).toISOString().slice(0, 10),
     admissionDate: bill.date,
     dischargeDate: bill.date,
     services: existingBillServices,
@@ -233,22 +313,39 @@ export default function BillingAndPayments() {
   const [billStatusInput, setBillStatusInput] = useState('');
   const [patientIdInput, setPatientIdInput] = useState('');
   const [patientNameInput, setPatientNameInput] = useState('');
+  const [patientSearchInput, setPatientSearchInput] = useState('');
+  const [patientOptions, setPatientOptions] = useState<PatientLookup[]>([]);
+  const [showPatientDropdown, setShowPatientDropdown] = useState(false);
+  const [isPatientLoading, setIsPatientLoading] = useState(false);
+  const [showAddPatientForm, setShowAddPatientForm] = useState(false);
+  const [newPatientFirstName, setNewPatientFirstName] = useState('');
+  const [newPatientLastName, setNewPatientLastName] = useState('');
+  const [newPatientDob, setNewPatientDob] = useState('');
+  const [newPatientGender, setNewPatientGender] = useState('');
+  const [newPatientContactNumber, setNewPatientContactNumber] = useState('');
+  const [newPatientEmailAddress, setNewPatientEmailAddress] = useState('');
+  const [isCreatingPatient, setIsCreatingPatient] = useState(false);
   const [patientAgeInput, setPatientAgeInput] = useState('');
   const [patientGenderInput, setPatientGenderInput] = useState('');
   const [doctorInput, setDoctorInput] = useState('');
   const [diagnosisInput, setDiagnosisInput] = useState('');
+  const [referredByInput, setReferredByInput] = useState('');
+  const [dischargeStatusInput, setDischargeStatusInput] = useState('');
   const [visitDateInput, setVisitDateInput] = useState('');
-  const [dueDateInput, setDueDateInput] = useState('');
   const [admissionDateInput, setAdmissionDateInput] = useState('');
   const [dischargeDateInput, setDischargeDateInput] = useState('');
+  const [lessAmountInput, setLessAmountInput] = useState('');
+  const [roomChargeInput, setRoomChargeInput] = useState('');
+  const [professionalFeeInput, setProfessionalFeeInput] = useState('');
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [medicationCatalog, setMedicationCatalog] = useState<MedicationCatalogItem[]>(fallbackMedicationCatalog);
   const [isSeniorCitizen, setIsSeniorCitizen] = useState(false);
-  const visitDateInputRef = useRef<HTMLInputElement | null>(null);
+  const [isPwd, setIsPwd] = useState(false);
 
   const [serviceTypeSearch, setServiceTypeSearch] = useState('');
   const [serviceSearch, setServiceSearch] = useState('');
-  const [selectedServiceType, setSelectedServiceType] = useState<typeof serviceTypeOptions[0] | null>(null);
+  const [serviceTypeOptions, setServiceTypeOptions] = useState<ServiceCatalogOption[]>([]);
+  const [selectedServiceType, setSelectedServiceType] = useState<ServiceCatalogOption | null>(null);
   const [selectedService, setSelectedService] = useState<{ id: number; name: string; unitPrice: number } | null>(null);
   const [serviceQty, setServiceQty] = useState(1);
   const [serviceUnitPrice, setServiceUnitPrice] = useState(0);
@@ -260,15 +357,19 @@ export default function BillingAndPayments() {
   const [medicationQty, setMedicationQty] = useState(1);
   const [medicationUnitPrice, setMedicationUnitPrice] = useState(0);
   const [showMedicationDropdown, setShowMedicationDropdown] = useState(false);
+  const [addItemFeedback, setAddItemFeedback] = useState('');
 
   const [selectedPayRow, setSelectedPayRow] = useState<BillRow>(EMPTY_BILL_ROW);
   const [paymentBillDetails, setPaymentBillDetails] = useState<PaymentBillDetailsResponse | null>(null);
+  const [viewBillDetails, setViewBillDetails] = useState<ViewBillDetailsResponse | null>(null);
   const [isPaymentDetailsLoading, setIsPaymentDetailsLoading] = useState(false);
+  const [isViewBillDetailsLoading, setIsViewBillDetailsLoading] = useState(false);
   const [paymentDetailsError, setPaymentDetailsError] = useState('');
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod>('Cash');
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentReferenceInput, setPaymentReferenceInput] = useState('');
   const [paymentNotes, setPaymentNotes] = useState('');
+  const [paymentErrors, setPaymentErrors] = useState<PaymentValidationErrors>({});
   const [cancelReason, setCancelReason] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [focusHandledKey, setFocusHandledKey] = useState('');
@@ -278,6 +379,7 @@ export default function BillingAndPayments() {
   const tableToolbarRef = useRef<HTMLDivElement | null>(null);
   const tableFooterRef = useRef<HTMLDivElement | null>(null);
   const tableHeadRef = useRef<HTMLTableSectionElement | null>(null);
+  const patientPickerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -292,6 +394,59 @@ export default function BillingAndPayments() {
     })();
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/billing/services`);
+        if (!response.ok) return;
+        const payload = (await response.json()) as { items?: ServiceCatalogOption[] };
+        if (!active || !Array.isArray(payload.items)) return;
+        setServiceTypeOptions(payload.items);
+      } catch {
+        if (!active) return;
+        setServiceTypeOptions([]);
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (modal !== 'createBill') return;
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        setIsPatientLoading(true);
+        const query = patientSearchInput.trim();
+        const response = await fetch(`${API_BASE_URL}/billing/patients?search=${encodeURIComponent(query)}&limit=20`);
+        if (!response.ok) return;
+        const payload = (await response.json()) as { items?: PatientLookup[] };
+        if (!active) return;
+        setPatientOptions(Array.isArray(payload.items) ? payload.items : []);
+      } catch {
+        if (!active) return;
+        setPatientOptions([]);
+      } finally {
+        if (active) setIsPatientLoading(false);
+      }
+    }, 180);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [patientSearchInput, modal]);
+
+  useEffect(() => {
+    if (!showPatientDropdown) return;
+    function handleOutsideClick(event: MouseEvent) {
+      if (!patientPickerRef.current) return;
+      if (!patientPickerRef.current.contains(event.target as Node)) setShowPatientDropdown(false);
+    }
+    window.addEventListener('mousedown', handleOutsideClick);
+    return () => window.removeEventListener('mousedown', handleOutsideClick);
+  }, [showPatientDropdown]);
 
   useEffect(() => {
     setBillMetaById((prev) => {
@@ -336,10 +491,20 @@ export default function BillingAndPayments() {
       const matchesFilter = billingFilter === 'all' || (billingFilter === 'pending' && bill.status === 'Pending') || (billingFilter === 'paid' && bill.status === 'Paid') || (billingFilter === 'cancelled' && bill.status === 'Cancelled');
       return matchesSearch && matchesFilter;
     });
+    const queueRank = (status: BillStatus) => {
+      if (status === 'Pending') return 0;
+      if (status === 'Paid') return 1;
+      if (status === 'Cancelled') return 2;
+      return 3;
+    };
     return [...visible].sort((a, b) => {
-      if (sortBy === 'amount') return toAmount(b.total) - toAmount(a.total);
-      if (sortBy === 'status') return toSortRank(a.status) - toSortRank(b.status) || new Date(b.date).getTime() - new Date(a.date).getTime();
-      return new Date(b.date).getTime() - new Date(a.date).getTime();
+      const byStatus = queueRank(a.status) - queueRank(b.status);
+      if (byStatus !== 0) return byStatus;
+
+      const byDateDesc = new Date(b.date).getTime() - new Date(a.date).getTime();
+      if (byDateDesc !== 0) return byDateDesc;
+
+      return Number(b.backendBillId || 0) - Number(a.backendBillId || 0);
     });
   }, [billingRecords, searchTerm, billingFilter, sortBy]);
 
@@ -385,7 +550,7 @@ export default function BillingAndPayments() {
     };
   }, [filteredBills.length, isLoading, forceSkeletonVisible]);
 
-  const effectivePageSize = Math.max(MIN_TABLE_ROWS, tablePageSize);
+  const effectivePageSize = Math.min(BILL_QUEUE_PAGE_SIZE, Math.max(MIN_TABLE_ROWS, tablePageSize));
   const shouldShowLoading = isLoading || forceSkeletonVisible;
   const usePagination = filteredBills.length > effectivePageSize;
   const totalPages = usePagination ? Math.max(1, Math.ceil(filteredBills.length / effectivePageSize)) : 1;
@@ -410,31 +575,104 @@ export default function BillingAndPayments() {
     () => (selectedBill ? paymentQueue.find((item) => item.id === selectedBill.id) : undefined),
     [paymentQueue, selectedBill],
   );
+  const viewBill = useMemo(() => (viewBillDetails?.bill && typeof viewBillDetails.bill === 'object' ? viewBillDetails.bill as Record<string, unknown> : null), [viewBillDetails]);
+  const viewPatient = useMemo(() => {
+    if (!viewBill) return null;
+    const relation = Array.isArray(viewBill.tbl_patients) ? viewBill.tbl_patients[0] : viewBill.tbl_patients;
+    return relation && typeof relation === 'object' ? relation as Record<string, unknown> : null;
+  }, [viewBill]);
+  const viewPayments = useMemo(() => (Array.isArray(viewBillDetails?.payments) ? viewBillDetails.payments : []), [viewBillDetails]);
+  const latestViewPayment = useMemo(() => (viewPayments.length ? viewPayments[viewPayments.length - 1] : null), [viewPayments]);
+  const latestViewPaymentWithReference = useMemo(
+    () => [...viewPayments].reverse().find((payment) => typeof payment?.reference_number === 'string' && payment.reference_number.trim().length > 0) ?? null,
+    [viewPayments],
+  );
+  const viewServicesByType = useMemo(() => {
+    const order = ['Medications', 'Laboratory', 'Miscellaneous', 'Room Charge', 'Professional Fee'] as const;
+    const grouped = new Map<string, ViewBillItem[]>();
+    const sourceItems = Array.isArray(viewBillDetails?.items) ? viewBillDetails.items : [];
+    const normalize = (value: string) => value.trim().toLowerCase();
+    const resolveType = (item: ViewBillItem) => {
+      if (item.medication_id || item.log_id) return 'Medications';
+      const rawType = typeof item?.service_type === 'string' ? item.service_type : '';
+      const normalizedType = normalize(rawType);
+      if (normalizedType.includes('room')) return 'Room Charge';
+      if (normalizedType.includes('lab') || normalizedType.includes('laboratory') || normalizedType.includes('ecg')) return 'Laboratory';
+      if (normalizedType.includes('professional') || normalizedType.includes('consult')) return 'Professional Fee';
+      if (normalizedType.includes('misc')) return 'Miscellaneous';
+      const desc = normalize(String(item.description || ''));
+      if (desc.includes('room')) return 'Room Charge';
+      if (desc.includes('lab') || desc.includes('laboratory') || desc.includes('x-ray') || desc.includes('xray') || desc.includes('blood') || desc.includes('urinalysis') || desc.includes('ecg')) return 'Laboratory';
+      if (desc.includes('professional') || desc.includes('consult') || desc.includes('doctor')) return 'Professional Fee';
+      return 'Miscellaneous';
+    };
+    for (const key of order) grouped.set(key, []);
+    for (const item of sourceItems) {
+      const match = resolveType(item);
+      grouped.get(match)?.push(item);
+    }
+    return order
+      .map((label) => {
+        const items = grouped.get(label) || [];
+        const total = items.reduce((sum, item) => sum + Number(item?.subtotal || 0), 0);
+        return { label, items, total };
+      })
+      .filter((group) => group.items.length > 0 && group.total > 0);
+  }, [viewBillDetails]);
+  const viewSummary = useMemo(() => {
+    const toNum = (value: unknown) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+    return {
+      subtotalMedications: toNum(viewBill?.subtotal_medications),
+      subtotalLaboratory: toNum(viewBill?.subtotal_laboratory),
+      subtotalMiscellaneous: toNum(viewBill?.subtotal_miscellaneous),
+      subtotalRoomCharge: toNum(viewBill?.subtotal_room_charge),
+      subtotalProfessionalFee: toNum(viewBill?.subtotal_professional_fee),
+      group1Total: toNum(viewBill?.group1_total),
+      group2Total: toNum(viewBill?.group2_total),
+      subtotal: toNum(viewBill?.total_amount),
+      lessAmount: toNum(viewBill?.less_amount),
+      netAmount: toNum(viewBill?.net_amount),
+      discountType: typeof viewBill?.discount_type === 'string' ? viewBill.discount_type : '',
+    };
+  }, [viewBill]);
 
   const subtotal = useMemo(() => services.reduce((acc, s) => acc + s.quantity * s.unitPrice, 0), [services]);
   const discount = isSeniorCitizen ? subtotal * SENIOR_DISCOUNT_RATE : 0;
   const tax = isSeniorCitizen ? 0 : subtotal * VAT_RATE;
   const total = subtotal - discount + tax;
 
-  const billSummaryLines = useMemo(() => {
-    const medicationTotal = services.filter(s => s.type === 'medication').reduce((acc, s) => acc + s.quantity * s.unitPrice, 0);
-    const labXray = services.filter(s => ['Laboratory', 'X-Ray', 'Blood Tests', 'Laboratory / X-Ray'].includes(s.name)).reduce((acc, s) => acc + s.quantity * s.unitPrice, 0);
-    const urinalysis = services.filter(s => s.name.toLowerCase().includes('urinalysis')).reduce((acc, s) => acc + s.quantity * s.unitPrice, 0);
-    const misc = services.filter(s => ['Physical Therapy', 'Dentistry', 'Oral Examination'].includes(s.name)).reduce((acc, s) => acc + s.quantity * s.unitPrice, 0);
-    const consultation = services.filter(s => s.name.toLowerCase().includes('consultation')).reduce((acc, s) => acc + s.quantity * s.unitPrice, 0);
-    const lines = [];
-    if (medicationTotal > 0) lines.push({ label: 'Medications', value: medicationTotal });
-    if (labXray > 0) lines.push({ label: 'Laboratory / X-Ray', value: labXray });
-    if (urinalysis > 0) lines.push({ label: 'Urinalysis', value: urinalysis });
-    if (misc > 0) lines.push({ label: 'Miscellaneous', value: misc });
-    if (consultation > 0) lines.push({ label: 'Professional Fee', value: consultation });
-    return lines;
+  const groupedBreakdownTotals = useMemo(() => {
+    const totals: Record<string, number> = {
+      'Medications': 0,
+      'Laboratory': 0,
+      'Miscellaneous': 0,
+      'Room Charge': 0,
+      'Professional Fee': 0,
+    };
+    for (const service of services) {
+      const key = normalizeBreakdownType(service);
+      totals[key] = (totals[key] || 0) + (service.quantity * service.unitPrice);
+    }
+    return totals;
   }, [services]);
+  const subtotalMedications = groupedBreakdownTotals['Medications'] || 0;
+  const subtotalLaboratory = groupedBreakdownTotals['Laboratory'] || 0;
+  const subtotalMiscellaneous = groupedBreakdownTotals['Miscellaneous'] || 0;
+  const group1Total = subtotalMedications + subtotalLaboratory + subtotalMiscellaneous;
+  const subtotalRoomCharge = Math.max(groupedBreakdownTotals['Room Charge'] || 0, toNonNegativeInputNumber(roomChargeInput));
+  const subtotalProfessionalFee = Math.max(groupedBreakdownTotals['Professional Fee'] || 0, toNonNegativeInputNumber(professionalFeeInput));
+  const group2Total = subtotalRoomCharge + subtotalProfessionalFee;
+  const totalBeforeDiscount = group1Total + group2Total;
+  const discountRate = (isSeniorCitizen || isPwd) ? 0.2 : 0;
+  const discountType = isSeniorCitizen ? 'Senior Citizen' : isPwd ? 'PWD' : 'None';
+  const computedLessAmount = totalBeforeDiscount * discountRate;
+  const lessAmount = Number((computedLessAmount || toNonNegativeInputNumber(lessAmountInput)).toFixed(2));
+  const finalBillTotal = totalBeforeDiscount - computedLessAmount;
 
   const filteredServiceTypes = useMemo(() => {
     const q = serviceTypeSearch.trim().toLowerCase();
     return q ? serviceTypeOptions.filter(t => t.name.toLowerCase().includes(q)) : serviceTypeOptions;
-  }, [serviceTypeSearch]);
+  }, [serviceTypeSearch, serviceTypeOptions]);
 
   const filteredServiceOptions = useMemo(() => {
     if (!selectedServiceType) return [];
@@ -453,6 +691,7 @@ export default function BillingAndPayments() {
     setSelectedServiceType(null); setSelectedService(null);
     setServiceTypeSearch(''); setServiceSearch('');
     setServiceQty(1); setServiceUnitPrice(0);
+    setAddItemFeedback('');
     setShowServiceTypeDropdown(false); setShowServiceDropdown(false);
     setPrevModal(modal);
     setModal('addService');
@@ -461,6 +700,7 @@ export default function BillingAndPayments() {
   function openAddMedicationModal() {
     setSelectedMedication(null); setMedicationSearch('');
     setMedicationQty(1); setMedicationUnitPrice(0);
+    setAddItemFeedback('');
     setShowMedicationDropdown(false);
     setPrevModal(modal);
     setModal('addMedication');
@@ -468,15 +708,94 @@ export default function BillingAndPayments() {
 
   function confirmAddService() {
     if (!selectedService) return;
-    setServices(prev => [...prev, { type: 'service', name: selectedService.name, quantity: serviceQty, unitPrice: serviceUnitPrice || selectedService.unitPrice, serviceId: selectedService.id, logId: null }]);
+    const nextServiceType = selectedServiceType?.name ?? null;
+    const hasDuplicate = services.some(item =>
+      item.type === 'service' &&
+      ((item.serviceId != null && item.serviceId === selectedService.id) ||
+        (item.name.trim().toLowerCase() === selectedService.name.trim().toLowerCase() && (item.serviceType || '').trim().toLowerCase() === (nextServiceType || '').trim().toLowerCase()))
+    );
+    if (hasDuplicate) {
+      const message = 'This service is already added.';
+      setToast({ type: 'error', message });
+      setAddItemFeedback(message);
+      return;
+    }
+    setAddItemFeedback('');
+    setServices(prev => [...prev, { type: 'service', name: selectedService.name, quantity: serviceQty, unitPrice: serviceUnitPrice || selectedService.unitPrice, serviceId: selectedService.id, logId: null, serviceType: nextServiceType }]);
     setModal(prevModal);
   }
 
   function confirmAddMedication() {
     if (!selectedMedication) return;
-    if (selectedMedication.total_stock < medicationQty) { window.alert(`Insufficient stock. Available: ${selectedMedication.total_stock}`); return; }
+    if (selectedMedication.total_stock < medicationQty) {
+      const message = `Insufficient stock. Available: ${selectedMedication.total_stock}`;
+      setToast({ type: 'error', message });
+      setAddItemFeedback(message);
+      return;
+    }
+    const hasDuplicate = services.some(item =>
+      item.type === 'medication' &&
+      ((item.logId != null && item.logId === selectedMedication.medication_id) ||
+        item.name.trim().toLowerCase() === selectedMedication.medication_name.trim().toLowerCase())
+    );
+    if (hasDuplicate) {
+      const message = 'This medication is already added.';
+      setToast({ type: 'error', message });
+      setAddItemFeedback(message);
+      return;
+    }
+    setAddItemFeedback('');
     setServices(prev => [...prev, { type: 'medication', name: selectedMedication.medication_name, quantity: medicationQty, unitPrice: medicationUnitPrice || resolveMedicationUnitPrice(selectedMedication.medication_name), serviceId: null, logId: selectedMedication.medication_id }]);
     setModal(prevModal);
+  }
+
+  function selectPatientOption(patient: PatientLookup) {
+    setPatientIdInput(String(patient.patient_id));
+    setPatientNameInput(patient.full_name);
+    setPatientSearchInput(patient.full_name);
+    setPatientGenderInput(patient.gender || '');
+    setPatientAgeInput(toAgeFromBirthDate(patient.date_of_birth));
+    setShowPatientDropdown(false);
+    setShowAddPatientForm(false);
+  }
+
+  async function handleCreatePatientOption() {
+    if (!newPatientFirstName.trim() || !newPatientLastName.trim() || !newPatientDob || !newPatientGender.trim()) {
+      window.alert('First Name, Last Name, Date of Birth, and Gender are required.');
+      return;
+    }
+    try {
+      setIsCreatingPatient(true);
+      const response = await fetch(`${API_BASE_URL}/billing/patients`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          first_name: newPatientFirstName.trim(),
+          last_name: newPatientLastName.trim(),
+          date_of_birth: newPatientDob,
+          gender: newPatientGender.trim(),
+          contact_number: newPatientContactNumber.trim() || null,
+          email_address: newPatientEmailAddress.trim() || null,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error('Unable to create patient record.');
+      }
+      const payload = (await response.json()) as { patient?: PatientLookup };
+      if (!payload.patient) return;
+      selectPatientOption(payload.patient);
+      setPatientOptions(prev => [payload.patient as PatientLookup, ...prev.filter(p => p.patient_id !== payload.patient!.patient_id)]);
+      setNewPatientFirstName('');
+      setNewPatientLastName('');
+      setNewPatientDob('');
+      setNewPatientGender('');
+      setNewPatientContactNumber('');
+      setNewPatientEmailAddress('');
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Unable to create patient record.');
+    } finally {
+      setIsCreatingPatient(false);
+    }
   }
 
   function resetCreateForm() {
@@ -484,9 +803,12 @@ export default function BillingAndPayments() {
     const ids = toAutoIds(defaultStatus, billingRecords);
     setBillIdInput(ids.billId); setBillStatusInput(defaultStatus);
     setPatientIdInput(''); setPatientNameInput(''); setPatientAgeInput('');
-    setPatientGenderInput(''); setDoctorInput(''); setDiagnosisInput('');
-    setVisitDateInput(''); setDueDateInput(''); setAdmissionDateInput(''); setDischargeDateInput('');
-    setServices([]); setIsSeniorCitizen(false);
+    setPatientSearchInput(''); setPatientOptions([]); setShowPatientDropdown(false); setShowAddPatientForm(false);
+    setNewPatientFirstName(''); setNewPatientLastName(''); setNewPatientDob(''); setNewPatientGender(''); setNewPatientContactNumber(''); setNewPatientEmailAddress('');
+    setPatientGenderInput(''); setDoctorInput(''); setDiagnosisInput(''); setReferredByInput(''); setDischargeStatusInput('');
+    setVisitDateInput(''); setAdmissionDateInput(''); setDischargeDateInput('');
+    setLessAmountInput(''); setRoomChargeInput(''); setProfessionalFeeInput('');
+    setServices([]); setIsSeniorCitizen(false); setIsPwd(false);
   }
 
   function openCreateModal() { resetCreateForm(); setSelectedBill(null); setModal('createBill'); }
@@ -498,20 +820,29 @@ export default function BillingAndPayments() {
     setBillStatusInput(bill.status);
     setPatientIdInput(meta.patientId);
     setPatientNameInput(bill.patient);
+    setPatientSearchInput(bill.patient);
     setPatientAgeInput(meta.age);
     setPatientGenderInput(meta.gender);
     setDoctorInput(meta.doctor);
     setDiagnosisInput(meta.diagnosis);
+    setReferredByInput('');
+    setDischargeStatusInput('');
     setVisitDateInput(bill.date);
-    setDueDateInput(meta.dueDate);
     setAdmissionDateInput(meta.admissionDate);
     setDischargeDateInput(meta.dischargeDate);
+    setLessAmountInput('');
+    setRoomChargeInput('');
+    setProfessionalFeeInput('');
     setServices(meta.services);
     setIsSeniorCitizen(meta.isSeniorCitizen);
+    setIsPwd(false);
   }
 
   function openViewModal(bill: BillRow) {
-    loadBillDetails(bill);
+    const resolvedBackendBillId = bill.backendBillId ?? billingRecords.find((row) => row.id === bill.id)?.backendBillId;
+    const billWithBackendId: BillRow = resolvedBackendBillId ? { ...bill, backendBillId: resolvedBackendBillId } : bill;
+    loadBillDetails(billWithBackendId);
+    void fetchViewBillDetails(billWithBackendId);
     setModal('viewBill');
   }
 
@@ -551,16 +882,49 @@ export default function BillingAndPayments() {
   }
 
   function openPaymentModal(bill: BillRow) {
-    loadBillDetails(bill);
-    setSelectedPayRow(bill);
+    const resolvedBackendBillId = bill.backendBillId ?? billingRecords.find((row) => row.id === bill.id)?.backendBillId;
+    if (!resolvedBackendBillId) {
+      setToast({ type: 'error', message: 'Unable to open payment modal. Missing bill ID.' });
+      return;
+    }
+    const billWithBackendId: BillRow = { ...bill, backendBillId: resolvedBackendBillId };
+    loadBillDetails(billWithBackendId);
+    setSelectedPayRow(billWithBackendId);
     setSelectedMethod('Cash');
     setPaymentAmount(String(toAmount(bill.total)));
     setPaymentReferenceInput('');
     setPaymentNotes('');
+    setPaymentErrors({});
     setPaymentDetailsError('');
     setPaymentBillDetails(null);
     setModal('payMethod');
-    void fetchPaymentBillDetails(bill);
+    void fetchPaymentBillDetails(billWithBackendId);
+  }
+
+  async function fetchViewBillDetails(bill: BillRow) {
+    const backendBillId = bill.backendBillId ?? billingRecords.find((row) => row.id === bill.id)?.backendBillId;
+    if (!backendBillId) {
+      setViewBillDetails(null);
+      return;
+    }
+
+    try {
+      setIsViewBillDetailsLoading(true);
+      const response = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}`);
+      if (!response.ok) {
+        throw new Error(`Bill details request failed (${response.status}).`);
+      }
+      const payload = (await response.json()) as ViewBillDetailsResponse;
+      setViewBillDetails(payload);
+      const billRow = payload.bill && typeof payload.bill === 'object' ? payload.bill as Record<string, unknown> : null;
+      const fetchedDiagnosis = billRow && typeof billRow.final_diagnosis === 'string' ? billRow.final_diagnosis.trim() : '';
+      setDiagnosisInput(fetchedDiagnosis);
+    } catch {
+      setViewBillDetails(null);
+      setDiagnosisInput('');
+    } finally {
+      setIsViewBillDetailsLoading(false);
+    }
   }
 
   function openCancelModal(bill: BillRow) {
@@ -612,15 +976,33 @@ export default function BillingAndPayments() {
       const isEditingExisting = modal === 'viewBill';
       if (!isEditingExisting) {
         const patientId = parsePositiveInt(patientIdInput) ?? undefined;
-        if (!patientId) throw new Error('Valid numeric Patient ID is required.');
-        if (!services.length) throw new Error('Add at least one service or medication before creating a bill.');
         const status = normalizeBillStatus(billStatusInput);
         const id = billIdInput.trim() || toAutoIds(status, billingRecords).billId;
         await addBill({
-          id, patient: patientNameInput.trim() || 'Unknown Patient',
+          id, patient: patientNameInput.trim() || (patientId ? `Patient #${patientId}` : 'Unknown Patient'),
           date: visitDateInput.trim() || new Date().toISOString().slice(0, 10),
-          total: `P${Math.round(total).toLocaleString()}`, status, patientId,
-          discountAmount: Number(discount.toFixed(2)), taxAmount: Number(tax.toFixed(2)),
+          total: `P${Math.round(finalBillTotal).toLocaleString()}`, status, patientId,
+          doctorInCharge: doctorInput,
+          age: patientAgeInput,
+          gender: patientGenderInput,
+          finalDiagnosis: diagnosisInput,
+          admissionDateTime: admissionDateInput || undefined,
+          dischargeDateTime: dischargeDateInput || undefined,
+          referredBy: referredByInput,
+          dischargeStatus: dischargeStatusInput,
+          isSeniorCitizen,
+          isPwd,
+          discountType,
+          discountRate,
+          subtotalMedications: Number(subtotalMedications.toFixed(2)),
+          subtotalLaboratory: Number(subtotalLaboratory.toFixed(2)),
+          subtotalMiscellaneous: Number(subtotalMiscellaneous.toFixed(2)),
+          lessAmount: Number(computedLessAmount.toFixed(2)),
+          subtotalRoomCharge: Number(subtotalRoomCharge.toFixed(2)),
+          subtotalProfessionalFee: Number(subtotalProfessionalFee.toFixed(2)),
+          group1Total: Number(group1Total.toFixed(2)),
+          group2Total: Number(group2Total.toFixed(2)),
+          netAmount: Number(finalBillTotal.toFixed(2)),
           items: services.map(s => ({ name: s.name, quantity: s.quantity, unitPrice: s.unitPrice, serviceId: s.serviceId ?? null, logId: s.logId ?? null })),
         });
       }
@@ -673,6 +1055,7 @@ export default function BillingAndPayments() {
     setPaymentAmount('');
     setPaymentReferenceInput('');
     setPaymentNotes('');
+    setPaymentErrors({});
     setCancelReason('');
   }
 
@@ -801,14 +1184,61 @@ export default function BillingAndPayments() {
     printWindow.document.close();
   }
 
+  function validatePaymentInput(): boolean {
+    const nextErrors: PaymentValidationErrors = {};
+    const amountRaw = String(paymentAmount || '').trim();
+    const amountPaid = Number(amountRaw);
+
+    if (!selectedMethod || !['Cash', 'GCash', 'Maya'].includes(selectedMethod)) {
+      nextErrors.payment_method = 'Please select a payment method.';
+    }
+    if (!amountRaw || Number.isNaN(amountPaid) || amountPaid <= 0) {
+      nextErrors.amount_paid = 'Please enter the amount paid.';
+    }
+    if ((selectedMethod === 'GCash' || selectedMethod === 'Maya') && !paymentReferenceInput.trim()) {
+      nextErrors.reference_number = 'Reference number is required for GCash and Maya payments.';
+    }
+
+    setPaymentErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  }
+
+  function handleProceedFromMethod() {
+    if (!selectedMethod || !['Cash', 'GCash', 'Maya'].includes(selectedMethod)) {
+      setPaymentErrors((prev) => ({ ...prev, payment_method: 'Please select a payment method.' }));
+      return;
+    }
+    setPaymentErrors((prev) => ({ ...prev, payment_method: undefined }));
+    setModal(selectedMethod === 'Cash' ? 'payCash' : 'payGcash');
+  }
+
+  function handleReviewPayment() {
+    if (!validatePaymentInput()) return;
+    setModal('payConfirm');
+  }
+
   async function handleConfirmPayment() {
     if (!selectedPayRow.id || isSubmitting) return;
+    if (!selectedPayRow.backendBillId) {
+      setToast({ type: 'error', message: 'Failed to record payment. Please try again.' });
+      return;
+    }
+    if (!validatePaymentInput()) {
+      setModal(selectedMethod === 'Cash' ? 'payCash' : 'payGcash');
+      return;
+    }
     const amountPaid = Number(paymentAmount || 0);
-    if (Number.isNaN(amountPaid) || amountPaid <= 0) { window.alert('Enter a valid payment amount.'); return; }
     try {
       setIsSubmitting(true);
       const paidDate = new Date().toISOString();
-      await markPaymentPaid({ id: selectedPayRow.id, method: selectedMethod, reference: paymentReferenceInput.trim() || undefined, paidDate });
+      await markPaymentPaid({
+        id: selectedPayRow.id,
+        method: selectedMethod,
+        amountPaid,
+        reference: paymentReferenceInput.trim() || undefined,
+        notes: paymentNotes.trim() || undefined,
+        paidDate,
+      });
       const updatedBill: BillRow = { ...selectedPayRow, status: 'Paid', date: paidDate };
       setBillMetaById((prev) => ({
         ...prev,
@@ -822,10 +1252,10 @@ export default function BillingAndPayments() {
         },
       }));
       setSelectedBill(updatedBill);
-      setToast({ type: 'success', message: 'Payment successful.' });
       setModal('paySuccess');
+      setToast({ type: 'success', message: 'Payment recorded successfully.' });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : 'Unable to record payment.');
+      setToast({ type: 'error', message: 'Failed to record payment. Please try again.' });
     } finally {
       setIsSubmitting(false);
     }
@@ -859,17 +1289,34 @@ export default function BillingAndPayments() {
   }
 
   const amountReceived = paymentAmount;
-  const setAmountReceived = setPaymentAmount;
+  const setAmountReceived = (value: string) => {
+    setPaymentAmount(value);
+    if (paymentErrors.amount_paid) {
+      setPaymentErrors((prev) => ({ ...prev, amount_paid: undefined }));
+    }
+  };
   const gcashReference = paymentReferenceInput;
-  const setGcashReference = setPaymentReferenceInput;
+  const setGcashReference = (value: string) => {
+    setPaymentReferenceInput(value);
+    if (paymentErrors.reference_number) {
+      setPaymentErrors((prev) => ({ ...prev, reference_number: undefined }));
+    }
+  };
   const changeAmount = useMemo(() => {
     if (!selectedPayRow.id) return 0;
     const received = Number(paymentAmount || 0);
     if (Number.isNaN(received)) return 0;
     return Math.max(0, received - safePaymentAmountDue);
   }, [paymentAmount, selectedPayRow.id, safePaymentAmountDue]);
+  const overpaymentWarning = useMemo(() => {
+    if (!selectedPayRow.id) return '';
+    const received = Number(paymentAmount || 0);
+    if (Number.isNaN(received) || received <= 0 || safePaymentAmountDue <= 0) return '';
+    return received > safePaymentAmountDue * 1.5
+      ? 'Amount paid is significantly higher than Amount Due. Please double-check before submitting.'
+      : '';
+  }, [paymentAmount, selectedPayRow.id, safePaymentAmountDue]);
   const paymentReference = paymentReferenceInput || 'N/A';
-  function handleProceedFromMethod() { setModal(selectedMethod === 'Cash' ? 'payCash' : 'payGcash'); }
   function closePayModals() { closeAuxiliaryModals(); }
   function printBillReceipt() { printBillDocument('receipt'); }
 
@@ -1010,64 +1457,144 @@ export default function BillingAndPayments() {
           className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md"
           onClick={() => {
             if (['payBill', 'payMethod', 'payCash', 'payGcash', 'payConfirm', 'paySuccess', 'payCancelConfirm', 'payCancelled', 'cancelBill', 'receipt'].includes(modal)) closeAuxiliaryModals();
+            else if (modal === 'viewBillServicesFull') setModal('viewBill');
             else if (modal === 'addService' || modal === 'addMedication') setModal(prevModal);
             else setModal('none');
           }}
         >
           {/* ── Create / View Bill Modal ── */}
           {modal === 'createBill' && (
-            <div className="w-full max-w-[960px] rounded-2xl border border-gray-200 bg-white shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+            <div className="relative flex max-h-[92vh] w-full max-w-[960px] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="sticky top-0 z-20 flex items-center justify-between border-b border-gray-200 bg-white px-6 py-4">
                 <h3 className="flex items-center gap-2 text-lg font-bold text-gray-800"><ReceiptText size={18} className="text-gray-500" />Create Bill</h3>
                 <button type="button" onClick={() => setModal('none')} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"><X size={15} /></button>
               </div>
-              <div className="grid grid-cols-1 lg:grid-cols-[300px_1fr]">
+              <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[300px_1fr]">
                 {/* LEFT PANEL */}
                 <div className="border-r border-gray-200 p-5 space-y-5 bg-gray-50">
                   <div>
-                    <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><ReceiptText size={15} className="text-gray-400" />Bill Information</h4>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 text-sm">
-                      <div>
-                        <p className="text-xs text-gray-400 mb-0.5">Bill ID</p>
-                        {isEditingExisting ? <p className="font-bold text-gray-800">{billIdInput}</p> : <input value={billIdInput} readOnly className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm text-gray-700" />}
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-400 mb-0.5">Bill Date</p>
-                        {isEditingExisting ? <p className="font-bold text-gray-800">{formatDateLong(visitDateInput)}</p> : (
-                          <div className="flex items-center gap-1">
-                            <input ref={visitDateInputRef} type="date" value={visitDateInput} onChange={e => setVisitDateInput(e.target.value)} className="h-8 flex-1 rounded-lg border border-gray-200 bg-white px-2 text-sm" />
-                            <button type="button" onClick={() => { const p = visitDateInputRef.current as HTMLInputElement & { showPicker?: () => void }; p.showPicker?.(); }} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-gray-200 text-gray-500 hover:bg-gray-100"><CalendarDays size={13} /></button>
+                    <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><User size={15} className="text-gray-400" />Bill and Patient Information</h4>
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div ref={patientPickerRef} className="col-span-2">
+                        <p className="mb-1 text-xs text-gray-400">Patient Name</p>
+                        {isEditingExisting ? (
+                          <p className="font-bold text-gray-800">{patientNameInput || 'N/A'}</p>
+                        ) : (
+                          <div className="relative">
+                            <input
+                              value={patientSearchInput}
+                              onChange={(e) => {
+                                setPatientSearchInput(e.target.value);
+                                setPatientIdInput('');
+                                setPatientNameInput('');
+                                setPatientAgeInput('');
+                                setPatientGenderInput('');
+                                setShowPatientDropdown(true);
+                                setShowAddPatientForm(false);
+                              }}
+                              onFocus={() => setShowPatientDropdown(true)}
+                              placeholder="Search patient by name..."
+                              className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm"
+                            />
+                            {showPatientDropdown && (
+                              <div className="absolute z-30 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowAddPatientForm(true);
+                                    setShowPatientDropdown(false);
+                                  }}
+                                  className="block w-full border-b border-gray-100 px-3 py-2 text-left text-sm font-semibold text-blue-700 hover:bg-blue-50"
+                                >
+                                  Add New Patient
+                                </button>
+                                {isPatientLoading && <p className="px-3 py-2 text-xs text-gray-500">Searching...</p>}
+                                {!isPatientLoading && patientOptions.map((patient) => (
+                                  <button
+                                    key={patient.patient_id}
+                                    type="button"
+                                    onClick={() => selectPatientOption(patient)}
+                                    className="block w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50"
+                                  >
+                                    <span className="font-medium">{patient.full_name}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
+                      <div className="pr-3">
+                        <p className="mb-1 text-xs text-gray-400">Age / Gender</p>
+                        {isEditingExisting ? <p className="font-bold text-gray-800">{[patientAgeInput, patientGenderInput].filter(Boolean).join(' / ') || 'N/A'}</p> : <div className="flex gap-2"><input value={patientAgeInput} onChange={e => setPatientAgeInput(e.target.value)} placeholder="Age" className="h-8 w-16 rounded-lg border border-gray-200 bg-white px-2 text-sm" /><select value={patientGenderInput} onChange={e => setPatientGenderInput(e.target.value)} className="h-8 flex-1 rounded-lg border border-gray-200 bg-white px-2 text-sm"><option value="">Gender</option><option value="Male">Male</option><option value="Female">Female</option></select></div>}
+                      </div>
+                      <div className="pl-3">
+                        <p className="mb-1 text-xs text-gray-400">Doctor-in-Charge</p>
+                        {isEditingExisting ? <p className="font-bold text-gray-800">{doctorInput}</p> : <input value={doctorInput} onChange={e => setDoctorInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}
+                      </div>
+                      <div className="col-span-2">
+                        <p className="mb-1 text-xs text-gray-400">Final Diagnosis</p>
+                        {isEditingExisting ? <p className="font-bold text-gray-800">{diagnosisInput}</p> : <input value={diagnosisInput} onChange={e => setDiagnosisInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}
+                      </div>
                       <div>
-                        <p className="text-xs text-gray-400 mb-0.5">Bill Status</p>
-                        {isEditingExisting ? <StatusPill status={billStatusInput || 'Pending'} /> : (
-                          <select value={normalizeBillStatus(billStatusInput)} onChange={e => handleCreateStatusChange(e.target.value as BillStatus)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm">
-                            <option value="Pending">Pending</option>
-                            <option value="Paid">Paid</option>
-                            <option value="Cancelled">Cancelled</option>
+                        <p className="mb-1 text-xs text-gray-400">Admission Date &amp; Time</p>
+                        {isEditingExisting ? <p className="font-bold text-gray-800">{admissionDateInput || 'N/A'}</p> : <input type="datetime-local" value={admissionDateInput} onChange={e => setAdmissionDateInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}
+                      </div>
+                      <div>
+                        <p className="mb-1 text-xs text-gray-400">Discharge Date &amp; Time</p>
+                        {isEditingExisting ? <p className="font-bold text-gray-800">{dischargeDateInput || 'N/A'}</p> : <input type="datetime-local" value={dischargeDateInput} onChange={e => setDischargeDateInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}
+                      </div>
+                      <div>
+                        <p className="mb-1 text-xs text-gray-400">Referred By</p>
+                        {isEditingExisting ? <p className="font-bold text-gray-800">{referredByInput || 'N/A'}</p> : <input value={referredByInput} onChange={e => setReferredByInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}
+                      </div>
+                      <div>
+                        <p className="mb-1 text-xs text-gray-400">Discharge Status</p>
+                        {isEditingExisting ? <p className="font-bold text-gray-800">{dischargeStatusInput || 'N/A'}</p> : (
+                          <select value={dischargeStatusInput} onChange={e => setDischargeStatusInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm">
+                            <option value="">Select status</option>
+                            <option value="Recovered">Recovered</option>
+                            <option value="Improved">Improved</option>
+                            <option value="Unimproved">Unimproved</option>
+                            <option value="Transferred">Transferred</option>
+                            <option value="Against Medical Advice">Against Medical Advice</option>
+                            <option value="Expired">Expired</option>
                           </select>
                         )}
                       </div>
-                      <div>
-                        <p className="text-xs text-gray-400 mb-0.5">Due Date</p>
-                        {isEditingExisting ? <p className="font-bold text-gray-800">{formatDateLong(dueDateInput)}</p> : <input type="date" value={dueDateInput} onChange={e => setDueDateInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="border-t border-gray-200" />
-                  <div>
-                    <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><User size={15} className="text-gray-400" />Patient Information</h4>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 text-sm">
-                      <div><p className="text-xs text-gray-400 mb-0.5">Patient ID</p>{isEditingExisting ? <p className="font-bold text-gray-800">{patientIdInput}</p> : <input value={patientIdInput} onChange={e => setPatientIdInput(e.target.value)} placeholder="e.g. 1021" className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}</div>
-                      <div><p className="text-xs text-gray-400 mb-0.5">Patient Name</p>{isEditingExisting ? <p className="font-bold text-gray-800">{patientNameInput}</p> : <input value={patientNameInput} onChange={e => setPatientNameInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}</div>
-                      <div><p className="text-xs text-gray-400 mb-0.5">Age</p>{isEditingExisting ? <p className="font-bold text-gray-800">{patientAgeInput} yrs old</p> : <input value={patientAgeInput} onChange={e => setPatientAgeInput(e.target.value)} placeholder="e.g. 45" className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}</div>
-                      <div><p className="text-xs text-gray-400 mb-0.5">Gender</p>{isEditingExisting ? <p className="font-bold text-gray-800">{patientGenderInput}</p> : (<select value={patientGenderInput} onChange={e => setPatientGenderInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm"><option value="">Select</option><option value="Male">Male</option><option value="Female">Female</option></select>)}</div>
-                      <div><p className="text-xs text-gray-400 mb-0.5">Doctor in Charge</p>{isEditingExisting ? <p className="font-bold text-gray-800">{doctorInput}</p> : <input value={doctorInput} onChange={e => setDoctorInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}</div>
-                      <div><p className="text-xs text-gray-400 mb-0.5">Final Diagnosis</p>{isEditingExisting ? <p className="font-bold text-gray-800">{diagnosisInput}</p> : <input value={diagnosisInput} onChange={e => setDiagnosisInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}</div>
-                      <div><p className="text-xs text-gray-400 mb-0.5">Admission Date</p>{isEditingExisting ? <p className="font-bold text-gray-800">{formatDateLong(admissionDateInput)}</p> : <input type="date" value={admissionDateInput} onChange={e => setAdmissionDateInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}</div>
-                      <div><p className="text-xs text-gray-400 mb-0.5">Discharge Date</p>{isEditingExisting ? <p className="font-bold text-gray-800">{formatDateLong(dischargeDateInput)}</p> : <input type="date" value={dischargeDateInput} onChange={e => setDischargeDateInput(e.target.value)} className="h-8 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />}</div>
+                      {!isEditingExisting && (
+                        <div className="col-span-2 mt-1 rounded-lg border border-gray-200 bg-white p-3">
+                          <p className="mb-2 text-xs font-semibold text-gray-600">Discount Eligibility</p>
+                          <div className="flex flex-wrap items-center gap-4 text-sm text-gray-700">
+                            <label className="inline-flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={isSeniorCitizen}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  setIsSeniorCitizen(checked);
+                                  if (checked) setIsPwd(false);
+                                }}
+                                className="h-4 w-4 rounded border-gray-300"
+                              />
+                              Senior Citizen
+                            </label>
+                            <label className="inline-flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                checked={isPwd}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  setIsPwd(checked);
+                                  if (checked) setIsSeniorCitizen(false);
+                                }}
+                                className="h-4 w-4 rounded border-gray-300"
+                              />
+                              PWD
+                            </label>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1076,6 +1603,7 @@ export default function BillingAndPayments() {
                 <div className="p-5 space-y-5">
                   <div>
                     <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><Stethoscope size={15} className="text-gray-400" />Services and Treatment</h4>
+                    <div className="max-h-[140px] overflow-y-auto pr-1">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="text-xs text-gray-500 border-b border-gray-200">
@@ -1113,6 +1641,7 @@ export default function BillingAndPayments() {
                         )}
                       </tbody>
                     </table>
+                    </div>
 
                     {!isEditingExisting && (
                       <div className="mt-3 flex gap-2">
@@ -1126,29 +1655,59 @@ export default function BillingAndPayments() {
                     )}
                   </div>
 
-                  {/* Bill Summary */}
+                  {/* Billing Breakdown */}
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-                    <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><ReceiptText size={15} className="text-gray-400" />Bill Summary</h4>
+                    <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><ReceiptText size={15} className="text-gray-400" />Billing Breakdown</h4>
                     <div className="space-y-1.5 text-sm">
-                      {billSummaryLines.map(line => (
-                        <div key={line.label} className="flex justify-between text-gray-700">
-                          <span className="font-medium">{line.label}</span>
-                          <span className="font-semibold">₱{line.value.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</span>
-                        </div>
-                      ))}
-                      <div className="border-t border-gray-200 my-2" />
-                      <div className="flex justify-between text-gray-700"><span className="font-medium">Subtotal</span><span className="font-semibold">₱{subtotal.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</span></div>
-                      {!isEditingExisting && (
-                        <label className="flex items-center gap-2 text-xs text-gray-600 pt-1">
-                          <input type="checkbox" checked={isSeniorCitizen} onChange={e => setIsSeniorCitizen(e.target.checked)} className="h-3.5 w-3.5 rounded border-gray-400" />
-                          Senior Citizen (20% discount, VAT exempt)
-                        </label>
+                      {subtotalMedications > 0 && (
+                        <div className="flex justify-between text-gray-700"><span className="font-medium">Medications</span><span className="font-semibold">{toPeso(subtotalMedications)}</span></div>
                       )}
-                      <div className="flex justify-between text-gray-700"><span className="font-medium">Discount</span><span className="font-semibold">₱{discount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</span></div>
-                      <div className="flex justify-between text-gray-700"><span className="font-medium">Tax</span><span className="font-semibold">₱{tax.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</span></div>
-                      <div className="border-t border-gray-300 pt-2 flex justify-between font-bold text-gray-900 text-base">
-                        <span>Total Amount</span>
-                        <span>₱{total.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</span>
+                      {subtotalLaboratory > 0 && (
+                        <div className="flex justify-between text-gray-700"><span className="font-medium">Laboratory</span><span className="font-semibold">{toPeso(subtotalLaboratory)}</span></div>
+                      )}
+                      {subtotalMiscellaneous > 0 && (
+                        <div className="flex justify-between text-gray-700"><span className="font-medium">Miscellaneous</span><span className="font-semibold">{toPeso(subtotalMiscellaneous)}</span></div>
+                      )}
+                      {group1Total > 0 && (
+                        <>
+                          <div className="my-2 border-t border-gray-200" />
+                          <div className="flex justify-between text-gray-700"><span className="font-semibold">Subtotal</span><span className="font-semibold">{toPeso(group1Total)}</span></div>
+                          <div className="flex justify-between text-gray-800"><span className="font-bold">Total Amount</span><span className="font-bold">{toPeso(group1Total)}</span></div>
+                        </>
+                      )}
+
+                      {subtotalRoomCharge > 0 && (
+                        <div className="flex justify-between text-gray-700"><span className="font-medium">Room Charge</span><span className="font-semibold">{toPeso(subtotalRoomCharge)}</span></div>
+                      )}
+                      {subtotalProfessionalFee > 0 && (
+                        <div className="flex justify-between text-gray-700"><span className="font-medium">Professional Fee</span><span className="font-semibold">{toPeso(subtotalProfessionalFee)}</span></div>
+                      )}
+                      {group2Total > 0 && (
+                        <>
+                          <div className="my-2 border-t border-gray-200" />
+                          <div className="flex justify-between text-gray-800"><span className="font-bold">Total Amount</span><span className="font-bold">{toPeso(group2Total)}</span></div>
+                        </>
+                      )}
+
+                      <div className="mt-3 rounded-lg border border-gray-300 bg-white px-3 py-2">
+                        <div className="flex justify-between text-base font-bold text-gray-900">
+                          <span>Final Bill</span>
+                          <span>{toPeso(finalBillTotal)}</span>
+                        </div>
+                        <div className="mt-1 flex justify-between text-sm text-gray-700">
+                          <span>Subtotal</span>
+                          <span className="font-semibold">{toPeso(totalBeforeDiscount)}</span>
+                        </div>
+                        {lessAmount > 0 && (
+                          <div className="mt-1 flex justify-between text-sm text-gray-700">
+                            <span>Less ({discountType})</span>
+                            <span className="font-semibold">{toPeso(lessAmount)}</span>
+                          </div>
+                        )}
+                        <div className="mt-1 flex justify-between text-sm text-gray-700">
+                          <span>Total Amount</span>
+                          <span className="font-semibold">{toPeso(finalBillTotal)}</span>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1160,18 +1719,56 @@ export default function BillingAndPayments() {
                   </div>
                 </div>
               </div>
+
+              {!isEditingExisting && showAddPatientForm && (
+                <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/35 p-4" onClick={() => setShowAddPatientForm(false)}>
+                  <div className="w-full max-w-lg rounded-xl border border-gray-200 bg-white p-4 shadow-2xl" onClick={e => e.stopPropagation()}>
+                    <p className="mb-3 text-sm font-bold text-gray-700">Add New Patient</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <p className="mb-1 text-xs text-gray-400">First Name</p>
+                        <input value={newPatientFirstName} onChange={e => setNewPatientFirstName(e.target.value)} className="h-9 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-xs text-gray-400">Last Name</p>
+                        <input value={newPatientLastName} onChange={e => setNewPatientLastName(e.target.value)} className="h-9 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-xs text-gray-400">Date of Birth</p>
+                        <input type="date" value={newPatientDob} onChange={e => setNewPatientDob(e.target.value)} className="h-9 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-xs text-gray-400">Gender</p>
+                        <select value={newPatientGender} onChange={e => setNewPatientGender(e.target.value)} className="h-9 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm"><option value="">Select</option><option value="Male">Male</option><option value="Female">Female</option></select>
+                      </div>
+                      <div>
+                        <p className="mb-1 text-xs text-gray-400">Contact Number</p>
+                        <input value={newPatientContactNumber} onChange={e => setNewPatientContactNumber(e.target.value)} className="h-9 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-xs text-gray-400">Email Address</p>
+                        <input value={newPatientEmailAddress} onChange={e => setNewPatientEmailAddress(e.target.value)} className="h-9 w-full rounded-lg border border-gray-200 bg-white px-2 text-sm" />
+                      </div>
+                    </div>
+                    <div className="mt-3 flex justify-end gap-2">
+                      <button type="button" onClick={() => setShowAddPatientForm(false)} className="h-9 rounded-lg border border-gray-300 bg-white px-3 text-xs font-semibold text-gray-700">Cancel</button>
+                      <button type="button" onClick={handleCreatePatientOption} disabled={isCreatingPatient} className="h-9 rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white disabled:opacity-60">{isCreatingPatient ? 'Saving...' : 'Save Patient'}</button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
           {/* ── Add Service Modal ── */}
           {modal === 'viewBill' && selectedBill && selectedBillMeta && (
-            <div className="w-full max-w-[1080px] rounded-2xl border border-gray-200 bg-white shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
-              <div className="border-b border-gray-200 px-6 py-5">
+            <div className="my-4 flex max-h-[92vh] w-full max-w-[1080px] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="sticky top-0 z-20 border-b border-gray-200 bg-white px-6 py-5">
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400">Bill Control Panel</p>
                     <h3 className="mt-1 text-2xl font-bold text-gray-900">{selectedBill.id}</h3>
-                    <p className="mt-1 text-sm text-gray-500">Date created: {toDateTimeDisplay(selectedBillMeta.createdAt)}</p>
+                    <p className="mt-1 text-sm text-gray-500">Date created: {toDateTimeDisplay((viewBill && typeof viewBill.created_at === 'string' && viewBill.created_at) ? viewBill.created_at : selectedBillMeta.createdAt)}</p>
                   </div>
                   <div className="flex items-center gap-3">
                     <StatusPill status={selectedBill.status} />
@@ -1180,40 +1777,73 @@ export default function BillingAndPayments() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-5 p-6 lg:grid-cols-[1.25fr_0.95fr]">
+              <div className="relative min-h-0 flex-1 overflow-y-scroll">
+              <div className="grid min-h-full grid-cols-1 gap-5 p-6 lg:grid-cols-[1.25fr_0.95fr]">
                 <div className="space-y-5">
                   <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
                     <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700"><User size={15} className="text-gray-400" />Patient Info</h4>
                     <div className="mt-3 grid grid-cols-1 gap-3 text-sm md:grid-cols-2">
-                      <div><p className="text-xs text-gray-400">Name</p><p className="font-bold text-gray-800">{selectedBill.patient}</p></div>
-                      <div><p className="text-xs text-gray-400">Patient ID</p><p className="font-bold text-gray-800">{selectedBillMeta.patientId}</p></div>
-                      <div><p className="text-xs text-gray-400">Doctor</p><p className="font-bold text-gray-800">{selectedBillMeta.doctor}</p></div>
-                      <div><p className="text-xs text-gray-400">Diagnosis</p><p className="font-bold text-gray-800">{selectedBillMeta.diagnosis}</p></div>
+                      <div><p className="text-xs text-gray-400">Name</p><p className="font-bold text-gray-800">{viewPatient ? [viewPatient.first_name, viewPatient.last_name].filter((v): v is string => typeof v === 'string' && v.trim().length > 0).join(' ').trim() || selectedBill.patient : selectedBill.patient}</p></div>
+                      <div><p className="text-xs text-gray-400">Patient ID</p><p className="font-bold text-gray-800">{viewBill && Number.isFinite(Number(viewBill.patient_id)) ? String(Number(viewBill.patient_id)) : selectedBillMeta.patientId}</p></div>
+                      <div><p className="text-xs text-gray-400">Age / Gender</p><p className="font-bold text-gray-800">{`${viewPatient && typeof viewPatient.date_of_birth === 'string' ? (toAgeFromBirthDate(viewPatient.date_of_birth) || 'N/A') : (selectedBillMeta.age || 'N/A')} / ${viewPatient && typeof viewPatient.gender === 'string' && viewPatient.gender.trim() ? viewPatient.gender : (selectedBillMeta.gender || 'N/A')}`}</p></div>
+                      <div><p className="text-xs text-gray-400">Doctor</p><p className="font-bold text-gray-800">{viewBill && typeof viewBill.doctor_in_charge === 'string' && viewBill.doctor_in_charge.trim() ? viewBill.doctor_in_charge : selectedBillMeta.doctor}</p></div>
+                      <div><p className="text-xs text-gray-400">Diagnosis</p><p className="font-bold text-gray-800">{diagnosisInput || 'N/A'}</p></div>
+                      <div><p className="text-xs text-gray-400">Admission Date &amp; Time</p><p className="font-bold text-gray-800">{viewBill && typeof viewBill.admission_datetime === 'string' && viewBill.admission_datetime ? toDateTimeDisplayNoTimezoneShift(viewBill.admission_datetime) : 'N/A'}</p></div>
+                      <div><p className="text-xs text-gray-400">Discharge Date &amp; Time</p><p className="font-bold text-gray-800">{viewBill && typeof viewBill.discharge_datetime === 'string' && viewBill.discharge_datetime ? toDateTimeDisplayNoTimezoneShift(viewBill.discharge_datetime) : 'N/A'}</p></div>
+                      <div><p className="text-xs text-gray-400">Referred By</p><p className="font-bold text-gray-800">{viewBill && typeof viewBill.referred_by === 'string' && viewBill.referred_by.trim() ? viewBill.referred_by : 'N/A'}</p></div>
+                      <div><p className="text-xs text-gray-400">Discharge Status</p><p className="font-bold text-gray-800">{viewBill && typeof viewBill.discharge_status === 'string' && viewBill.discharge_status.trim() ? viewBill.discharge_status : 'N/A'}</p></div>
                     </div>
                   </div>
 
                   <div className="rounded-2xl border border-gray-200 bg-white p-4">
-                    <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><Stethoscope size={15} className="text-gray-400" />Services Table</h4>
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-gray-200 text-xs text-gray-500">
-                          <th className="pb-2 text-left font-medium">Service</th>
-                          <th className="pb-2 text-center font-medium">Quantity</th>
-                          <th className="pb-2 text-right font-medium">Price</th>
-                          <th className="pb-2 text-right font-medium">Subtotal</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {selectedBillMeta.services.map((service, idx) => (
-                          <tr key={`${service.name}-${idx}`} className="border-b border-gray-100 text-gray-800 last:border-b-0">
-                            <td className="py-2">{service.name}</td>
-                            <td className="py-2 text-center">{service.quantity}</td>
-                            <td className="py-2 text-right">{toPeso(service.unitPrice)}</td>
-                            <td className="py-2 text-right font-semibold">{toPeso(service.quantity * service.unitPrice)}</td>
+                    <div className="mb-3 flex items-center justify-between">
+                      <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700"><Stethoscope size={15} className="text-gray-400" />Services Table</h4>
+                      <button
+                        type="button"
+                        onClick={() => { setPrevModal(modal); setModal('viewBillServicesFull'); }}
+                        className="inline-flex items-center gap-1 rounded-lg border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-100"
+                      >
+                        <Maximize2 size={13} />
+                        Full View
+                      </button>
+                    </div>
+                    <div className="max-h-[168px] overflow-y-auto pr-1">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-gray-200 text-xs text-gray-500">
+                            <th className="pb-2 text-left font-medium">Service</th>
+                            <th className="pb-2 text-center font-medium">Quantity</th>
+                            <th className="pb-2 text-right font-medium">Price</th>
+                            <th className="pb-2 text-right font-medium">Subtotal</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {viewServicesByType.length > 0 ? viewServicesByType.map((group) => (
+                            <Fragment key={group.label}>
+                              <tr className="border-b border-gray-100 bg-gray-50 text-gray-700">
+                                <td colSpan={4} className="py-2 font-bold">{group.label}</td>
+                              </tr>
+                              {group.items.map((item, idx) => (
+                                <tr key={`${group.label}-${item.bill_item_id ?? idx}`} className="border-b border-gray-100 text-gray-800">
+                                  <td className="py-2">{item.description || 'N/A'}</td>
+                                  <td className="py-2 text-center">{Number(item.quantity || 0)}</td>
+                                  <td className="py-2 text-right">{toPeso(Number(item.unit_price || 0))}</td>
+                                  <td className="py-2 text-right font-semibold">{toPeso(Number(item.subtotal || 0))}</td>
+                                </tr>
+                              ))}
+                              <tr className="border-b border-gray-100 text-gray-800">
+                                <td colSpan={3} className="py-2 text-right font-semibold">Group Total</td>
+                                <td className="py-2 text-right font-bold">{toPeso(group.total)}</td>
+                              </tr>
+                            </Fragment>
+                          )) : (
+                            <tr>
+                              <td colSpan={4} className="py-3 text-center text-gray-500">{isViewBillDetailsLoading ? 'Loading services...' : 'No billed services found.'}</td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
 
@@ -1221,23 +1851,35 @@ export default function BillingAndPayments() {
                   <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
                     <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><ReceiptText size={15} className="text-gray-400" />Bill Summary</h4>
                     <div className="space-y-2 text-sm text-gray-700">
-                      <div className="flex justify-between"><span>Subtotal</span><span className="font-semibold">{toPeso(subtotal)}</span></div>
-                      <div className="flex justify-between"><span>Discount</span><span className="font-semibold">{toPeso(discount)}</span></div>
-                      <div className="flex justify-between"><span>Tax</span><span className="font-semibold">{toPeso(tax)}</span></div>
+                      {viewSummary.subtotalMedications > 0 && <div className="flex justify-between"><span>Medications</span><span className="font-semibold">{toPeso(viewSummary.subtotalMedications)}</span></div>}
+                      {viewSummary.subtotalLaboratory > 0 && <div className="flex justify-between"><span>Laboratory</span><span className="font-semibold">{toPeso(viewSummary.subtotalLaboratory)}</span></div>}
+                      {viewSummary.subtotalMiscellaneous > 0 && <div className="flex justify-between"><span>Miscellaneous</span><span className="font-semibold">{toPeso(viewSummary.subtotalMiscellaneous)}</span></div>}
+                      {viewSummary.subtotalRoomCharge > 0 && <div className="flex justify-between"><span>Room Charge</span><span className="font-semibold">{toPeso(viewSummary.subtotalRoomCharge)}</span></div>}
+                      {viewSummary.subtotalProfessionalFee > 0 && <div className="flex justify-between"><span>Professional Fee</span><span className="font-semibold">{toPeso(viewSummary.subtotalProfessionalFee)}</span></div>}
+                      <div className="flex justify-between"><span>Services Total</span><span className="font-semibold">{toPeso(viewSummary.group1Total)}</span></div>
+                      <div className="flex justify-between"><span>Room &amp; Professional Fees</span><span className="font-semibold">{toPeso(viewSummary.group2Total)}</span></div>
+                      <div className="flex justify-between"><span>Subtotal</span><span className="font-semibold">{toPeso(viewSummary.subtotal)}</span></div>
+                      {viewSummary.lessAmount > 0 && (
+                        <div className="flex justify-between"><span>{viewSummary.discountType && viewSummary.discountType !== 'None' ? `Less (${viewSummary.discountType})` : 'Less'}</span><span className="font-semibold">{toPeso(viewSummary.lessAmount)}</span></div>
+                      )}
                       <div className="border-t border-gray-300 pt-2 flex justify-between text-base font-bold text-gray-900">
-                        <span>Total Amount</span>
-                        <span>{toPeso(total)}</span>
+                        <span>Final Bill</span>
+                        <span>{toPeso(viewSummary.netAmount)}</span>
                       </div>
                     </div>
                   </div>
 
                   <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
                     <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><Wallet size={15} className="text-gray-400" />Payment Section</h4>
+                    <div className="mb-3 flex justify-between text-sm text-gray-700">
+                      <span>Amount Due</span>
+                      <span className="font-semibold">{toPeso(viewSummary.netAmount)}</span>
+                    </div>
                     {selectedBill.status === 'Paid' ? (
                       <div className="space-y-2 text-sm text-gray-700">
-                        <div className="flex justify-between"><span>Payment Method</span><span className="font-semibold">{selectedBillMeta.paymentMethod || selectedPaymentRecord?.method || 'N/A'}</span></div>
-                        <div className="flex justify-between"><span>Payment Date &amp; Time</span><span className="font-semibold">{toDateTimeDisplay(selectedBillMeta.paymentDateTime || selectedBill.date)}</span></div>
-                        <div className="flex justify-between"><span>Reference Number</span><span className="font-semibold">{selectedBillMeta.paymentReference || 'N/A'}</span></div>
+                        <div className="flex justify-between"><span>Payment Method</span><span className="font-semibold">{latestViewPayment?.payment_method || selectedBillMeta.paymentMethod || selectedPaymentRecord?.method || 'N/A'}</span></div>
+                        <div className="flex justify-between"><span>Payment Date &amp; Time</span><span className="font-semibold">{toDateTimeDisplay(latestViewPayment?.payment_date || selectedBillMeta.paymentDateTime || selectedBill.date)}</span></div>
+                        <div className="flex justify-between"><span>Reference Number</span><span className="font-semibold">{latestViewPaymentWithReference?.reference_number || 'N/A'}</span></div>
                       </div>
                     ) : (
                       <p className="text-sm text-gray-500">No payment recorded yet.</p>
@@ -1248,6 +1890,7 @@ export default function BillingAndPayments() {
                     <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><Info size={15} className="text-gray-400" />Activity / Verification</h4>
                     <div className="space-y-2 text-sm text-gray-700">
                       <div className="flex justify-between"><span>Processed by</span><span className="font-semibold">{selectedBillMeta.processedBy}</span></div>
+                      <div className="flex justify-between"><span>Received by</span><span className="font-semibold">{latestViewPayment?.received_by || ''}</span></div>
                       {selectedBill.status === 'Cancelled' && (
                         <>
                           <div className="flex justify-between"><span>Cancelled by</span><span className="font-semibold">{selectedBillMeta.cancelledBy || 'Staff'}</span></div>
@@ -1276,6 +1919,58 @@ export default function BillingAndPayments() {
                     )}
                   </div>
                 </div>
+              </div>
+              {isViewBillDetailsLoading && (
+                <div className="absolute inset-0 z-10 bg-white/90 p-6">
+                  <div className="grid h-full grid-cols-1 gap-5 lg:grid-cols-[1.25fr_0.95fr]">
+                    <div className="space-y-5">
+                      <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                        <div className="mb-3 h-4 w-28 animate-pulse rounded bg-gray-200" />
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="h-10 animate-pulse rounded bg-gray-200" />
+                          <div className="h-10 animate-pulse rounded bg-gray-200" />
+                          <div className="h-10 animate-pulse rounded bg-gray-200" />
+                          <div className="h-10 animate-pulse rounded bg-gray-200" />
+                          <div className="h-10 animate-pulse rounded bg-gray-200" />
+                          <div className="h-10 animate-pulse rounded bg-gray-200" />
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                        <div className="mb-3 h-4 w-32 animate-pulse rounded bg-gray-200" />
+                        <div className="space-y-2">
+                          <div className="h-8 animate-pulse rounded bg-gray-200" />
+                          <div className="h-8 animate-pulse rounded bg-gray-200" />
+                          <div className="h-8 animate-pulse rounded bg-gray-200" />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="space-y-5">
+                      <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                        <div className="mb-3 h-4 w-24 animate-pulse rounded bg-gray-200" />
+                        <div className="space-y-2">
+                          <div className="h-6 animate-pulse rounded bg-gray-200" />
+                          <div className="h-6 animate-pulse rounded bg-gray-200" />
+                          <div className="h-6 animate-pulse rounded bg-gray-200" />
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                        <div className="mb-3 h-4 w-28 animate-pulse rounded bg-gray-200" />
+                        <div className="space-y-2">
+                          <div className="h-6 animate-pulse rounded bg-gray-200" />
+                          <div className="h-6 animate-pulse rounded bg-gray-200" />
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
+                        <div className="mb-3 h-4 w-36 animate-pulse rounded bg-gray-200" />
+                        <div className="space-y-2">
+                          <div className="h-6 animate-pulse rounded bg-gray-200" />
+                          <div className="h-6 animate-pulse rounded bg-gray-200" />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
               </div>
             </div>
           )}
@@ -1353,6 +2048,9 @@ export default function BillingAndPayments() {
                 </div>
               </div>
               <div className="space-y-2">
+                {addItemFeedback && (
+                  <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{addItemFeedback}</p>
+                )}
                 <button type="button" onClick={confirmAddService} disabled={!selectedService} className="h-10 w-full rounded-xl bg-blue-600 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">Add Item</button>
                 <button type="button" onClick={() => setModal(prevModal)} className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50 text-sm font-semibold text-gray-700 hover:bg-gray-100 transition-colors">Cancel</button>
               </div>
@@ -1415,6 +2113,9 @@ export default function BillingAndPayments() {
                 <span className="text-base font-bold text-gray-900">₱{medicationSubtotal.toLocaleString('en-PH', { minimumFractionDigits: 2 })}</span>
               </div>
               <div className="space-y-2">
+                {addItemFeedback && (
+                  <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{addItemFeedback}</p>
+                )}
                 <button type="button" onClick={confirmAddMedication} disabled={!selectedMedication} className="h-10 w-full rounded-xl bg-blue-600 text-sm font-bold text-white hover:bg-blue-700 disabled:opacity-50 transition-colors">Add Item</button>
                 <button type="button" onClick={() => setModal(prevModal)} className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50 text-sm font-semibold text-gray-700 hover:bg-gray-100 transition-colors">Cancel</button>
               </div>
@@ -1549,13 +2250,15 @@ export default function BillingAndPayments() {
 
           {/* ── Pay: Select Method ── */}
           {modal === 'payMethod' && selectedPayRow && (
-            <div className="w-full max-w-4xl overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
-              <div className="border-b border-gray-200 px-6 py-5">
-                <h3 className="text-2xl font-bold text-gray-900">Collect Payment</h3>
-                <p className="mt-1 text-sm text-gray-600">Review bill information and select a payment channel.</p>
+            <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="sticky top-0 z-20 bg-white">
+                <div className="border-b border-gray-200 px-6 py-5">
+                  <h3 className="text-2xl font-bold text-gray-900">Collect Payment</h3>
+                  <p className="mt-1 text-sm text-gray-600">Review bill information and select a payment channel.</p>
+                </div>
+                <PaymentProgressTracker currentStep={1} />
               </div>
-              <PaymentProgressTracker currentStep={1} />
-              <div className="grid grid-cols-1 gap-6 p-6 md:grid-cols-[1.15fr_1fr]">
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto p-6 md:grid-cols-[1.15fr_1fr]">
                 <div className="space-y-4">
                   <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
                     <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-700"><Info size={16} />Bill Snapshot</div>
@@ -1587,7 +2290,7 @@ export default function BillingAndPayments() {
 
                   <div>
                     <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-gray-500">Cash Payment</p>
-                    <button type="button" onClick={() => setSelectedMethod('Cash')} className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition ${selectedMethod === 'Cash' ? 'border-blue-600 bg-blue-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
+                    <button type="button" onClick={() => { setSelectedMethod('Cash'); setPaymentErrors((prev) => ({ ...prev, payment_method: undefined, reference_number: undefined })); }} className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition ${selectedMethod === 'Cash' ? 'border-blue-600 bg-blue-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
                       <span className="flex items-center gap-3">
                         <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 text-emerald-700"><CircleDollarSign size={20} /></span>
                         <span><p className="text-sm font-semibold text-gray-900">Cash</p><p className="text-xs text-gray-500">Front desk cash payment</p></span>
@@ -1601,14 +2304,14 @@ export default function BillingAndPayments() {
                   <div>
                     <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-gray-500">E-Wallets</p>
                     <div className="space-y-3">
-                      <button type="button" onClick={() => setSelectedMethod('GCash')} className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition ${selectedMethod === 'GCash' ? 'border-blue-600 bg-blue-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
+                      <button type="button" onClick={() => { setSelectedMethod('GCash'); setPaymentErrors((prev) => ({ ...prev, payment_method: undefined })); }} className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition ${selectedMethod === 'GCash' ? 'border-blue-600 bg-blue-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
                         <span className="flex items-center gap-4">
                           <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-blue-100 p-1"><img src={G_CASH_LOGO_URL} alt="GCash logo" className="h-8 w-8 object-contain" /></span>
                           <span><p className="text-sm font-semibold text-gray-900">GCash</p><p className="text-xs text-gray-500">Mobile wallet</p></span>
                         </span>
                         <span className={`h-4 w-4 rounded-full border ${selectedMethod === 'GCash' ? 'border-blue-600 bg-blue-600' : 'border-gray-300 bg-white'}`} />
                       </button>
-                      <button type="button" onClick={() => setSelectedMethod('Maya')} className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition ${selectedMethod === 'Maya' ? 'border-blue-600 bg-blue-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
+                      <button type="button" onClick={() => { setSelectedMethod('Maya'); setPaymentErrors((prev) => ({ ...prev, payment_method: undefined })); }} className={`flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition ${selectedMethod === 'Maya' ? 'border-blue-600 bg-blue-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
                         <span className="flex items-center gap-4">
                           <span className="inline-flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-100 p-1"><img src={MAYA_LOGO_URL} alt="Maya logo" className="h-8 w-8 object-contain" /></span>
                           <span><p className="text-sm font-semibold text-gray-900">Maya</p><p className="text-xs text-gray-500">Mobile wallet</p></span>
@@ -1617,6 +2320,9 @@ export default function BillingAndPayments() {
                       </button>
                     </div>
                   </div>
+                  {paymentErrors.payment_method && (
+                    <p className="text-xs font-semibold text-red-600">{paymentErrors.payment_method}</p>
+                  )}
 
                   <div className="flex gap-2 pt-3">
                     <button type="button" onClick={handleProceedFromMethod} className="h-10 flex-1 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700">Continue</button>
@@ -1659,24 +2365,32 @@ export default function BillingAndPayments() {
 
           {/* ── Pay: Cash ── */}
           {modal === 'payCash' && selectedPayRow && (
-            <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
-              <div className="border-b border-gray-200 px-6 py-5">
-                <h3 className="flex items-center gap-2 text-2xl font-bold text-gray-900"><CircleDollarSign className="text-emerald-600" size={22} />Cash Payment</h3>
-                <p className="mt-1 text-sm text-gray-600">Collect and confirm the exact cash amount for this bill.</p>
+            <div className="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="sticky top-0 z-20 bg-white">
+                <div className="border-b border-gray-200 px-6 py-5">
+                  <h3 className="flex items-center gap-2 text-2xl font-bold text-gray-900"><CircleDollarSign className="text-emerald-600" size={22} />Cash Payment</h3>
+                  <p className="mt-1 text-sm text-gray-600">Collect and confirm the exact cash amount for this bill.</p>
+                </div>
+                <PaymentProgressTracker currentStep={2} />
               </div>
-              <PaymentProgressTracker currentStep={2} />
-              <div className="space-y-4 px-6 py-5">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5">
                 <div className="rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-800">
                   <div className="flex justify-between"><span>Bill Code</span><span className="font-semibold">{paymentBillCode}</span></div>
                   <div className="mt-2 flex justify-between"><span>Patient</span><span className="font-semibold">{paymentPatientName}</span></div>
                   <div className="mt-2 flex justify-between border-t border-gray-200 pt-2"><span>Amount Due</span><span className="font-semibold text-blue-700">{toPeso(safePaymentAmountDue)}</span></div>
                 </div>
                 <div>
-                  <label className="mb-1 block text-sm font-semibold text-gray-700">Amount Received</label>
+                  <label className="mb-1 block text-sm font-semibold text-gray-700">Amount Paid</label>
                   <div className="flex items-center rounded-xl border border-gray-300 bg-white px-3">
                     <span className="text-sm font-bold text-gray-700">₱</span>
-                    <input type="number" value={amountReceived} onChange={e => setAmountReceived(e.target.value)} className="h-11 w-full bg-transparent px-2 text-sm outline-none" />
+                    <input type="number" value={amountReceived} onChange={e => setAmountReceived(e.target.value)} placeholder="Enter amount paid" className="h-11 w-full bg-transparent px-2 text-sm outline-none" />
                   </div>
+                  {paymentErrors.amount_paid && (
+                    <p className="mt-1 text-xs font-semibold text-red-600">{paymentErrors.amount_paid}</p>
+                  )}
+                  {overpaymentWarning && (
+                    <p className="mt-1 text-xs font-semibold text-amber-700">{overpaymentWarning}</p>
+                  )}
                 </div>
                 <div>
                   <label className="mb-1 block text-sm font-semibold text-gray-700">Change</label>
@@ -1694,8 +2408,54 @@ export default function BillingAndPayments() {
                 </div>
               </div>
               <div className="flex gap-2 border-t border-gray-200 px-6 py-4">
-                <button type="button" onClick={() => setModal('payCancelConfirm')} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50">Cancel</button>
-                <button type="button" onClick={() => setModal('payConfirm')} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">Review Payment</button>
+                <button type="button" onClick={() => setModal('payMethod')} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50">Back</button>
+                <button type="button" onClick={handleReviewPayment} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">Review Payment</button>
+              </div>
+            </div>
+          )}
+
+          {modal === 'viewBillServicesFull' && selectedBill && selectedBillMeta && (
+            <div className="my-4 flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="sticky top-0 z-20 flex items-center justify-between border-b border-gray-200 bg-white px-6 py-4">
+                <h3 className="flex items-center gap-2 text-lg font-bold text-gray-900"><Stethoscope size={18} className="text-gray-500" />Services Table</h3>
+                <button type="button" onClick={() => setModal('viewBill')} className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"><X size={16} /></button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto p-6">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-xs text-gray-500">
+                      <th className="pb-2 text-left font-medium">Service</th>
+                      <th className="pb-2 text-center font-medium">Quantity</th>
+                      <th className="pb-2 text-right font-medium">Price</th>
+                      <th className="pb-2 text-right font-medium">Subtotal</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {viewServicesByType.length > 0 ? viewServicesByType.map((group) => (
+                      <Fragment key={group.label}>
+                        <tr className="border-b border-gray-100 bg-gray-50 text-gray-700">
+                          <td colSpan={4} className="py-2 font-bold">{group.label}</td>
+                        </tr>
+                        {group.items.map((item, idx) => (
+                          <tr key={`${group.label}-${item.bill_item_id ?? idx}`} className="border-b border-gray-100 text-gray-800">
+                            <td className="py-2">{item.description || 'N/A'}</td>
+                            <td className="py-2 text-center">{Number(item.quantity || 0)}</td>
+                            <td className="py-2 text-right">{toPeso(Number(item.unit_price || 0))}</td>
+                            <td className="py-2 text-right font-semibold">{toPeso(Number(item.subtotal || 0))}</td>
+                          </tr>
+                        ))}
+                        <tr className="border-b border-gray-100 text-gray-800">
+                          <td colSpan={3} className="py-2 text-right font-semibold">Group Total</td>
+                          <td className="py-2 text-right font-bold">{toPeso(group.total)}</td>
+                        </tr>
+                      </Fragment>
+                    )) : (
+                      <tr>
+                        <td colSpan={4} className="py-3 text-center text-gray-500">{isViewBillDetailsLoading ? 'Loading services...' : 'No billed services found.'}</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
@@ -1740,13 +2500,15 @@ export default function BillingAndPayments() {
 
           {/* ── Pay: GCash / Maya ── */}
           {modal === 'payGcash' && selectedPayRow && (
-            <div className="w-full max-w-5xl overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
-              <div className="border-b border-gray-200 px-6 py-5">
-                <h3 className="flex items-center gap-2 text-2xl font-bold text-gray-900"><CreditCard size={22} className="text-blue-700" />{selectedMethod} Payment</h3>
-                <p className="mt-1 text-sm text-gray-600">Complete the e-wallet transfer and encode the reference number.</p>
+            <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="sticky top-0 z-20 bg-white">
+                <div className="border-b border-gray-200 px-6 py-5">
+                  <h3 className="flex items-center gap-2 text-2xl font-bold text-gray-900"><CreditCard size={22} className="text-blue-700" />{selectedMethod} Payment</h3>
+                  <p className="mt-1 text-sm text-gray-600">Complete the e-wallet transfer and encode the reference number.</p>
+                </div>
+                <PaymentProgressTracker currentStep={2} />
               </div>
-              <PaymentProgressTracker currentStep={2} />
-              <div className="grid grid-cols-1 gap-6 p-6 md:grid-cols-[320px_1fr]">
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-6 overflow-y-auto p-6 md:grid-cols-[320px_1fr]">
                 <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
                   <div className="mb-4 flex items-center gap-4">
                     {selectedMethod === 'GCash' ? (
@@ -1772,6 +2534,26 @@ export default function BillingAndPayments() {
                   <div>
                     <label className="mb-1 block text-sm font-semibold text-gray-700">{selectedMethod} Reference Number</label>
                     <div className="flex items-center rounded-xl border border-gray-300 bg-white px-3"><Hash size={16} className="text-gray-500" /><input value={gcashReference} onChange={e => setGcashReference(e.target.value)} className="h-11 w-full bg-transparent px-2 text-sm outline-none" placeholder="Enter transaction reference" /></div>
+                    {paymentErrors.reference_number && (
+                      <p className="mt-1 text-xs font-semibold text-red-600">{paymentErrors.reference_number}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">Amount Paid</label>
+                    <div className="flex items-center rounded-xl border border-gray-300 bg-white px-3">
+                      <span className="text-sm font-bold text-gray-700">₱</span>
+                      <input type="number" value={amountReceived} onChange={e => setAmountReceived(e.target.value)} placeholder="Enter amount paid" className="h-11 w-full bg-transparent px-2 text-sm outline-none" />
+                    </div>
+                    {paymentErrors.amount_paid && (
+                      <p className="mt-1 text-xs font-semibold text-red-600">{paymentErrors.amount_paid}</p>
+                    )}
+                    {overpaymentWarning && (
+                      <p className="mt-1 text-xs font-semibold text-amber-700">{overpaymentWarning}</p>
+                    )}
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-semibold text-gray-700">Change</label>
+                    <div className="flex h-11 items-center rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm font-semibold text-gray-800">{toPeso(changeAmount)}</div>
                   </div>
                   <div>
                     <label className="mb-1 block text-sm font-semibold text-gray-700">Notes</label>
@@ -1787,7 +2569,7 @@ export default function BillingAndPayments() {
               </div>
               <div className="flex gap-2 border-t border-gray-200 px-6 py-4">
                 <button type="button" onClick={() => setModal('payMethod')} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:bg-gray-50">Back</button>
-                <button type="button" onClick={() => setModal('payConfirm')} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">Review Payment</button>
+                <button type="button" onClick={handleReviewPayment} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">Review Payment</button>
               </div>
             </div>
           )}
@@ -1824,18 +2606,22 @@ export default function BillingAndPayments() {
 
           {/* ── Pay: Confirm ── */}
           {modal === 'payConfirm' && selectedPayRow && (
-            <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
-              <div className="border-b border-gray-200 px-6 py-5">
-                <h3 className="text-2xl font-bold text-gray-900">Confirm Payment</h3>
-                <p className="mt-1 text-sm text-gray-600">Please verify details before posting this payment.</p>
+            <div className="flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="sticky top-0 z-20 bg-white">
+                <div className="border-b border-gray-200 px-6 py-5">
+                  <h3 className="text-2xl font-bold text-gray-900">Confirm Payment</h3>
+                  <p className="mt-1 text-sm text-gray-600">Please verify details before posting this payment.</p>
+                </div>
+                <PaymentProgressTracker currentStep={3} />
               </div>
-              <PaymentProgressTracker currentStep={3} />
-              <div className="space-y-3 px-6 py-5 text-sm text-gray-800">
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 py-5 text-sm text-gray-800">
                 <div className="flex justify-between"><span>Bill Code</span><span className="font-semibold">{paymentBillCode}</span></div>
                 <div className="flex justify-between"><span>Patient Name</span><span className="font-semibold">{paymentPatientName}</span></div>
                 <div className="flex justify-between"><span>Patient ID</span><span className="font-semibold">{paymentPatientId ?? 'N/A'}</span></div>
                 <div className="flex justify-between"><span>Payment Method</span><span className="font-semibold">{paymentMethodLabel}</span></div>
-                <div className="flex justify-between"><span>Reference Number</span><span className="font-semibold">{paymentReference}</span></div>
+                {selectedMethod !== 'Cash' && (
+                  <div className="flex justify-between"><span>Reference Number</span><span className="font-semibold">{paymentReference}</span></div>
+                )}
                 <div className="flex justify-between"><span>Notes</span><span className="max-w-[65%] text-right font-semibold">{paymentNotes.trim() || 'N/A'}</span></div>
                 <div className="flex justify-between border-t border-gray-200 pt-3 text-base font-bold"><span>Amount Paid</span><span className="text-blue-700">{toPeso(Number(paymentAmount || safePaymentAmountDue || 0))}</span></div>
               </div>
@@ -1930,3 +2716,5 @@ export default function BillingAndPayments() {
     </div>
   );
 }
+
+

@@ -31,8 +31,27 @@ type NewBillInput = {
   total: string;
   status: BillStatus;
   patientId?: number;
-  discountAmount?: number;
-  taxAmount?: number;
+  doctorInCharge?: string;
+  age?: string;
+  gender?: string;
+  finalDiagnosis?: string;
+  admissionDateTime?: string;
+  dischargeDateTime?: string;
+  referredBy?: string;
+  dischargeStatus?: string;
+  isSeniorCitizen?: boolean;
+  isPwd?: boolean;
+  discountType?: string;
+  discountRate?: number;
+  subtotalMedications?: number;
+  subtotalLaboratory?: number;
+  subtotalMiscellaneous?: number;
+  lessAmount?: number;
+  subtotalRoomCharge?: number;
+  subtotalProfessionalFee?: number;
+  group1Total?: number;
+  group2Total?: number;
+  netAmount?: number;
   items?: Array<{
     name: string;
     quantity: number;
@@ -47,7 +66,9 @@ type UpdateBillInput = Partial<Pick<BillRecord, 'patient' | 'date' | 'total' | '
 type MarkPaymentPaidInput = {
   id: string;
   method: string;
+  amountPaid: number;
   reference?: string;
+  notes?: string;
   paidDate?: string;
 };
 
@@ -70,7 +91,7 @@ export type BillingPaymentsContextValue = {
 type BackendBill = {
   bill_id: number;
   bill_code: string;
-  patient_id: number;
+  patient_id?: number | null;
   tbl_patients?: Record<string, unknown> | Array<Record<string, unknown>> | null;
   tbl_payments?: Array<{
     payment_id: number;
@@ -142,7 +163,7 @@ function mapBackendRows(rows: BackendBill[]) {
   function resolvePatientName(row: BackendBill) {
     const relation = Array.isArray(row.tbl_patients) ? row.tbl_patients[0] : row.tbl_patients;
     const patient = relation && typeof relation === 'object' ? relation : null;
-    if (!patient) return `Patient #${row.patient_id}`;
+    if (!patient) return row.patient_id ? `Patient #${row.patient_id}` : 'Unknown Patient';
 
     const fullNameCandidates = [
       patient.full_name,
@@ -160,7 +181,7 @@ function mapBackendRows(rows: BackendBill[]) {
     const combined = [firstName, middleName, lastName].filter(Boolean).join(' ').trim();
     if (combined) return combined;
 
-    return `Patient #${row.patient_id}`;
+    return row.patient_id ? `Patient #${row.patient_id}` : 'Unknown Patient';
   }
 
   const billing = rows.map((row) => {
@@ -172,7 +193,7 @@ function mapBackendRows(rows: BackendBill[]) {
       total: toMoneyTag(amount),
       status: normalizeBillStatus(row.status),
       backendBillId: row.bill_id,
-      patientId: row.patient_id,
+      patientId: row.patient_id ?? undefined,
     } satisfies BillRecord;
   });
 
@@ -299,22 +320,34 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
             }))
         : null;
 
-    if (!patientId) {
-      throw new Error('Valid numeric Patient ID is required.');
-    }
-
-    if (!itemRows?.length) {
-      throw new Error('Add at least one service or medication before creating a bill.');
-    }
-
     const response = await fetch(`${API_BASE_URL}/billing/bills`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         patient_id: patientId,
-        discount_amount: bill.discountAmount ?? 0,
-        tax_amount: bill.taxAmount ?? 0,
-        items: itemRows,
+        doctor_in_charge: bill.doctorInCharge ?? null,
+        age: bill.age ?? null,
+        gender: bill.gender ?? null,
+        final_diagnosis: bill.finalDiagnosis ?? null,
+        admission_datetime: bill.admissionDateTime || null,
+        discharge_datetime: bill.dischargeDateTime || null,
+        referred_by: bill.referredBy || null,
+        discharge_status: bill.dischargeStatus || null,
+        is_senior_citizen: bill.isSeniorCitizen ?? false,
+        is_pwd: bill.isPwd ?? false,
+        discount_type: bill.discountType ?? 'None',
+        discount_rate: bill.discountRate ?? 0,
+        subtotal_medications: bill.subtotalMedications ?? 0,
+        subtotal_laboratory: bill.subtotalLaboratory ?? 0,
+        subtotal_miscellaneous: bill.subtotalMiscellaneous ?? 0,
+        less_amount: bill.lessAmount ?? 0,
+        subtotal_room_charge: bill.subtotalRoomCharge ?? 0,
+        subtotal_professional_fee: bill.subtotalProfessionalFee ?? 0,
+        group1_total: bill.group1Total ?? 0,
+        group2_total: bill.group2Total ?? 0,
+        total_amount: bill.total ? parseAmount(bill.total) : (bill.netAmount ?? 0),
+        net_amount: bill.netAmount ?? parseAmount(bill.total),
+        items: itemRows ?? [],
       }),
     });
 
@@ -376,13 +409,15 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
       throw new Error('Unable to resolve bill ID for payment.');
     }
 
-    const response = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}/payments`, {
+    const response = await fetch(`${API_BASE_URL}/billing/payments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        bill_id: backendBillId,
         payment_method: input.method,
-        amount_paid: row.amount,
+        amount_paid: input.amountPaid,
         reference_number: input.reference || null,
+        notes: input.notes || null,
         payment_date: input.paidDate || new Date().toISOString(),
       }),
     });
@@ -392,31 +427,6 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
     }
 
     await refreshBillingData();
-
-    const paidDate = input.paidDate || new Date().toISOString().slice(0, 10);
-
-    setPaymentQueue((prev) =>
-      prev.map((item) => {
-        if (item.id !== input.id) return item;
-        return {
-          ...item,
-          method: input.method,
-          date: paidDate,
-          status: 'Paid',
-        };
-      }),
-    );
-
-    setBillingRecords((prev) =>
-      prev.map((item) => {
-        if (item.id !== input.id) return item;
-        return {
-          ...item,
-          date: paidDate,
-          status: 'Paid',
-        };
-      }),
-    );
   }, [paymentQueue, refreshBillingData]);
 
   const cancelBill = useCallback(async (id: string) => {

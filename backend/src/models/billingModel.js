@@ -3,25 +3,35 @@ import { supabase } from "../lib/supabase.js";
 const BILL_SELECT = [
   "bill_id",
   "bill_code",
+  "bill_type",
   "patient_id",
-  "total_amount",
-  "net_amount",
-  "status",
-  "subtotal_medications",
-  "subtotal_laboratory",
-  "subtotal_miscellaneous",
-  "subtotal_room_charge",
-  "subtotal_professional_fee",
-  "discount_type",
-  "discount_rate",
-  "discount_amount",
-  "is_senior_citizen",
-  "is_pwd",
+  "doctor_in_charge",
+  "final_diagnosis",
   "admission_datetime",
   "discharge_datetime",
   "referred_by",
   "discharge_status",
+  "total_amount",
+  "subtotal_medications",
+  "subtotal_laboratory",
+  "group1_total",
+  "subtotal_miscellaneous",
+  "subtotal_room_charge",
+  "subtotal_professional_fee",
+  "group2_total",
+  "is_senior_citizen",
+  "is_pwd",
+  "discount_type",
+  "discount_rate",
+  "less_amount",
+  "net_amount",
+  "status",
+  "bill_date",
+  "is_printed",
+  "printed_at",
+  "notes",
   "created_at",
+  "updated_at",
   "tbl_patients(*)",
 ].join(", ");
 
@@ -40,6 +50,20 @@ const BILL_ITEM_SELECT = [
 ].join(", ");
 
 async function getNextCode(tableName, codeColumn, prefix) {
+  if (tableName === "tbl_payments" && codeColumn === "payment_code") {
+    const { data, error } = await supabase
+      .from("tbl_payments")
+      .select("payment_id")
+      .order("payment_id", { ascending: false })
+      .limit(1);
+
+    if (error) throw error;
+
+    const latestPaymentId = Number(data?.[0]?.payment_id || 0);
+    const nextNumber = Number.isFinite(latestPaymentId) && latestPaymentId > 0 ? latestPaymentId + 1 : 1;
+    return `${prefix}-${String(nextNumber).padStart(4, "0")}`;
+  }
+
   const { data, error } = await supabase
     .from(tableName)
     .select(codeColumn)
@@ -48,8 +72,9 @@ async function getNextCode(tableName, codeColumn, prefix) {
 
   if (error) throw error;
 
-  const latestCode = data?.[0]?.[codeColumn] || `${prefix}-00000`;
-  const latestNumber = Number(String(latestCode).split("-")[1] || 0);
+  const latestCode = String(data?.[0]?.[codeColumn] || `${prefix}-00000`);
+  const parsedNumber = Number(latestCode.split("-")[1] || 0);
+  const latestNumber = Number.isFinite(parsedNumber) ? parsedNumber : 0;
   const nextNumber = latestNumber + 1;
 
   return `${prefix}-${String(nextNumber).padStart(5, "0")}`;
@@ -120,7 +145,7 @@ async function listBillsFiltered({ status, page, pageSize, billIds }) {
 
   let query = supabase
     .from("tbl_bills")
-    .select("bill_id, bill_code, patient_id, total_amount, net_amount, status, created_at, tbl_patients(*), tbl_payments(payment_id, amount_paid, payment_date, payment_method)", {
+    .select(`${BILL_SELECT}, tbl_payments(payment_id, amount_paid, payment_date, payment_method)`, {
       count: "exact",
     })
     .order("bill_id", { ascending: false });
@@ -365,7 +390,7 @@ async function getInventoryByMedicationId(medicationId) {
 async function getMedicationById(medicationId) {
   const { data, error } = await supabase
     .from("tbl_medications")
-    .select("medication_id, reorder_threshold")
+    .select("medication_id, medication_name, reorder_threshold")
     .eq("medication_id", medicationId)
     .single();
 
@@ -412,6 +437,181 @@ async function hasPatientById(patientId) {
   return (count || 0) > 0;
 }
 
+async function listPatients({ search, limit }) {
+  let query = supabase
+    .from("tbl_patients")
+    .select("patient_id, first_name, last_name, date_of_birth, gender, contact_number, email_address")
+    .order("last_name", { ascending: true })
+    .order("first_name", { ascending: true })
+    .limit(limit);
+
+  if (search) {
+    const normalized = String(search).trim();
+    query = query.or(`first_name.ilike.%${normalized}%,last_name.ilike.%${normalized}%`);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+async function listPaymentsWithBillPatient() {
+  const { data, error } = await supabase
+    .from("tbl_payments")
+    .select(`
+      payment_id,
+      payment_code,
+      bill_id,
+      payment_method,
+      amount_paid,
+      reference_number,
+      payment_date,
+      received_by,
+      notes,
+      created_at,
+      tbl_bills (
+        bill_id,
+        bill_code,
+        patient_id,
+        net_amount,
+        status,
+        tbl_patients (
+          first_name,
+          last_name
+        )
+      )
+    `)
+    .order("payment_date", { ascending: false })
+    .order("payment_id", { ascending: false });
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function listPaymentsByBillIdWithBillPatient(billId) {
+  const { data, error } = await supabase
+    .from("tbl_payments")
+    .select(`
+      payment_id,
+      payment_code,
+      bill_id,
+      payment_method,
+      amount_paid,
+      reference_number,
+      payment_date,
+      received_by,
+      notes,
+      created_at,
+      tbl_bills (
+        bill_id,
+        bill_code,
+        patient_id,
+        net_amount,
+        status,
+        tbl_patients (
+          first_name,
+          last_name
+        )
+      )
+    `)
+    .eq("bill_id", billId)
+    .order("payment_date", { ascending: true })
+    .order("payment_id", { ascending: true });
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function createPatient(row) {
+  const { data, error } = await supabase
+    .from("tbl_patients")
+    .insert(row)
+    .select("patient_id, first_name, last_name, date_of_birth, gender, contact_number, email_address")
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+async function listMedicationBillItemsByBillId(billId) {
+  const { data, error } = await supabase
+    .from("tbl_bill_items")
+    .select(BILL_ITEM_SELECT)
+    .eq("bill_id", billId)
+    .or("service_type.eq.Medications,medication_id.not.is.null")
+    .order("bill_item_id", { ascending: true });
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function listAvailableBatchesByMedicationId(medicationId) {
+  const { data, error } = await supabase
+    .from("tbl_batches")
+    .select("batch_id, medication_id, quantity, expiry_date")
+    .eq("medication_id", medicationId)
+    .gt("quantity", 0)
+    .order("expiry_date", { ascending: true })
+    .order("batch_id", { ascending: true });
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function updateBatchById(batchId, updates) {
+  const { data, error } = await supabase
+    .from("tbl_batches")
+    .update(updates)
+    .eq("batch_id", batchId)
+    .select("batch_id, medication_id, quantity, expiry_date")
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+async function createPrescriptionUsageLog(row) {
+  const { data, error } = await supabase
+    .from("tbl_prescription_usage_logs")
+    .insert(row)
+    .select("log_id, medication_id, batch_id, quantity_dispensed, dispensed_at, reference_number")
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+async function deletePrescriptionUsageLogById(logId) {
+  const { error } = await supabase
+    .from("tbl_prescription_usage_logs")
+    .delete()
+    .eq("log_id", logId);
+
+  if (error) throw error;
+}
+
+async function getBatchStockTotalByMedicationId(medicationId) {
+  const { data, error } = await supabase
+    .from("tbl_batches")
+    .select("quantity")
+    .eq("medication_id", medicationId);
+
+  if (error) throw error;
+  return (data || []).reduce((sum, row) => sum + Number(row?.quantity || 0), 0);
+}
+
+async function listActiveServices() {
+  const { data, error } = await supabase
+    .from("tbl_services")
+    .select("service_id, service_name, service_type, price")
+    .in("status", ["Active", "active", "ACTIVE"])
+    .order("service_type", { ascending: true })
+    .order("service_name", { ascending: true });
+
+  if (error) throw error;
+  return data || [];
+}
+
 export {
   createBill,
   createBillItem,
@@ -425,20 +625,31 @@ export {
   fetchAnalyticsPayments,
   fetchBillItemsForReports,
   fetchPaymentsWithBillContext,
+  listPaymentsWithBillPatient,
+  listPaymentsByBillIdWithBillPatient,
   getBillById,
   getBillItemById,
   getBillItemsByBillId,
   getInventoryByMedicationId,
   getMedicationById,
+  getBatchStockTotalByMedicationId,
   getNextCode,
   getPaymentsByBillId,
   hasAnyPayment,
+  createPatient,
+  listPatients,
+  listActiveServices,
   listBills,
   listBillsFiltered,
   listBillIdsByItemDateRange,
   listPaymentsForBills,
+  listMedicationBillItemsByBillId,
+  listAvailableBatchesByMedicationId,
   hasPatientById,
+  createPrescriptionUsageLog,
+  deletePrescriptionUsageLogById,
   updateInventoryByMedicationId,
+  updateBatchById,
   updateBillById,
   updateBillItemById,
 };
