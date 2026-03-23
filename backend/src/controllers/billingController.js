@@ -2,10 +2,15 @@ import {
   addBillItemFlow,
   cancelBillFlow,
   createBillFlow,
+  createPatientFlow,
   createPaymentFlow,
   getBillDetailsFlow,
   getBillingAnalyticsFlow,
   getBillingReportsOverviewFlow,
+  listPaymentsFlow,
+  listPaymentsByBillIdFlow,
+  listPatientsFlow,
+  listServiceCatalogFlow,
   listBillsFlow,
   listBillingTransactionsFlow,
   removeBillItemFlow,
@@ -28,8 +33,18 @@ export async function addBillItem(req, res) {
 }
 
 export async function createPayment(req, res) {
-  const result = await createPaymentFlow(req.params.billId, req.body);
+  const result = await createPaymentFlow(req.body, req.params.billId);
   return res.status(201).json(result);
+}
+
+export async function getPayments(req, res) {
+  const result = await listPaymentsFlow();
+  return res.status(200).json(result);
+}
+
+export async function getPaymentsByBillId(req, res) {
+  const result = await listPaymentsByBillIdFlow(req.params.billId);
+  return res.status(200).json(result);
 }
 
 export async function updateBillItem(req, res) {
@@ -64,5 +79,20 @@ export async function getBillingTransactions(req, res) {
 
 export async function getBillingReportsOverview(_req, res) {
   const result = await getBillingReportsOverviewFlow();
+  return res.status(200).json(result);
+}
+
+export async function getPatients(req, res) {
+  const result = await listPatientsFlow(req.query);
+  return res.status(200).json(result);
+}
+
+export async function createPatient(req, res) {
+  const result = await createPatientFlow(req.body);
+  return res.status(201).json(result);
+}
+
+export async function getServices(req, res) {
+  const result = await listServiceCatalogFlow();
   return res.status(200).json(result);
 }

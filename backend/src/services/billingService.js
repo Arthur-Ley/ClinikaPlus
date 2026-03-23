@@ -2,6 +2,7 @@ import {
   createBill,
   createBillItem,
   createBillItems,
+  createPatient,
   createPayment,
   deleteBillById,
   deleteBillItemById,
@@ -14,22 +15,31 @@ import {
   getBillById,
   getBillItemById,
   getBillItemsByBillId,
+  getBatchStockTotalByMedicationId,
   getInventoryByMedicationId,
   getMedicationById,
   getNextCode,
   getPaymentsByBillId,
   hasPatientById,
   hasAnyPayment,
+  createPrescriptionUsageLog,
+  deletePrescriptionUsageLogById,
+  listAvailableBatchesByMedicationId,
+  listMedicationBillItemsByBillId,
+  listActiveServices,
+  listPatients,
+  listPaymentsWithBillPatient,
+  listPaymentsByBillIdWithBillPatient,
   listBillIdsByItemDateRange,
   listBillsFiltered,
   listPaymentsForBills,
   updateBillById,
   updateBillItemById,
+  updateBatchById,
   updateInventoryByMedicationId,
 } from "../models/billingModel.js";
 import {
   buildPagedResult,
-  computeBillTotals,
   computeSubtotal,
   isReferenceRequired,
   normalizeText,
@@ -60,9 +70,9 @@ function isUniqueConstraintError(error, constraintName) {
   return error?.code === "23505" && error?.constraint === constraintName;
 }
 
-function deriveInventoryStatus(totalStock, reorderThreshold) {
+function deriveInventoryStatusForPaidFlow(totalStock, reorderThreshold) {
   if (totalStock <= 0) return "Critical";
-  if (totalStock < reorderThreshold) return "Low";
+  if (totalStock <= reorderThreshold) return "Low";
   return "Adequate";
 }
 
@@ -147,6 +157,45 @@ function resolveServiceBucketLabel(item) {
   return "Unlabeled Item";
 }
 
+function toNullableText(value) {
+  const normalized = normalizeText(value);
+  return normalized || null;
+}
+
+function isMedicationServiceType(value) {
+  return normalizeText(value).toLowerCase() === "medications";
+}
+
+function classifyServiceSubtotal(item) {
+  const amount = roundCurrency(Number(item?.subtotal || 0));
+  const isMedication = toPositiveInt(item?.medication_id ?? item?.log_id);
+  if (isMedication) {
+    return { medications: amount, laboratory: 0, miscellaneous: 0, professional_fee: 0 };
+  }
+
+  const description = normalizeText(item?.description).toLowerCase();
+  const isLaboratory =
+    description.includes("laboratory") ||
+    description.includes("lab") ||
+    description.includes("x-ray") ||
+    description.includes("xray") ||
+    description.includes("urinalysis") ||
+    description.includes("blood");
+  const isProfessional =
+    description.includes("consultation") ||
+    description.includes("doctor") ||
+    description.includes("professional");
+
+  if (isLaboratory) {
+    return { medications: 0, laboratory: amount, miscellaneous: 0, professional_fee: 0 };
+  }
+  if (isProfessional) {
+    return { medications: 0, laboratory: 0, miscellaneous: 0, professional_fee: amount };
+  }
+
+  return { medications: 0, laboratory: 0, miscellaneous: amount, professional_fee: 0 };
+}
+
 function toTransactionRecord(row) {
   const bill = Array.isArray(row?.tbl_bills) ? row.tbl_bills[0] : row?.tbl_bills;
   const patientId = bill?.patient_id ?? null;
@@ -195,13 +244,14 @@ async function ensureBillItemExists(billItemId) {
 
 function normalizeBillItems(items) {
   if (!Array.isArray(items) || items.length === 0) {
-    throw badRequest("'items' must be a non-empty array.");
+    return [];
   }
 
   return items.map((item) => {
     const quantity = toPositiveInt(item?.quantity) || 1;
     const unitPrice = toNonNegativeNumber(item?.unit_price);
     const description = normalizeText(item?.description);
+    const inputServiceType = normalizeText(item?.service_type);
     const serviceId =
       item?.service_id !== undefined && item?.service_id !== null ? toPositiveInt(item.service_id) : null;
     const medicationId =
@@ -222,6 +272,7 @@ function normalizeBillItems(items) {
     return {
       service_id: serviceId,
       medication_id: medicationId,
+      service_type: medicationId ? "Medications" : (inputServiceType || null),
       description: description || null,
       quantity,
       unit_price: roundCurrency(unitPrice),
@@ -245,11 +296,13 @@ function normalizePaymentInput(payload) {
   const referenceNumber = normalizeText(payload?.reference_number);
   const paymentDateRaw = normalizeText(payload?.payment_date);
   const paymentDate = paymentDateRaw || new Date().toISOString();
-  const receivedBy = normalizeText(payload?.received_by);
   const notes = normalizeText(payload?.notes);
 
   if (!paymentMethod) {
     throw badRequest("'payment_method' is required.");
+  }
+  if (!["Cash", "GCash", "Maya"].includes(paymentMethod)) {
+    throw badRequest("'payment_method' must be one of: Cash, GCash, Maya.");
   }
 
   if (amountPaid === null || amountPaid <= 0) {
@@ -270,14 +323,13 @@ function normalizePaymentInput(payload) {
     amount_paid: amountPaid,
     reference_number: referenceNumber || null,
     payment_date: parsedDate.toISOString(),
-    received_by: receivedBy || null,
     notes: notes || null,
   };
 }
 
 function parseListParams(query) {
   const page = toPositiveInt(query?.page) || 1;
-  const pageSize = toPositiveInt(query?.limit) || toPositiveInt(query?.page_size) || 10;
+  const pageSize = toPositiveInt(query?.limit) || toPositiveInt(query?.page_size) || 100;
   const status = normalizeText(query?.status) || null;
   const startDate = normalizeText(query?.start_date) || null;
   const endDate = normalizeText(query?.end_date) || null;
@@ -330,66 +382,6 @@ function parseTransactionListParams(query) {
   };
 }
 
-async function updateMedicationStock(medicationId, quantityDelta) {
-  if (!medicationId || quantityDelta === 0) {
-    return null;
-  }
-
-  const [medication, inventory] = await Promise.all([
-    getMedicationById(medicationId),
-    getInventoryByMedicationId(medicationId),
-  ]);
-
-  const currentStock = Number(inventory?.total_stock || 0);
-  const nextStock = currentStock + quantityDelta;
-
-  if (nextStock < 0) {
-    throw conflict(`Insufficient stock for medication #${medicationId}. Available: ${currentStock}.`);
-  }
-
-  const nextStatus = deriveInventoryStatus(nextStock, Number(medication?.reorder_threshold || 0));
-
-  await updateInventoryByMedicationId(medicationId, {
-    total_stock: nextStock,
-    status: nextStatus,
-    last_updated: new Date().toISOString(),
-  });
-
-  return {
-    medication_id: medicationId,
-    reverse_delta: -quantityDelta,
-  };
-}
-
-async function rollbackInventoryAdjustments(adjustments) {
-  for (const adjustment of [...adjustments].reverse()) {
-    try {
-      await updateMedicationStock(adjustment.medication_id, adjustment.reverse_delta);
-    } catch {
-      // Best-effort rollback.
-    }
-  }
-}
-
-async function applyInventoryForItems(items, direction) {
-  const adjustments = [];
-
-  for (const item of items) {
-    const medicationId = toPositiveInt(item?.medication_id ?? item?.log_id);
-    if (!medicationId) continue;
-
-    const quantity = toPositiveInt(item?.quantity) || 0;
-    if (quantity <= 0) continue;
-
-    const adjustment = await updateMedicationStock(medicationId, quantity * direction);
-    if (adjustment) {
-      adjustments.push(adjustment);
-    }
-  }
-
-  return adjustments;
-}
-
 async function createBillWithGeneratedCode(payload) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const billCode = await getNextCode("tbl_bills", "bill_code", "BILL");
@@ -431,51 +423,96 @@ async function createPaymentWithGeneratedCode(payload) {
 }
 
 async function createBillFlow(payload) {
-  const patientId = toPositiveInt(payload?.patient_id);
-  const discountAmount = toNonNegativeNumber(payload?.discount_amount) ?? 0;
-  const taxAmount = toNonNegativeNumber(payload?.tax_amount) ?? 0;
-
-  if (!patientId) {
-    throw badRequest("'patient_id' must be a positive integer.");
+  const rawPatientId = payload?.patient_id;
+  const hasPatientId = rawPatientId !== undefined && rawPatientId !== null && String(rawPatientId).trim() !== "";
+  const patientId = hasPatientId ? toPositiveInt(rawPatientId) : null;
+  if (hasPatientId && !patientId) {
+    throw badRequest("'patient_id' must be a positive integer when provided.");
   }
 
-  const patientExists = await hasPatientById(patientId);
-  if (!patientExists) {
-    throw badRequest("Invalid 'patient_id'. Patient does not exist.");
+  if (patientId) {
+    const patientExists = await hasPatientById(patientId);
+    if (!patientExists) {
+      throw badRequest("Invalid 'patient_id'. Patient does not exist.");
+    }
   }
 
   const normalizedItems = normalizeBillItems(payload?.items);
-  const totals = computeBillTotals(normalizedItems, discountAmount, 0, taxAmount);
+  const itemDerivedBreakdown = normalizedItems.reduce(
+    (acc, item) => {
+      const bucket = classifyServiceSubtotal(item);
+      return {
+        medications: roundCurrency(acc.medications + bucket.medications),
+        laboratory: roundCurrency(acc.laboratory + bucket.laboratory),
+        miscellaneous: roundCurrency(acc.miscellaneous + bucket.miscellaneous),
+        professional_fee: roundCurrency(acc.professional_fee + bucket.professional_fee),
+      };
+    },
+    { medications: 0, laboratory: 0, miscellaneous: 0, professional_fee: 0 }
+  );
+
+  const subtotalMedications = toNonNegativeNumber(payload?.subtotal_medications)
+    ?? (itemDerivedBreakdown.medications || 0);
+  const subtotalLaboratory = toNonNegativeNumber(payload?.subtotal_laboratory)
+    ?? (itemDerivedBreakdown.laboratory || 0);
+  const subtotalMiscellaneous = toNonNegativeNumber(payload?.subtotal_miscellaneous)
+    ?? (itemDerivedBreakdown.miscellaneous || 0);
+  const subtotalRoomCharge = toNonNegativeNumber(payload?.subtotal_room_charge) ?? 0;
+  const subtotalProfessionalFee = toNonNegativeNumber(payload?.subtotal_professional_fee)
+    ?? (itemDerivedBreakdown.professional_fee || 0);
+  const requestedSeniorCitizen = payload?.is_senior_citizen === true;
+  const requestedPwd = payload?.is_pwd === true;
+  const isSeniorCitizen = requestedSeniorCitizen;
+  const isPwd = !requestedSeniorCitizen && requestedPwd;
+  const discountType = isSeniorCitizen ? "Senior Citizen" : isPwd ? "PWD" : "None";
+  const discountRate = isSeniorCitizen || isPwd ? 0.2 : 0;
+
+  const group1TotalComputed = roundCurrency(subtotalMedications + subtotalLaboratory + subtotalMiscellaneous);
+  const group1Total = toNonNegativeNumber(payload?.group1_total) ?? group1TotalComputed;
+  const group2TotalComputed = roundCurrency(subtotalRoomCharge + subtotalProfessionalFee);
+  const group2Total = toNonNegativeNumber(payload?.group2_total) ?? group2TotalComputed;
+  const totalAmount = roundCurrency(group1Total + group2Total);
+  const lessAmount = roundCurrency(totalAmount * discountRate);
+  const finalNetAmount = roundCurrency(Math.max(0, totalAmount - lessAmount));
 
   let bill = null;
   let itemsInserted = false;
-  let inventoryAdjustments = [];
 
   try {
     bill = await createBillWithGeneratedCode({
       patient_id: patientId,
-      total_amount: totals.total_amount,
-      discount_amount: discountAmount,
-      net_amount: totals.net_amount,
+      doctor_in_charge: toNullableText(payload?.doctor_in_charge),
+      final_diagnosis: toNullableText(payload?.final_diagnosis),
+      admission_datetime: toNullableText(payload?.admission_datetime),
+      discharge_datetime: toNullableText(payload?.discharge_datetime),
+      referred_by: toNullableText(payload?.referred_by),
+      discharge_status: toNullableText(payload?.discharge_status),
+      subtotal_medications: subtotalMedications,
+      subtotal_laboratory: subtotalLaboratory,
+      subtotal_miscellaneous: subtotalMiscellaneous,
+      subtotal_room_charge: subtotalRoomCharge,
+      subtotal_professional_fee: subtotalProfessionalFee,
+      is_senior_citizen: isSeniorCitizen,
+      is_pwd: isPwd,
+      discount_type: discountType,
+      discount_rate: discountRate,
+      less_amount: lessAmount,
+      group1_total: group1Total,
+      group2_total: group2Total,
+      total_amount: totalAmount,
+      net_amount: finalNetAmount,
       status: "Pending",
     });
 
     const itemRows = normalizedItems.map((item) => ({ ...item, bill_id: bill.bill_id }));
-    const items = await createBillItems(itemRows);
-    itemsInserted = true;
-
-    // Deduct medication stock only after bill and items are saved.
-    inventoryAdjustments = await applyInventoryForItems(itemRows, -1);
+    const items = itemRows.length ? await createBillItems(itemRows) : [];
+    itemsInserted = itemRows.length > 0;
 
     return {
       bill,
       items,
     };
   } catch (error) {
-    if (inventoryAdjustments.length) {
-      await rollbackInventoryAdjustments(inventoryAdjustments);
-    }
-
     try {
       if (bill?.bill_id && itemsInserted) {
         await deleteBillItemsByBillId(bill.bill_id);
@@ -498,17 +535,196 @@ async function createBillFlow(payload) {
 async function refreshBillTotals(billId) {
   const bill = await ensureBillExists(billId);
   const items = await getBillItemsByBillId(billId);
-  const totals = computeBillTotals(items, bill.discount_amount, 0);
+  const itemDerivedBreakdown = items.reduce(
+    (acc, item) => {
+      const bucket = classifyServiceSubtotal(item);
+      return {
+        medications: roundCurrency(acc.medications + bucket.medications),
+        laboratory: roundCurrency(acc.laboratory + bucket.laboratory),
+        miscellaneous: roundCurrency(acc.miscellaneous + bucket.miscellaneous),
+        professional_fee: roundCurrency(acc.professional_fee + bucket.professional_fee),
+      };
+    },
+    { medications: 0, laboratory: 0, miscellaneous: 0, professional_fee: 0 }
+  );
+  const subtotalMedications = roundCurrency(itemDerivedBreakdown.medications);
+  const subtotalLaboratory = roundCurrency(itemDerivedBreakdown.laboratory);
+  const subtotalMiscellaneous = roundCurrency(itemDerivedBreakdown.miscellaneous);
+  const subtotalRoomCharge = roundCurrency(Number(bill.subtotal_room_charge || 0));
+  const subtotalProfessionalFee = roundCurrency(
+    Number(itemDerivedBreakdown.professional_fee || bill.subtotal_professional_fee || 0)
+  );
+  const lessAmount = roundCurrency(Number(bill.less_amount || 0));
+  const group1Total = roundCurrency(subtotalMedications + subtotalLaboratory + subtotalMiscellaneous);
+  const group1Net = roundCurrency(Math.max(0, group1Total - lessAmount));
+  const group2Total = roundCurrency(subtotalRoomCharge + subtotalProfessionalFee);
+  const netAmount = roundCurrency(group1Net + group2Total);
 
   const payments = await getPaymentsByBillId(billId);
   const totalPaid = roundCurrency(payments.reduce((sum, payment) => sum + Number(payment.amount_paid || 0), 0));
-  const nextStatus = resolveBillStatus(totalPaid, totals.net_amount);
+  const nextStatus = resolveBillStatus(totalPaid, netAmount);
 
   return updateBillById(billId, {
-    total_amount: totals.total_amount,
-    net_amount: totals.net_amount,
+    subtotal_medications: subtotalMedications,
+    subtotal_laboratory: subtotalLaboratory,
+    subtotal_miscellaneous: subtotalMiscellaneous,
+    subtotal_room_charge: subtotalRoomCharge,
+    subtotal_professional_fee: subtotalProfessionalFee,
+    less_amount: lessAmount,
+    group1_total: group1Total,
+    group2_total: group2Total,
+    total_amount: netAmount,
+    net_amount: netAmount,
     status: nextStatus,
   });
+}
+
+async function rollbackPaidMedicationDeductions(state) {
+  for (const snapshot of [...state.inventorySnapshots].reverse()) {
+    try {
+      await updateInventoryByMedicationId(snapshot.medication_id, {
+        total_stock: snapshot.total_stock,
+        status: snapshot.status,
+        last_updated: snapshot.last_updated || new Date().toISOString(),
+      });
+    } catch {
+      // Best-effort rollback.
+    }
+  }
+
+  for (const updatedItem of [...state.updatedBillItems].reverse()) {
+    try {
+      await updateBillItemById(updatedItem.bill_item_id, {
+        log_id: updatedItem.previous_log_id,
+      });
+    } catch {
+      // Best-effort rollback.
+    }
+  }
+
+  for (const logId of [...state.insertedLogIds].reverse()) {
+    try {
+      await deletePrescriptionUsageLogById(logId);
+    } catch {
+      // Best-effort rollback.
+    }
+  }
+
+  for (const batch of [...state.batchSnapshots].reverse()) {
+    try {
+      await updateBatchById(batch.batch_id, {
+        quantity: batch.previous_quantity,
+      });
+    } catch {
+      // Best-effort rollback.
+    }
+  }
+}
+
+async function applyPaidMedicationDeductionsForBill({ billId, billCode }) {
+  const medicationItems = (await listMedicationBillItemsByBillId(billId)).filter(
+    (item) => isMedicationServiceType(item?.service_type) || Boolean(toPositiveInt(item?.medication_id))
+  );
+
+  if (!medicationItems.length) {
+    return null;
+  }
+
+  const rollbackState = {
+    batchSnapshots: [],
+    insertedLogIds: [],
+    updatedBillItems: [],
+    inventorySnapshots: [],
+  };
+
+  try {
+    const affectedMedicationIds = new Set();
+
+    for (const item of medicationItems) {
+      const medicationId = toPositiveInt(item?.medication_id);
+      const quantityRequired = toPositiveInt(item?.quantity) || 0;
+
+      if (!medicationId || quantityRequired <= 0) {
+        continue;
+      }
+
+      affectedMedicationIds.add(medicationId);
+
+      const medication = await getMedicationById(medicationId);
+      const medicationName = normalizeText(medication?.medication_name) || `Medication #${medicationId}`;
+      const availableBatches = await listAvailableBatchesByMedicationId(medicationId);
+      const selectedBatch = availableBatches[0] || null;
+
+      if (!selectedBatch || Number(selectedBatch.quantity || 0) < quantityRequired) {
+        throw conflict(`Insufficient stock for ${medicationName}. Please update inventory before marking as Paid.`);
+      }
+
+      rollbackState.batchSnapshots.push({
+        batch_id: selectedBatch.batch_id,
+        previous_quantity: Number(selectedBatch.quantity || 0),
+      });
+
+      const nextBatchQty = Number(selectedBatch.quantity || 0) - quantityRequired;
+      await updateBatchById(selectedBatch.batch_id, {
+        quantity: nextBatchQty,
+      });
+
+      const usageLog = await createPrescriptionUsageLog({
+        medication_id: medicationId,
+        batch_id: selectedBatch.batch_id,
+        quantity_dispensed: quantityRequired,
+        dispensed_at: new Date().toISOString(),
+        reference_number: billCode,
+      });
+
+      rollbackState.insertedLogIds.push(usageLog.log_id);
+      rollbackState.updatedBillItems.push({
+        bill_item_id: item.bill_item_id,
+        previous_log_id: item.log_id ?? null,
+      });
+
+      await updateBillItemById(item.bill_item_id, {
+        log_id: usageLog.log_id,
+      });
+    }
+
+    for (const medicationId of affectedMedicationIds) {
+      const [totalStockFromBatches, medication, inventory] = await Promise.all([
+        getBatchStockTotalByMedicationId(medicationId),
+        getMedicationById(medicationId),
+        getInventoryByMedicationId(medicationId),
+      ]);
+
+      rollbackState.inventorySnapshots.push({
+        medication_id: medicationId,
+        total_stock: Number(inventory?.total_stock || 0),
+        status: inventory?.status || "Adequate",
+        last_updated: inventory?.last_updated || null,
+      });
+
+      const reorderThreshold = Number(medication?.reorder_threshold || 0);
+      const nextTotalStock = Number(totalStockFromBatches || 0);
+      await updateInventoryByMedicationId(medicationId, {
+        total_stock: nextTotalStock,
+        status: deriveInventoryStatusForPaidFlow(nextTotalStock, reorderThreshold),
+        last_updated: new Date().toISOString(),
+      });
+    }
+
+    return rollbackState;
+  } catch (error) {
+    await rollbackPaidMedicationDeductions(rollbackState);
+    throw error;
+  }
+}
+
+function parsePatientListParams(query) {
+  const search = normalizeText(query?.search);
+  const limit = toPositiveInt(query?.limit) || 20;
+  if (limit > 100) {
+    throw badRequest("'limit' must not exceed 100.");
+  }
+  return { search, limit };
 }
 
 async function addBillItemFlow(billId, payload) {
@@ -538,6 +754,9 @@ async function addBillItemFlow(billId, payload) {
           ? toPositiveInt(payload.log_id)
           : null,
     description: normalizeText(payload?.description) || null,
+    service_type: payload?.medication_id !== undefined && payload?.medication_id !== null
+      ? "Medications"
+      : (normalizeText(payload?.service_type) || null),
     quantity,
     unit_price: roundCurrency(unitPrice),
     subtotal: computeSubtotal(quantity, unitPrice),
@@ -548,11 +767,9 @@ async function addBillItemFlow(billId, payload) {
   }
 
   let item = null;
-  let inventoryAdjustments = [];
 
   try {
     item = await createBillItem(row);
-    inventoryAdjustments = await applyInventoryForItems([item], -1);
     const updatedBill = await refreshBillTotals(numericBillId);
 
     return {
@@ -560,10 +777,6 @@ async function addBillItemFlow(billId, payload) {
       bill: updatedBill,
     };
   } catch (error) {
-    if (inventoryAdjustments.length) {
-      await rollbackInventoryAdjustments(inventoryAdjustments);
-    }
-
     try {
       if (item?.bill_item_id) {
         await deleteBillItemById(item.bill_item_id);
@@ -614,7 +827,6 @@ async function updateBillItemFlow(billId, billItemId, payload) {
   const description = payload?.description !== undefined ? normalizeText(payload.description) || null : existingItem.description;
   const subtotal = computeSubtotal(quantity, unitPrice);
 
-  let inventoryAdjustments = [];
   let updatedItem = null;
 
   try {
@@ -628,30 +840,18 @@ async function updateBillItemFlow(billId, billItemId, payload) {
     const nextServiceId = payload?.service_id !== undefined
       ? (payload.service_id !== null ? toPositiveInt(payload.service_id) : null)
       : (existingItem.service_id || null);
+    const nextServiceType = payload?.service_type !== undefined
+      ? (normalizeText(payload.service_type) || null)
+      : (existingItem.service_type || null);
 
     if (!nextServiceId && !nextMedicationId) {
       throw badRequest("Bill item requires either 'service_id' or 'medication_id'.");
     }
 
-    if (existingMedicationId && existingMedicationId !== nextMedicationId) {
-      inventoryAdjustments.push(await updateMedicationStock(existingMedicationId, Number(existingItem.quantity || 0)));
-      inventoryAdjustments = inventoryAdjustments.filter(Boolean);
-    }
-
-    if (nextMedicationId) {
-      const existingQtyForSameMedication = existingMedicationId === nextMedicationId ? Number(existingItem.quantity || 0) : 0;
-      const delta = quantity - existingQtyForSameMedication;
-      if (delta !== 0) {
-        const adjustment = await updateMedicationStock(nextMedicationId, -delta);
-        if (adjustment) {
-          inventoryAdjustments.push(adjustment);
-        }
-      }
-    }
-
     updatedItem = await updateBillItemById(numericBillItemId, {
       service_id: nextServiceId,
       medication_id: nextMedicationId,
+      service_type: nextMedicationId ? "Medications" : nextServiceType,
       description,
       quantity,
       unit_price: unitPrice,
@@ -665,17 +865,6 @@ async function updateBillItemFlow(billId, billItemId, payload) {
       bill: updatedBill,
     };
   } catch (error) {
-    if (inventoryAdjustments.length) {
-      await rollbackInventoryAdjustments(
-        inventoryAdjustments
-          .filter(Boolean)
-          .map((adjustment) => ({
-            medication_id: adjustment.medication_id,
-            reverse_delta: adjustment.reverse_delta,
-          }))
-      );
-    }
-
     throw error;
   }
 }
@@ -702,17 +891,7 @@ async function removeBillItemFlow(billId, billItemId) {
     throw badRequest("Bill item does not belong to the bill.");
   }
 
-  let inventoryAdjustments = [];
-
   try {
-    const medicationId = toPositiveInt(existingItem.medication_id ?? existingItem.log_id);
-    if (medicationId) {
-      const adjustment = await updateMedicationStock(medicationId, Number(existingItem.quantity || 0));
-      if (adjustment) {
-        inventoryAdjustments.push(adjustment);
-      }
-    }
-
     await deleteBillItemById(numericBillItemId);
 
     const updatedBill = await refreshBillTotals(numericBillId);
@@ -721,18 +900,14 @@ async function removeBillItemFlow(billId, billItemId) {
       bill: updatedBill,
     };
   } catch (error) {
-    if (inventoryAdjustments.length) {
-      await rollbackInventoryAdjustments(inventoryAdjustments);
-    }
-
     throw error;
   }
 }
 
-async function createPaymentFlow(billId, payload) {
-  const numericBillId = toPositiveInt(billId);
+async function createPaymentFlow(payload, fallbackBillId = null) {
+  const numericBillId = toPositiveInt(payload?.bill_id ?? fallbackBillId);
   if (!numericBillId) {
-    throw badRequest("'billId' must be a positive integer.");
+    throw badRequest("'bill_id' is required and must be a positive integer.");
   }
 
   const bill = await ensureBillExists(numericBillId);
@@ -743,6 +918,7 @@ async function createPaymentFlow(billId, payload) {
   const paymentInput = normalizePaymentInput(payload);
 
   let payment = null;
+  let medicationDeductionState = null;
 
   try {
     payment = await createPaymentWithGeneratedCode({
@@ -751,13 +927,21 @@ async function createPaymentFlow(billId, payload) {
       amount_paid: paymentInput.amount_paid,
       reference_number: paymentInput.reference_number,
       payment_date: paymentInput.payment_date,
-      received_by: paymentInput.received_by,
       notes: paymentInput.notes,
     });
 
     const payments = await getPaymentsByBillId(numericBillId);
     const totalPaid = roundCurrency(payments.reduce((sum, row) => sum + Number(row.amount_paid || 0), 0));
-    const nextStatus = resolveBillStatus(totalPaid, bill.net_amount);
+    const netAmount = roundCurrency(Number(bill.net_amount || 0));
+    const nextStatus = totalPaid >= netAmount ? "Paid" : "Pending";
+    const isTransitioningToPaid = bill.status !== "Paid" && nextStatus === "Paid";
+
+    if (isTransitioningToPaid) {
+      medicationDeductionState = await applyPaidMedicationDeductionsForBill({
+        billId: numericBillId,
+        billCode: bill.bill_code || `BILL-${numericBillId}`,
+      });
+    }
 
     const updatedBill = await updateBillById(numericBillId, {
       status: nextStatus,
@@ -770,6 +954,10 @@ async function createPaymentFlow(billId, payload) {
       remaining_balance: roundCurrency(Math.max(0, Number(updatedBill.net_amount || 0) - totalPaid)),
     };
   } catch (error) {
+    if (medicationDeductionState) {
+      await rollbackPaidMedicationDeductions(medicationDeductionState);
+    }
+
     try {
       if (payment?.payment_id) {
         await deletePaymentById(payment.payment_id);
@@ -1013,6 +1201,120 @@ async function getBillingReportsOverviewFlow() {
   };
 }
 
+function toPaymentListItem(row) {
+  const bill = Array.isArray(row?.tbl_bills) ? row.tbl_bills[0] : row?.tbl_bills;
+  const patient = Array.isArray(bill?.tbl_patients) ? bill.tbl_patients[0] : bill?.tbl_patients;
+  return {
+    payment_id: row.payment_id,
+    payment_code: row.payment_code,
+    bill_id: row.bill_id,
+    payment_method: row.payment_method,
+    amount_paid: roundCurrency(Number(row.amount_paid || 0)),
+    reference_number: row.reference_number || null,
+    payment_date: row.payment_date || null,
+    notes: row.notes || null,
+    created_at: row.created_at || null,
+    bill_code: bill?.bill_code || null,
+    patient_first_name: patient?.first_name || null,
+    patient_last_name: patient?.last_name || null,
+  };
+}
+
+async function listPaymentsFlow() {
+  const rows = await listPaymentsWithBillPatient();
+  return {
+    items: rows.map(toPaymentListItem),
+  };
+}
+
+async function listPaymentsByBillIdFlow(billId) {
+  const numericBillId = toPositiveInt(billId);
+  if (!numericBillId) {
+    throw badRequest("'bill_id' must be a positive integer.");
+  }
+  const rows = await listPaymentsByBillIdWithBillPatient(numericBillId);
+  return {
+    items: rows.map(toPaymentListItem),
+  };
+}
+
+async function listPatientsFlow(query) {
+  const params = parsePatientListParams(query);
+  const rows = await listPatients(params);
+  return {
+    items: rows.map((row) => ({
+      patient_id: row.patient_id,
+      first_name: row.first_name,
+      last_name: row.last_name,
+      date_of_birth: row.date_of_birth,
+      gender: row.gender,
+      contact_number: row.contact_number ?? null,
+      email_address: row.email_address ?? null,
+      full_name: `${row.first_name} ${row.last_name}`.trim(),
+    })),
+  };
+}
+
+async function createPatientFlow(payload) {
+  const firstName = normalizeText(payload?.first_name);
+  const lastName = normalizeText(payload?.last_name);
+  const dateOfBirth = normalizeText(payload?.date_of_birth);
+  const gender = normalizeText(payload?.gender);
+  const contactNumber = normalizeText(payload?.contact_number);
+  const emailAddress = normalizeText(payload?.email_address);
+
+  if (!firstName) throw badRequest("'first_name' is required.");
+  if (!lastName) throw badRequest("'last_name' is required.");
+  if (!dateOfBirth) throw badRequest("'date_of_birth' is required.");
+  if (!gender) throw badRequest("'gender' is required.");
+
+  const parsedDob = new Date(dateOfBirth);
+  if (Number.isNaN(parsedDob.getTime())) {
+    throw badRequest("'date_of_birth' must be a valid date.");
+  }
+
+  const patient = await createPatient({
+    first_name: firstName,
+    last_name: lastName,
+    date_of_birth: parsedDob.toISOString().slice(0, 10),
+    gender,
+    contact_number: contactNumber || null,
+    email_address: emailAddress || null,
+  });
+
+  return {
+    patient: {
+      ...patient,
+      full_name: `${patient.first_name} ${patient.last_name}`.trim(),
+    },
+  };
+}
+
+async function listServiceCatalogFlow() {
+  const rows = await listActiveServices();
+  const grouped = new Map();
+
+  for (const row of rows) {
+    const serviceType = normalizeText(row.service_type) || "Uncategorized";
+    if (!grouped.has(serviceType)) {
+      grouped.set(serviceType, []);
+    }
+    grouped.get(serviceType).push({
+      id: Number(row.service_id),
+      name: row.service_name,
+      unitPrice: Number(row.price || 0),
+    });
+  }
+
+  const items = [...grouped.entries()].map(([category, services], index) => ({
+    id: String(index + 1),
+    name: category,
+    services,
+  }));
+
+  return { items };
+}
+
 export {
   addBillItemFlow,
   cancelBillFlow,
@@ -1021,8 +1323,13 @@ export {
   getBillDetailsFlow,
   getBillingAnalyticsFlow,
   getBillingReportsOverviewFlow,
+  listPaymentsFlow,
+  listPaymentsByBillIdFlow,
+  createPatientFlow,
+  listServiceCatalogFlow,
   listBillsFlow,
   listBillingTransactionsFlow,
+  listPatientsFlow,
   removeBillItemFlow,
   updateBillItemFlow,
 };
