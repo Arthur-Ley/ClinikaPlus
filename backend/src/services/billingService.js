@@ -989,6 +989,22 @@ async function cancelBillFlow(billId) {
   return updated;
 }
 
+async function markBillPrintedFlow(billId) {
+  const numericBillId = toPositiveInt(billId);
+  if (!numericBillId) {
+    throw badRequest("'billId' must be a positive integer.");
+  }
+
+  await ensureBillExists(numericBillId);
+
+  const updated = await updateBillById(numericBillId, {
+    is_printed: true,
+    printed_at: new Date().toISOString(),
+  });
+
+  return updated;
+}
+
 async function getBillDetailsFlow(billId) {
   const numericBillId = toPositiveInt(billId);
   if (!numericBillId) {
@@ -1318,6 +1334,7 @@ async function listServiceCatalogFlow() {
 export {
   addBillItemFlow,
   cancelBillFlow,
+  markBillPrintedFlow,
   createBillFlow,
   createPaymentFlow,
   getBillDetailsFlow,

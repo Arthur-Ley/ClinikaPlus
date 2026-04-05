@@ -1,6 +1,7 @@
 import {
   addBillItemFlow,
   cancelBillFlow,
+  markBillPrintedFlow,
   createBillFlow,
   createPatientFlow,
   createPaymentFlow,
@@ -59,6 +60,11 @@ export async function removeBillItem(req, res) {
 
 export async function cancelBill(req, res) {
   const bill = await cancelBillFlow(req.params.billId);
+  return res.status(200).json({ bill });
+}
+
+export async function markBillPrinted(req, res) {
+  const bill = await markBillPrintedFlow(req.params.billId);
   return res.status(200).json({ bill });
 }
 
