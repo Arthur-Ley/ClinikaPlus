@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { BillingPaymentsContext } from './BillingPaymentsContextObject.ts';
+import { getAuthSession } from '../services/authApi';
 
 export type BillStatus = 'Pending' | 'Paid' | 'Cancelled';
 export type PaymentStatus = 'Pending' | 'Paid' | 'Processing';
@@ -115,6 +116,19 @@ type BillsResponse = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+
+function createAuthHeaders() {
+  const session = getAuthSession();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  if (session?.accessToken) {
+    headers.Authorization = `Bearer ${session.accessToken}`;
+  }
+
+  return headers;
+}
 
 function parseAmount(total: string) {
   const parsed = Number(total.replace(/[^\d.-]/g, ''));
@@ -322,7 +336,7 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
 
     const response = await fetch(`${API_BASE_URL}/billing/bills`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: createAuthHeaders(),
       body: JSON.stringify({
         patient_id: patientId,
         doctor_in_charge: bill.doctorInCharge ?? null,
@@ -411,7 +425,7 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
 
     const response = await fetch(`${API_BASE_URL}/billing/payments`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: createAuthHeaders(),
       body: JSON.stringify({
         bill_id: backendBillId,
         payment_method: input.method,
@@ -442,7 +456,7 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
 
     const response = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}/cancel`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: createAuthHeaders(),
     });
 
     if (!response.ok) {

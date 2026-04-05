@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { supplierRouter } from "../modules/suppliers/supplier.routes.js";
+import { authRouter } from "./auth.js";
 import { billingRouter } from "./billing.js";
 import { healthRouter } from "./health.js";
 import { insuranceClaimRouter } from "./insuranceClaim.routes.js";
@@ -7,11 +9,11 @@ import { medicationRouter } from "./medication.js";
 import { overviewRouter } from "./overview.js";
 import { restockRequestRouter } from "./restockRequest.js";
 import { storageRouter } from "./storage.js";
-import { supplierRouter } from "../modules/suppliers/supplier.routes.js";
 
 export const apiRouter = Router();
 
 apiRouter.use("/health", healthRouter);
+apiRouter.use("/auth", authRouter);
 apiRouter.use("/overview", overviewRouter);
 apiRouter.use("/inventory-alerts", inventoryAlertRouter);
 apiRouter.use("/medications", medicationRouter);
