@@ -20,9 +20,10 @@ type ReceiptTransaction = {
   amount: number;
   method: string;
   date: string | null;
-  status: 'Paid';
+  status: string;
   reference_number: string | null;
   received_by: string | null;
+  bill_status?: string;
 };
 
 type TransactionsResponse = {
@@ -68,19 +69,19 @@ function formatDateTime(value: string | null) {
 }
 
 function paymentReferenceFor(transaction: ReceiptTransaction) {
-  return transaction.reference_number || `REF-${transaction.bill_code}`;
+  return transaction.reference_number || 'N/A';
 }
 
 function processedByFor(transaction: ReceiptTransaction) {
   return transaction.received_by || 'Staff';
 }
 
-function StatusPill({ label }: { label: string }) {
-  return (
-    <span className="inline-flex min-w-[74px] justify-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-700">
-      {label}
-    </span>
-  );
+function statusBadgeClass(status: string) {
+  const normalized = (status || '').trim().toLowerCase();
+  if (normalized === 'paid') return 'bg-green-100 text-green-700';
+  if (normalized === 'pending') return 'bg-amber-100 text-amber-700';
+  if (normalized === 'cancelled' || normalized === 'canceled') return 'bg-red-100 text-red-700';
+  return 'bg-gray-100 text-gray-700';
 }
 
 export default function Transactions() {
@@ -89,6 +90,7 @@ export default function Transactions() {
   const [currentPage, setCurrentPage] = useState(1);
   const [selectedReceipt, setSelectedReceipt] = useState<ReceiptTransaction | null>(null);
   const [transactions, setTransactions] = useState<ReceiptTransaction[]>([]);
+  const [loadError, setLoadError] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [tablePageSize, setTablePageSize] = useState(8);
   const tableCardRef = useRef<HTMLDivElement | null>(null);
@@ -145,6 +147,7 @@ export default function Transactions() {
     (async () => {
       try {
         setIsLoading(true);
+        setLoadError('');
         const allRows: ReceiptTransaction[] = [];
         let page = 1;
         let totalPages = 1;
@@ -177,6 +180,7 @@ export default function Transactions() {
       } catch {
         if (!active) return;
         setTransactions([]);
+        setLoadError('Failed to load transactions.');
       } finally {
         if (active) {
           setIsLoading(false);
@@ -263,45 +267,51 @@ export default function Transactions() {
                 <table className="w-full text-left text-sm">
                   <thead ref={tableHeadRef} className="bg-gray-50 text-gray-500">
                     <tr>
-                      <th className="px-4 py-3 font-semibold">Bill ID</th>
-                      <th className="px-4 py-3 font-semibold">Receipt No.</th>
+                      <th className="px-4 py-3 font-semibold">Payment Code</th>
+                      <th className="px-4 py-3 font-semibold">Bill Code</th>
                       <th className="px-4 py-3 font-semibold">Patient</th>
                       <th className="px-4 py-3 font-semibold">Method</th>
-                      <th className="px-4 py-3 font-semibold">Date</th>
-                      <th className="px-4 py-3 font-semibold text-right">Amount</th>
+                      <th className="px-4 py-3 font-semibold">Payment Date</th>
+                      <th className="px-4 py-3 font-semibold text-right">Amount Paid</th>
                       <th className="px-4 py-3 font-semibold text-center">Status</th>
-                      <th className="px-4 py-3 font-semibold text-right">Action</th>
+                      <th className="px-4 py-3 font-semibold">Reference No.</th>
+                      <th className="px-4 py-3 font-semibold text-center">Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {pagedTransactions.length > 0 ? (
                       pagedTransactions.map((row) => (
                         <tr key={row.payment_id} data-transaction-row="true" className="border-t border-gray-100 text-gray-800">
-                          <td className="px-4 py-4 font-semibold">{row.bill_code}</td>
-                          <td className="px-4 py-4">{`RCT-${row.bill_code}`}</td>
+                          <td className="px-4 py-4 font-semibold">{row.payment_code || `PAY-${row.payment_id}`}</td>
+                          <td className="px-4 py-4">{row.bill_code || `BILL-${row.bill_id}`}</td>
                           <td className="px-4 py-4">{row.patient_name}</td>
                           <td className="px-4 py-4">{row.method || '-'}</td>
                           <td className="px-4 py-4">{formatDate(row.date)}</td>
                           <td className="px-4 py-4 text-right font-semibold">{formatPeso(row.amount)}</td>
                           <td className="px-4 py-4 text-center">
-                            <StatusPill label="Paid" />
+                            <span className={`inline-flex min-w-[90px] items-center justify-center rounded-full px-2 py-1 text-xs font-semibold ${statusBadgeClass(row.bill_status || row.status || 'Paid')}`}>
+                              {row.bill_status || row.status || 'Paid'}
+                            </span>
                           </td>
-                          <td className="px-4 py-4 text-right">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedReceipt(row)}
-                              className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-blue-600 hover:bg-blue-50"
-                            >
-                              <Eye size={16} />
-                              View Receipt
-                            </button>
+                          <td className="px-4 py-4">{paymentReferenceFor(row)}</td>
+                          <td className="px-4 py-4 text-center">
+                            <div className="flex justify-center">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedReceipt(row)}
+                                className="inline-flex min-w-[132px] items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-blue-600 hover:bg-blue-50"
+                              >
+                                <Eye size={16} />
+                                View Receipt
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))
                     ) : (
                       <tr className="border-t border-gray-100">
-                        <td colSpan={8} className="px-4 py-12 text-center text-sm text-gray-500">
-                          No transactions match your current filters.
+                        <td colSpan={9} className="px-4 py-12 text-center text-sm text-gray-500">
+                          {loadError || 'No transactions match your current filters.'}
                         </td>
                       </tr>
                     )}
@@ -352,7 +362,7 @@ export default function Transactions() {
               <div className="grid grid-cols-1 gap-4 text-sm md:grid-cols-2">
                 <div>
                   <p className="text-xs text-gray-400">Receipt No.</p>
-                  <p className="font-bold text-gray-800">{`RCT-${selectedReceipt.bill_code}`}</p>
+                  <p className="font-bold text-gray-800">{selectedReceipt.payment_code || `PAY-${selectedReceipt.payment_id}`}</p>
                 </div>
                 <div>
                   <p className="text-xs text-gray-400">Date & Time</p>
@@ -411,7 +421,45 @@ export default function Transactions() {
             </div>
 
             <div className="border-t border-gray-200 px-6 py-4">
-              <div className="flex justify-end">
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const popup = window.open('', '_blank', 'width=900,height=1100');
+                    if (!popup) return;
+                    const receiptNo = selectedReceipt.payment_code || `PAY-${selectedReceipt.payment_id}`;
+                    popup.document.open();
+                    popup.document.write(`<!doctype html><html><head><meta charset="utf-8"/><title>Receipt ${receiptNo}</title><style>
+                      @page { size: A4 portrait; margin: 12mm; }
+                      body { font-family: Arial, sans-serif; color: #111827; margin: 0; }
+                      .wrap { max-width: 760px; margin: 0 auto; }
+                      h1 { font-size: 26px; margin: 0; }
+                      .muted { color: #6b7280; font-size: 12px; }
+                      .section { border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px; margin-top: 14px; }
+                      .row { display: flex; justify-content: space-between; gap: 16px; margin: 6px 0; font-size: 14px; }
+                      .strong { font-weight: 700; }
+                    </style></head><body><div class="wrap">
+                      <h1>OFFICIAL RECEIPT</h1>
+                      <p class="muted">CliniKaPlus</p>
+                      <div class="section">
+                        <div class="row"><span>Receipt No.</span><span class="strong">${receiptNo}</span></div>
+                        <div class="row"><span>Date & Time</span><span class="strong">${formatDateTime(selectedReceipt.date)}</span></div>
+                        <div class="row"><span>Patient</span><span class="strong">${selectedReceipt.patient_name}</span></div>
+                        <div class="row"><span>Payment Method</span><span class="strong">${selectedReceipt.method || 'N/A'}</span></div>
+                        <div class="row"><span>Reference Number</span><span class="strong">${paymentReferenceFor(selectedReceipt)}</span></div>
+                        <div class="row"><span>Processed by</span><span class="strong">${processedByFor(selectedReceipt)}</span></div>
+                        <div class="row"><span>Bill ID</span><span class="strong">${selectedReceipt.bill_code}</span></div>
+                        <div class="row strong"><span>Amount Paid</span><span>${formatPeso(selectedReceipt.amount)}</span></div>
+                      </div>
+                    </div></body></html>`);
+                    popup.document.close();
+                    popup.focus();
+                    popup.print();
+                  }}
+                  className="h-10 rounded-xl border border-gray-300 bg-white px-5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+                >
+                  Print Receipt
+                </button>
                 <button
                   type="button"
                   onClick={() => setSelectedReceipt(null)}

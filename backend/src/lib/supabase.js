@@ -9,6 +9,9 @@ function createMissingConfigClient() {
   };
 
   return {
+    schema() {
+      return this;
+    },
     from() {
       throwConfigError();
     },
@@ -31,6 +34,9 @@ const hasSupabaseConfig = Boolean(env.supabaseUrl && env.supabaseServiceRoleKey)
 
 export const supabase = hasSupabaseConfig
   ? createClient(env.supabaseUrl, env.supabaseServiceRoleKey, {
+      db: {
+        schema: "subsystem3",
+      },
       auth: {
         autoRefreshToken: false,
         persistSession: false,

@@ -14,6 +14,7 @@ import {
   BillingTableSkeleton,
   SkeletonBlock,
 } from './BillingSkeletonParts';
+import { printFinalBill } from './printFinalBill';
 import { type BillStatus } from '../../context/BillingPaymentsContext';
 import { useBillingPayments } from '../../context/useBillingPayments';
 
@@ -65,7 +66,7 @@ type ViewBillPayment = {
 };
 type ViewBillDetailsResponse = {
   bill?: Record<string, unknown> | null;
-  items?: ViewBillItem[];
+  items?: ViewBillItem[] | Record<string, unknown>[];
   payments?: ViewBillPayment[];
   total_paid?: number;
   remaining_balance?: number;
@@ -927,6 +928,71 @@ export default function BillingAndPayments() {
     }
   }
 
+  async function handlePrintBill(bill: BillRow) {
+    const backendBillId = bill.backendBillId ?? billingRecords.find((row) => row.id === bill.id)?.backendBillId;
+    if (!backendBillId) {
+      setToast({ type: 'error', message: 'Unable to print bill. Missing bill ID.' });
+      return;
+    }
+
+    try {
+      const detailsResponse = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}`);
+      if (!detailsResponse.ok) {
+        throw new Error(`Bill details request failed (${detailsResponse.status}).`);
+      }
+
+      const detailsPayload = (await detailsResponse.json()) as ViewBillDetailsResponse;
+      const detailsBill = detailsPayload.bill && typeof detailsPayload.bill === 'object'
+        ? detailsPayload.bill as Record<string, unknown>
+        : null;
+
+      if (!detailsBill) {
+        throw new Error('Unable to print bill. Missing bill details.');
+      }
+
+      const wasPrinted = detailsBill.is_printed === true;
+      if (wasPrinted) {
+        const shouldPrintAgain = window.confirm('This bill has already been printed. Print again?');
+        if (!shouldPrintAgain) return;
+      }
+
+      await printFinalBill({
+        bill: detailsBill,
+        items: (Array.isArray(detailsPayload.items) ? detailsPayload.items : []) as Record<string, unknown>[],
+      });
+
+      const markPrintedResponse = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}/printed`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!markPrintedResponse.ok) {
+        throw new Error(`Failed to mark bill as printed (${markPrintedResponse.status}).`);
+      }
+
+      const markPayload = (await markPrintedResponse.json()) as { bill?: Record<string, unknown> };
+      const updatedPrintedBill = markPayload.bill && typeof markPayload.bill === 'object'
+        ? markPayload.bill
+        : detailsBill;
+
+      setViewBillDetails((prev) => {
+        if (!prev || !prev.bill || Number((prev.bill as Record<string, unknown>).bill_id) !== backendBillId) return prev;
+        return {
+          ...prev,
+          bill: {
+            ...(prev.bill as Record<string, unknown>),
+            is_printed: updatedPrintedBill.is_printed ?? true,
+            printed_at: updatedPrintedBill.printed_at ?? new Date().toISOString(),
+          },
+        };
+      });
+
+      setToast({ type: 'success', message: 'Bill printed successfully.' });
+    } catch (error) {
+      setToast({ type: 'error', message: error instanceof Error ? error.message : 'Unable to print bill.' });
+    }
+  }
+
   function openCancelModal(bill: BillRow) {
     loadBillDetails(bill);
     setCancelReason('');
@@ -1422,7 +1488,6 @@ export default function BillingAndPayments() {
                       <button type="button" onClick={() => openViewModal(bill)} className="font-semibold text-blue-600 hover:text-blue-700">View</button>
                       {bill.status === 'Pending' && <button type="button" onClick={() => openPaymentModal(bill)} className="font-semibold text-green-600 hover:text-green-700">Pay</button>}
                       {bill.status === 'Pending' && <button type="button" onClick={() => openCancelModal(bill)} className="font-semibold text-red-600 hover:text-red-700">Cancel</button>}
-                      {bill.status === 'Paid' && <button type="button" onClick={() => openReceiptModal(bill)} className="font-semibold text-gray-600 hover:text-gray-700">Receipt</button>}
                     </td>
                   </tr>
                 ))}
@@ -1905,17 +1970,16 @@ export default function BillingAndPayments() {
                       <>
                         <button type="button" onClick={() => openPaymentModal(selectedBill)} className="h-10 flex-1 rounded-xl bg-green-600 px-4 text-sm font-bold text-white hover:bg-green-700">Pay</button>
                         <button type="button" onClick={() => openCancelModal(selectedBill)} className="h-10 flex-1 rounded-xl bg-red-600 px-4 text-sm font-bold text-white hover:bg-red-700">Cancel</button>
-                        <button type="button" onClick={() => printBillDocument('bill')} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
+                        <button type="button" onClick={() => { void handlePrintBill(selectedBill); }} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
                       </>
                     )}
                     {selectedBill.status === 'Paid' && (
                       <>
-                        <button type="button" onClick={() => openReceiptModal(selectedBill)} className="h-10 flex-1 rounded-xl bg-blue-600 px-4 text-sm font-bold text-white hover:bg-blue-700">View Receipt</button>
-                        <button type="button" onClick={() => printBillDocument('bill')} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
+                        <button type="button" onClick={() => { void handlePrintBill(selectedBill); }} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
                       </>
                     )}
                     {selectedBill.status === 'Cancelled' && (
-                      <button type="button" onClick={() => printBillDocument('bill')} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
+                      <button type="button" onClick={() => { void handlePrintBill(selectedBill); }} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
                     )}
                   </div>
                 </div>

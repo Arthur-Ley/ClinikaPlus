@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Boxes,
@@ -81,6 +81,18 @@ type SupplierApiRow = {
   status: string;
   is_preferred: boolean;
   supplier_image: string | null;
+};
+
+type SupplierProcurementInsightsResponse = {
+  frequent_medications: Array<{
+    medication_name: string;
+    supply_count: number;
+  }>;
+  recent_procurements: Array<{
+    date: string | null;
+    medication_name: string;
+    status: string;
+  }>;
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
@@ -194,6 +206,7 @@ export default function RestockSuppliers() {
     address: '',
   });
   const [supplierEditDraft, setSupplierEditDraft] = useState({
+    status: 'Active' as SupplierStatus,
     contact: '',
     email: '',
     address: '',
@@ -201,11 +214,17 @@ export default function RestockSuppliers() {
   const [supplierEditError, setSupplierEditError] = useState('');
   const [isSavingSupplierEdit, setIsSavingSupplierEdit] = useState(false);
   const [isContactEditOpen, setIsContactEditOpen] = useState(false);
+  const [isSupplierStatusMenuOpen, setIsSupplierStatusMenuOpen] = useState(false);
   const [newSupplierImageFile, setNewSupplierImageFile] = useState<File | null>(null);
   const [isSubmittingSupplier, setIsSubmittingSupplier] = useState(false);
   const [isPhonePanelOpen, setIsPhonePanelOpen] = useState(false);
   const [isPhoneCopied, setIsPhoneCopied] = useState(false);
+  const [isSupplierInsightsLoading, setIsSupplierInsightsLoading] = useState(false);
+  const [supplierInsightsError, setSupplierInsightsError] = useState('');
+  const [supplierFrequentMedications, setSupplierFrequentMedications] = useState<string[]>([]);
+  const [supplierRecentProcurements, setSupplierRecentProcurements] = useState<Array<{ date: string; medication: string; status: string }>>([]);
   const [focusHandledKey, setFocusHandledKey] = useState('');
+  const supplierStatusMenuRef = useRef<HTMLDivElement | null>(null);
   const [showAllRequestsByStatus, setShowAllRequestsByStatus] = useState<Record<RequestStatus, boolean>>({
     Completed: false,
     Pending: false,
@@ -224,12 +243,76 @@ export default function RestockSuppliers() {
     if (modal !== 'viewSupplier') {
       setIsPhonePanelOpen(false);
       setIsPhoneCopied(false);
+      setIsSupplierStatusMenuOpen(false);
     }
   }, [modal]);
 
   useEffect(() => {
+    if (!isSupplierStatusMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!supplierStatusMenuRef.current) return;
+      if (supplierStatusMenuRef.current.contains(event.target as Node)) return;
+      setIsSupplierStatusMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [isSupplierStatusMenuOpen]);
+
+  useEffect(() => {
+    if (modal !== 'viewSupplier' || !selectedSupplier) {
+      setIsSupplierInsightsLoading(false);
+      setSupplierInsightsError('');
+      setSupplierFrequentMedications([]);
+      setSupplierRecentProcurements([]);
+      return;
+    }
+
+    let isMounted = true;
+    const controller = new AbortController();
+    setIsSupplierInsightsLoading(true);
+    setSupplierInsightsError('');
+
+    async function loadSupplierInsights() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/suppliers/${selectedSupplier.supplierId}/procurement-insights`, {
+          signal: controller.signal,
+        });
+        const json = (await response.json().catch(() => null)) as SupplierProcurementInsightsResponse | { error?: string } | null;
+        if (!response.ok) {
+          throw new Error((json as { error?: string } | null)?.error || 'Failed to load supplier procurement history.');
+        }
+
+        if (!isMounted) return;
+        const data = json as SupplierProcurementInsightsResponse;
+        setSupplierFrequentMedications((data.frequent_medications || []).map((item) => item.medication_name));
+        setSupplierRecentProcurements(
+          (data.recent_procurements || []).map((item) => ({
+            date: item.date ? item.date.slice(0, 10) : 'N/A',
+            medication: item.medication_name,
+            status: item.status || 'Received',
+          })),
+        );
+      } catch (error) {
+        if (!isMounted || controller.signal.aborted) return;
+        setSupplierInsightsError(error instanceof Error ? error.message : 'Failed to load supplier procurement history.');
+        setSupplierFrequentMedications([]);
+        setSupplierRecentProcurements([]);
+      } finally {
+        if (isMounted) setIsSupplierInsightsLoading(false);
+      }
+    }
+
+    loadSupplierInsights();
+    return () => {
+      isMounted = false;
+      controller.abort();
+    };
+  }, [modal, selectedSupplier]);
+
+  useEffect(() => {
     if (modal !== 'viewSupplier' || !selectedSupplier) return;
     setSupplierEditDraft({
+      status: selectedSupplier.status,
       contact: selectedSupplier.contact || '',
       email: selectedSupplier.email || '',
       address: selectedSupplier.address || '',
@@ -237,6 +320,7 @@ export default function RestockSuppliers() {
     setSupplierEditError('');
     setIsSavingSupplierEdit(false);
     setIsContactEditOpen(false);
+    setIsSupplierStatusMenuOpen(false);
   }, [modal, selectedSupplier]);
 
   async function copySupplierPhone(phoneNumber: string) {
@@ -253,17 +337,20 @@ export default function RestockSuppliers() {
   function startSupplierEdit() {
     if (!selectedSupplier) return;
     setSupplierEditDraft({
+      status: selectedSupplier.status,
       contact: selectedSupplier.contact || '',
       email: selectedSupplier.email || '',
       address: selectedSupplier.address || '',
     });
     setSupplierEditError('');
     setIsContactEditOpen(true);
+    setIsSupplierStatusMenuOpen(false);
   }
 
   function cancelSupplierEdit() {
     if (selectedSupplier) {
       setSupplierEditDraft({
+        status: selectedSupplier.status,
         contact: selectedSupplier.contact || '',
         email: selectedSupplier.email || '',
         address: selectedSupplier.address || '',
@@ -271,6 +358,7 @@ export default function RestockSuppliers() {
     }
     setSupplierEditError('');
     setIsContactEditOpen(false);
+    setIsSupplierStatusMenuOpen(false);
   }
 
   async function saveSupplierEdit() {
@@ -285,7 +373,7 @@ export default function RestockSuppliers() {
         },
         body: JSON.stringify({
           supplier_name: selectedSupplier.name,
-          status: selectedSupplier.status,
+          status: supplierEditDraft.status,
           contact_number: supplierEditDraft.contact.trim(),
           email_address: supplierEditDraft.email.trim(),
           address: supplierEditDraft.address.trim(),
@@ -326,6 +414,7 @@ export default function RestockSuppliers() {
           : prev,
       );
       setIsContactEditOpen(false);
+      setIsSupplierStatusMenuOpen(false);
     } catch (error) {
       setSupplierEditError(error instanceof Error ? error.message : 'Failed to update supplier.');
     } finally {
@@ -484,24 +573,7 @@ export default function RestockSuppliers() {
     }, 120);
   }, [focusSupplierId, displayedSuppliers, focusHandledKey]);
 
-  const selectedSupplierRequests = useMemo(() => {
-    if (!selectedSupplier) return [];
-    return restockRequests
-      .filter((r) => r.supplierId === selectedSupplier.supplierId || r.supplier === selectedSupplier.name)
-      .sort((a, b) => new Date(b.requestedOnIso).getTime() - new Date(a.requestedOnIso).getTime());
-  }, [restockRequests, selectedSupplier]);
-
   const showInitialSkeleton = isLoading && supplierRows.length === 0 && restockRequests.length === 0 && !loadError;
-
-  const frequentSupplierMedications = useMemo(() => {
-    const grouped = selectedSupplierRequests.reduce<Record<string, number>>((acc, r) => {
-      acc[r.medication] = (acc[r.medication] || 0) + 1;
-      return acc;
-    }, {});
-    return Object.entries(grouped).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([med]) => med);
-  }, [selectedSupplierRequests]);
-
-  const recentSupplierHistory = useMemo(() => selectedSupplierRequests.slice(0, 7), [selectedSupplierRequests]);
 
   function statusCardClass(status: RequestStatus) {
     if (status === 'Completed') return 'border-[#22C55E] bg-[#22C55E]/15';
@@ -523,12 +595,12 @@ export default function RestockSuppliers() {
     if (status === 'Active') return 'bg-blue-100 text-blue-700';
     return 'bg-amber-100 text-amber-700';
   }
-  function tableStatusChipClass(status: RequestStatus) {
-    if (status === 'Completed') return 'bg-[#22C55E]/20 text-[#16A34A]';
-    if (status === 'Pending') return 'bg-[#F59E0B]/20 text-[#B45309]';
+  function procurementStatusChipClass(status: string) {
+    const normalized = status.trim().toLowerCase();
+    if (normalized === 'completed') return 'bg-[#22C55E]/20 text-[#16A34A]';
+    if (normalized === 'pending') return 'bg-[#F59E0B]/20 text-[#B45309]';
     return 'bg-[#EF4444]/20 text-[#B91C1C]';
   }
-
   function openViewRequest(request: RestockRequest) { setSelectedRequest(request); setModal('viewRequest'); }
   function openAdjustRequest(request: RestockRequest) {
     setSelectedRequest(request);
@@ -1050,7 +1122,39 @@ export default function RestockSuppliers() {
                 </div>
                 <div>
                   <h3 className="text-2xl font-bold text-gray-800">{selectedSupplier.name}</h3>
-                  <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${supplierStatusBadgeClass(selectedSupplier.status)}`}>{selectedSupplier.status}</span>
+                  {isContactEditOpen ? (
+                    <div className="relative mt-1 inline-flex" ref={supplierStatusMenuRef}>
+                      <button
+                        type="button"
+                        onClick={() => setIsSupplierStatusMenuOpen((prev) => !prev)}
+                        disabled={isSavingSupplierEdit}
+                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-blue-400 disabled:opacity-60 ${supplierStatusBadgeClass(supplierEditDraft.status)}`}
+                      >
+                        <span>{supplierEditDraft.status}</span>
+                        <ChevronDown className={`h-3 w-3 transition-transform ${isSupplierStatusMenuOpen ? 'rotate-180' : ''}`} />
+                      </button>
+                      {isSupplierStatusMenuOpen && (
+                        <div className="absolute left-0 top-7 z-20 w-36 rounded-lg border border-gray-200 bg-white p-1 shadow-lg">
+                          {(['Preferred', 'Active', 'Review'] as const).map((statusOption) => (
+                            <button
+                              key={statusOption}
+                              type="button"
+                              className={`mb-1 flex w-full items-center justify-between rounded-md px-2 py-1 text-left text-xs font-semibold last:mb-0 ${supplierStatusBadgeClass(statusOption)}`}
+                              onClick={() => {
+                                setSupplierEditDraft((prev) => ({ ...prev, status: statusOption }));
+                                setIsSupplierStatusMenuOpen(false);
+                              }}
+                            >
+                              <span>{statusOption}</span>
+                              {supplierEditDraft.status === statusOption ? <Check className="h-3 w-3" /> : <span className="h-3 w-3" />}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <span className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${supplierStatusBadgeClass(selectedSupplier.status)}`}>{selectedSupplier.status}</span>
+                  )}
                 </div>
               </div>
               <div className="relative flex items-center gap-2">
@@ -1200,8 +1304,12 @@ export default function RestockSuppliers() {
                     Frequently Supplied Medication
                   </h4>
                   <div className="space-y-2 text-sm text-gray-800">
-                    {frequentSupplierMedications.length > 0 ? (
-                      frequentSupplierMedications.map((medication) => (
+                    {isSupplierInsightsLoading ? (
+                      <p className="text-xs text-gray-500">Loading supplier insights...</p>
+                    ) : supplierInsightsError ? (
+                      <p className="text-xs text-red-500">{supplierInsightsError}</p>
+                    ) : supplierFrequentMedications.length > 0 ? (
+                      supplierFrequentMedications.map((medication) => (
                         <p key={medication} className="flex items-center gap-2">
                           <CircleDot className="h-3.5 w-3.5 text-blue-500" />
                           {medication}
@@ -1228,14 +1336,26 @@ export default function RestockSuppliers() {
                         </tr>
                       </thead>
                       <tbody>
-                        {recentSupplierHistory.length > 0 ? (
-                          recentSupplierHistory.map((request) => (
-                            <tr key={`${request.id}-${request.requestedOnIso}`} className="border-t border-gray-200 text-gray-700">
-                              <td className="px-1 py-1.5">{request.requestedOnIso.slice(0, 10)}</td>
-                              <td className="px-1 py-1.5">{request.medication}</td>
+                        {isSupplierInsightsLoading ? (
+                          <tr>
+                            <td colSpan={3} className="px-1 py-2 text-gray-500">
+                              Loading procurement history...
+                            </td>
+                          </tr>
+                        ) : supplierInsightsError ? (
+                          <tr>
+                            <td colSpan={3} className="px-1 py-2 text-red-500">
+                              {supplierInsightsError}
+                            </td>
+                          </tr>
+                        ) : supplierRecentProcurements.length > 0 ? (
+                          supplierRecentProcurements.map((entry, index) => (
+                            <tr key={`${entry.medication}-${entry.date}-${index}`} className="border-t border-gray-200 text-gray-700">
+                              <td className="px-1 py-1.5">{entry.date}</td>
+                              <td className="px-1 py-1.5">{entry.medication}</td>
                               <td className="px-1 py-1.5">
-                                <span className={`inline-flex rounded-full px-2 py-0.5 font-semibold ${tableStatusChipClass(request.status)}`}>
-                                  {request.status}
+                                <span className={`inline-flex rounded-full px-2 py-0.5 font-semibold ${procurementStatusChipClass(entry.status)}`}>
+                                  {entry.status}
                                 </span>
                               </td>
                             </tr>

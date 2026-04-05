@@ -37,6 +37,7 @@ interface InventoryRow {
   supplier: string;
   form: string;
   strength: string;
+  storageRequirement: string;
   lastUpdated: string;
   lastUpdatedIso: string | null;
 }
@@ -62,6 +63,7 @@ type CreateMedicationResponse = {
     category_id: number;
     form: string;
     strength: string | null;
+    storage_requirement: string | null;
     unit: string;
     reorder_threshold: number;
   };
@@ -98,6 +100,7 @@ type MedicationApiItem = {
   supplier_name: string | null;
   form: string | null;
   strength: string | null;
+  storage_requirement: string | null;
   last_updated: string | null;
 };
 
@@ -118,6 +121,7 @@ type SaveMedicationPayload = {
   category_name: string;
   form: string;
   strength: string;
+  storage_requirement: string;
   total_stock: number;
   reorder_threshold: number;
   supplier_id: number;
@@ -130,6 +134,7 @@ type NewMedicationForm = {
   categoryId: string;
   form: string;
   strength: string;
+  storageRequirement: string;
   unit: string;
   quantity: string;
   batch: string;
@@ -155,6 +160,7 @@ const EMPTY_NEW_MEDICATION: NewMedicationForm = {
   categoryId: '',
   form: 'Tablet',
   strength: '',
+  storageRequirement: '',
   unit: 'pcs',
   quantity: '',
   batch: '',
@@ -340,7 +346,7 @@ export default function CurrentStocks() {
   const [isEditingMedication, setIsEditingMedication] = useState(false);
   const [isSavingMedicationEdit, setIsSavingMedicationEdit] = useState(false);
   const [medicationEditError, setMedicationEditError] = useState('');
-  const [medicationDraft, setMedicationDraft] = useState({ name: '', categoryId: '', form: '', strength: '', stock: '', reorder: '', supplierId: '' });
+  const [medicationDraft, setMedicationDraft] = useState({ name: '', categoryId: '', form: '', strength: '', storageRequirement: '', stock: '', reorder: '', supplierId: '' });
   const [medicationToast, setMedicationToast] = useState<ToastState>(null);
   const [isAddMedicationOpen, setIsAddMedicationOpen] = useState(false);
   const [isAddedSuccessOpen, setIsAddedSuccessOpen] = useState(false);
@@ -383,6 +389,7 @@ export default function CurrentStocks() {
         supplier: entry.supplier_name || 'N/A',
         form: entry.form || '',
         strength: entry.strength || '',
+        storageRequirement: entry.storage_requirement || '',
         lastUpdated: formatDateDisplay(entry.last_updated),
         lastUpdatedIso: entry.last_updated,
       }));
@@ -432,22 +439,22 @@ export default function CurrentStocks() {
     supplierId: String(suppliers[0]?.supplier_id || ''),
   }), []);
 
-  const resetAddMedicationState = useCallback((categories: CategoryOption[] = categoryDropdown, suppliers: SupplierOption[] = supplierDropdown) => {
+  const resetAddMedicationState = useCallback((categories: CategoryOption[] = [], suppliers: SupplierOption[] = []) => {
     setFormError('');
     setAddMedicationFieldErrors({});
     setNewMedication(buildInitialMedicationForm(categories, suppliers));
-  }, [buildInitialMedicationForm, categoryDropdown, supplierDropdown]);
+  }, [buildInitialMedicationForm]);
 
   const closeAddMedicationModal = useCallback(() => {
     if (isSubmittingMedication) return;
     setIsAddMedicationOpen(false);
-    resetAddMedicationState();
-  }, [isSubmittingMedication, resetAddMedicationState]);
+    resetAddMedicationState(categoryDropdown, supplierDropdown);
+  }, [isSubmittingMedication, resetAddMedicationState, categoryDropdown, supplierDropdown]);
 
   const openAddMedicationModal = useCallback(() => {
-    resetAddMedicationState();
+    resetAddMedicationState(categoryDropdown, supplierDropdown);
     setIsAddMedicationOpen(true);
-  }, [resetAddMedicationState]);
+  }, [resetAddMedicationState, categoryDropdown, supplierDropdown]);
 
   useEffect(() => {
     if (!isAddMedicationOpen) return;
@@ -728,6 +735,7 @@ export default function CurrentStocks() {
     const medicationName = newMedication.name.trim();
     const form = newMedication.form.trim();
     const strength = newMedication.strength.trim();
+    const storageRequirement = newMedication.storageRequirement.trim();
     const unit = newMedication.unit.trim();
     const batch = newMedication.batch.trim();
     const expiry = newMedication.expiry.trim();
@@ -742,6 +750,7 @@ export default function CurrentStocks() {
     if (!form) errors.form = 'Form is required.';
     else if (!formOptions.includes(form as typeof formOptions[number])) errors.form = 'Select a valid form.';
     if (!strength) errors.strength = 'Strength is required.';
+    if (!storageRequirement) errors.storageRequirement = 'Storage requirement is required.';
     if (!unit) errors.unit = 'Unit is required.';
     else if (!unitOptions.includes(unit as typeof unitOptions[number])) errors.unit = 'Select a valid unit.';
     if (!categoryId) errors.categoryId = 'Select a valid category.';
@@ -779,6 +788,7 @@ export default function CurrentStocks() {
           category_id: categoryId,
           form,
           strength,
+          storage_requirement: storageRequirement,
           unit,
           reorder_threshold: reorderThreshold,
           batch_number: batch,
@@ -799,7 +809,7 @@ export default function CurrentStocks() {
       }
 
       setIsAddMedicationOpen(false);
-      resetAddMedicationState();
+      resetAddMedicationState(categoryDropdown, supplierDropdown);
       setIsAddedSuccessOpen(true);
       await loadData();
       emitGlobalSearchRefresh();
@@ -845,6 +855,7 @@ function buildMedicationUpdatePayload(
     const medicationName = medicationDraft.name.trim();
     const form = medicationDraft.form.trim();
     const strength = medicationDraft.strength.trim();
+    const storageRequirement = medicationDraft.storageRequirement.trim();
     const stock = parseNonNegativeInteger(medicationDraft.stock);
     const reorder = parseNonNegativeInteger(medicationDraft.reorder);
     const categoryId = Number(medicationDraft.categoryId);
@@ -858,6 +869,9 @@ function buildMedicationUpdatePayload(
     }
     if (!form) {
       return { payload: null, message: 'Medication form is required.' };
+    }
+    if (!storageRequirement) {
+      return { payload: null, message: 'Storage requirement is required.' };
     }
     if (!Number.isInteger(stock) || stock < 0) {
       return { payload: null, message: 'Stock must be an integer greater than or equal to 0.' };
@@ -888,6 +902,7 @@ function buildMedicationUpdatePayload(
         category_name: category.category_name,
         form,
         strength,
+        storage_requirement: storageRequirement,
         total_stock: stock,
         reorder_threshold: reorder,
         supplier_id: supplierId,
@@ -960,6 +975,7 @@ function buildMedicationUpdatePayload(
       categoryId: item.categoryId ? String(item.categoryId) : '',
       form: item.form || '',
       strength: item.strength || '',
+      storageRequirement: item.storageRequirement || '',
       stock: String(item.stock),
       reorder: String(item.reorder),
       supplierId: item.supplierId ? String(item.supplierId) : '',
@@ -982,6 +998,7 @@ function buildMedicationUpdatePayload(
         categoryId: fallbackCategoryId ? String(fallbackCategoryId) : '',
         form: selectedItem.form || '',
         strength: selectedItem.strength || '',
+        storageRequirement: selectedItem.storageRequirement || '',
         stock: String(selectedItem.stock),
         reorder: String(selectedItem.reorder),
         supplierId: fallbackSupplierId ? String(fallbackSupplierId) : '',
@@ -1305,6 +1322,7 @@ function buildMedicationUpdatePayload(
                   <div><p className="text-xs text-gray-400 mb-0.5">Category</p>{isEditingMedication ? <select className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.categoryId} onChange={e => setMedicationDraft(p => ({ ...p, categoryId: e.target.value }))}><option value="">Select category</option>{categoryDropdown.map(c => <option key={c.category_id} value={String(c.category_id)}>{c.category_name}</option>)}</select> : <p className="text-sm font-bold text-gray-800">{selectedItem.category}</p>}</div>
                   <div><p className="text-xs text-gray-400 mb-0.5">Form</p>{isEditingMedication ? <select className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.form} onChange={e => setMedicationDraft(p => ({ ...p, form: e.target.value }))}><option value="">Select form</option>{formOptions.map(option => <option key={option} value={option}>{option}</option>)}</select> : <p className="text-sm font-bold text-gray-800">{selectedItem.form || 'N/A'}</p>}</div>
                   <div><p className="text-xs text-gray-400 mb-0.5">Strength</p>{isEditingMedication ? <input className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.strength} onChange={e => setMedicationDraft(p => ({ ...p, strength: e.target.value }))} /> : <p className="text-sm font-bold text-gray-800">{selectedItem.strength || 'N/A'}</p>}</div>
+                  <div><p className="text-xs text-gray-400 mb-0.5">Storage Requirement</p>{isEditingMedication ? <input className="h-8 w-full rounded-lg border border-gray-300 bg-gray-50 px-2 text-sm font-semibold text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-400" value={medicationDraft.storageRequirement} onChange={e => setMedicationDraft(p => ({ ...p, storageRequirement: e.target.value }))} /> : <p className="text-sm font-bold text-gray-800">{selectedItem.storageRequirement || 'N/A'}</p>}</div>
                   <div><p className="text-xs text-gray-400 mb-0.5">Unit</p><p className="text-sm font-bold text-gray-800">{selectedItem.unit}</p></div>
                 </div>
               </div>
@@ -1359,6 +1377,7 @@ function buildMedicationUpdatePayload(
               <label className="text-sm text-gray-700">Category<select required className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.categoryId} onChange={e => setNewMedication(p => ({ ...p, categoryId: e.target.value }))}><option value="">Select category</option>{categoryDropdown.map(c => <option key={c.category_id} value={String(c.category_id)}>{c.category_name}</option>)}</select></label>
               <label className="text-sm text-gray-700">Form<select required className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.form} onChange={e => setNewMedication(p => ({ ...p, form: e.target.value }))}>{formOptions.map(o => <option key={o}>{o}</option>)}</select></label>
               <label className="text-sm text-gray-700">Strength<input required placeholder="e.g., 500mg" className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.strength} onChange={e => setNewMedication(p => ({ ...p, strength: e.target.value }))} /></label>
+              <label className="text-sm text-gray-700">Storage Requirement<input required placeholder="e.g., Keep refrigerated at 2-8 C" className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.storageRequirement} onChange={e => setNewMedication(p => ({ ...p, storageRequirement: e.target.value }))} /></label>
               <label className="text-sm text-gray-700">Unit<select required className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.unit} onChange={e => setNewMedication(p => ({ ...p, unit: e.target.value }))}>{unitOptions.map(o => <option key={o}>{o}</option>)}</select></label>
               <label className="text-sm text-gray-700">Reorder Threshold<input type="number" required min={1} className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.reorder} onChange={e => setNewMedication(p => ({ ...p, reorder: e.target.value }))} /></label>
               <label className="text-sm text-gray-700">Batch Number<input required className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={newMedication.batch} onChange={e => setNewMedication(p => ({ ...p, batch: e.target.value }))} /></label>
