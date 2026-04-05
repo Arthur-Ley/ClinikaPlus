@@ -63,6 +63,7 @@ type ViewBillPayment = {
   reference_number?: string | null;
   payment_date?: string | null;
   received_by?: string | null;
+  receiver?: Record<string, unknown> | Array<Record<string, unknown>> | null;
 };
 type ViewBillDetailsResponse = {
   bill?: Record<string, unknown> | null;
@@ -193,6 +194,15 @@ function toDateTimeDisplayNoTimezoneShift(value: string) {
     }
   }
   return toDateTimeDisplay(value);
+}
+function formatRoleLabel(value: string | null | undefined) {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  if (!normalized) return 'N/A';
+  return normalized
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
 }
 function toSortRank(status: BillStatus) { if (status === 'Pending') return 0; if (status === 'Paid') return 1; return 2; }
 function normalizeBreakdownType(service: ServiceItem) {
@@ -326,6 +336,7 @@ export default function BillingAndPayments() {
   const [newPatientContactNumber, setNewPatientContactNumber] = useState('');
   const [newPatientEmailAddress, setNewPatientEmailAddress] = useState('');
   const [isCreatingPatient, setIsCreatingPatient] = useState(false);
+  const [isCreatingBill, setIsCreatingBill] = useState(false);
   const [patientAgeInput, setPatientAgeInput] = useState('');
   const [patientGenderInput, setPatientGenderInput] = useState('');
   const [doctorInput, setDoctorInput] = useState('');
@@ -582,12 +593,34 @@ export default function BillingAndPayments() {
     const relation = Array.isArray(viewBill.tbl_patients) ? viewBill.tbl_patients[0] : viewBill.tbl_patients;
     return relation && typeof relation === 'object' ? relation as Record<string, unknown> : null;
   }, [viewBill]);
+  const viewCreator = useMemo(() => {
+    if (!viewBill) return null;
+    const relation = Array.isArray(viewBill.creator) ? viewBill.creator[0] : viewBill.creator;
+    return relation && typeof relation === 'object' ? relation as Record<string, unknown> : null;
+  }, [viewBill]);
   const viewPayments = useMemo(() => (Array.isArray(viewBillDetails?.payments) ? viewBillDetails.payments : []), [viewBillDetails]);
   const latestViewPayment = useMemo(() => (viewPayments.length ? viewPayments[viewPayments.length - 1] : null), [viewPayments]);
   const latestViewPaymentWithReference = useMemo(
     () => [...viewPayments].reverse().find((payment) => typeof payment?.reference_number === 'string' && payment.reference_number.trim().length > 0) ?? null,
     [viewPayments],
   );
+  const latestViewPaymentReceiver = useMemo(() => {
+    if (!latestViewPayment) return null;
+    const relation = Array.isArray(latestViewPayment.receiver) ? latestViewPayment.receiver[0] : latestViewPayment.receiver;
+    return relation && typeof relation === 'object' ? relation as Record<string, unknown> : null;
+  }, [latestViewPayment]);
+  const latestViewPaymentReceiverName = useMemo(() => {
+    if (!latestViewPaymentReceiver) return '';
+    return [latestViewPaymentReceiver.first_name, latestViewPaymentReceiver.last_name]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .join(' ')
+      .trim();
+  }, [latestViewPaymentReceiver]);
+  const latestViewPaymentReceiverRole = useMemo(() => (
+    typeof latestViewPaymentReceiver?.role === 'string' && latestViewPaymentReceiver.role.trim().length > 0
+      ? formatRoleLabel(latestViewPaymentReceiver.role)
+      : ''
+  ), [latestViewPaymentReceiver]);
   const viewServicesByType = useMemo(() => {
     const order = ['Medications', 'Laboratory', 'Miscellaneous', 'Room Charge', 'Professional Fee'] as const;
     const grouped = new Map<string, ViewBillItem[]>();
@@ -636,6 +669,18 @@ export default function BillingAndPayments() {
       discountType: typeof viewBill?.discount_type === 'string' ? viewBill.discount_type : '',
     };
   }, [viewBill]);
+  const creatorFullName = useMemo(() => {
+    if (!viewCreator) return '';
+    return [viewCreator.first_name, viewCreator.last_name]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .join(' ')
+      .trim();
+  }, [viewCreator]);
+  const creatorRole = useMemo(() => (
+    typeof viewCreator?.role === 'string' && viewCreator.role.trim().length > 0
+      ? formatRoleLabel(viewCreator.role)
+      : ''
+  ), [viewCreator]);
 
   const subtotal = useMemo(() => services.reduce((acc, s) => acc + s.quantity * s.unitPrice, 0), [services]);
   const discount = isSeniorCitizen ? subtotal * SENIOR_DISCOUNT_RATE : 0;
@@ -1038,6 +1083,9 @@ export default function BillingAndPayments() {
   }
 
   async function handleSubmitBill() {
+    if (isCreatingBill) return;
+
+    setIsCreatingBill(true);
     try {
       const isEditingExisting = modal === 'viewBill';
       if (!isEditingExisting) {
@@ -1075,6 +1123,8 @@ export default function BillingAndPayments() {
       setModal('billSuccess');
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'Unable to create bill.');
+    } finally {
+      setIsCreatingBill(false);
     }
   }
 
@@ -1305,7 +1355,10 @@ export default function BillingAndPayments() {
         notes: paymentNotes.trim() || undefined,
         paidDate,
       });
-      const updatedBill: BillRow = { ...selectedPayRow, status: 'Paid', date: paidDate };
+      const refreshedBill = billingRecords.find((row) => row.id === selectedPayRow.id);
+      const updatedBill: BillRow = refreshedBill
+        ? { ...refreshedBill, status: 'Paid' }
+        : { ...selectedPayRow, status: 'Paid', date: paidDate };
       setBillMetaById((prev) => ({
         ...prev,
         [selectedPayRow.id]: {
@@ -1318,10 +1371,15 @@ export default function BillingAndPayments() {
         },
       }));
       setSelectedBill(updatedBill);
+      setSelectedPayRow(updatedBill);
+      await fetchViewBillDetails(updatedBill);
       setModal('paySuccess');
       setToast({ type: 'success', message: 'Payment recorded successfully.' });
     } catch (error) {
-      setToast({ type: 'error', message: 'Failed to record payment. Please try again.' });
+      setToast({
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Failed to record payment. Please try again.',
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -1519,8 +1577,13 @@ export default function BillingAndPayments() {
       {/* ── Modals ── */}
       {modal !== 'none' && typeof document !== 'undefined' && createPortal(
         <div
-          className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md"
+          className={`fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto p-4 ${
+            modal === 'receipt'
+              ? 'bg-slate-950/45 backdrop-blur-xl'
+              : 'bg-black/40 backdrop-blur-md'
+          }`}
           onClick={() => {
+            if (isCreatingBill && modal === 'createBill') return;
             if (['payBill', 'payMethod', 'payCash', 'payGcash', 'payConfirm', 'paySuccess', 'payCancelConfirm', 'payCancelled', 'cancelBill', 'receipt'].includes(modal)) closeAuxiliaryModals();
             else if (modal === 'viewBillServicesFull') setModal('viewBill');
             else if (modal === 'addService' || modal === 'addMedication') setModal(prevModal);
@@ -1532,7 +1595,7 @@ export default function BillingAndPayments() {
             <div className="relative flex max-h-[92vh] w-full max-w-[960px] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
               <div className="sticky top-0 z-20 flex items-center justify-between border-b border-gray-200 bg-white px-6 py-4">
                 <h3 className="flex items-center gap-2 text-lg font-bold text-gray-800"><ReceiptText size={18} className="text-gray-500" />Create Bill</h3>
-                <button type="button" onClick={() => setModal('none')} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"><X size={15} /></button>
+                <button type="button" onClick={() => setModal('none')} disabled={isCreatingBill} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50"><X size={15} /></button>
               </div>
               <div className="grid min-h-0 flex-1 grid-cols-1 overflow-y-auto lg:grid-cols-[300px_1fr]">
                 {/* LEFT PANEL */}
@@ -1778,8 +1841,8 @@ export default function BillingAndPayments() {
                   </div>
 
                   <div className="flex flex-col gap-2 sm:flex-row">
-                    <button type="button" onClick={handleSubmitBill} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-bold text-white hover:bg-blue-700 transition-colors">
-                      Create New Bill
+                    <button type="button" onClick={handleSubmitBill} disabled={isCreatingBill} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-bold text-white hover:bg-blue-700 transition-colors disabled:cursor-not-allowed disabled:opacity-60">
+                      {isCreatingBill ? 'Creating New Bill...' : 'Create New Bill'}
                     </button>
                   </div>
                 </div>
@@ -1940,6 +2003,21 @@ export default function BillingAndPayments() {
                       <span>Amount Due</span>
                       <span className="font-semibold">{toPeso(viewSummary.netAmount)}</span>
                     </div>
+                    <div className="mb-3 flex justify-between text-sm text-gray-700">
+                      <span>Received by</span>
+                      {latestViewPaymentReceiverName ? (
+                        <span className="flex flex-wrap items-center justify-end gap-2 text-right">
+                          <span className="font-semibold">{latestViewPaymentReceiverName}</span>
+                          {latestViewPaymentReceiverRole && (
+                            <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-blue-700">
+                              {latestViewPaymentReceiverRole}
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="font-semibold">N/A</span>
+                      )}
+                    </div>
                     {selectedBill.status === 'Paid' ? (
                       <div className="space-y-2 text-sm text-gray-700">
                         <div className="flex justify-between"><span>Payment Method</span><span className="font-semibold">{latestViewPayment?.payment_method || selectedBillMeta.paymentMethod || selectedPaymentRecord?.method || 'N/A'}</span></div>
@@ -1954,8 +2032,19 @@ export default function BillingAndPayments() {
                   <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
                     <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700 mb-3"><Info size={15} className="text-gray-400" />Activity / Verification</h4>
                     <div className="space-y-2 text-sm text-gray-700">
-                      <div className="flex justify-between"><span>Processed by</span><span className="font-semibold">{selectedBillMeta.processedBy}</span></div>
-                      <div className="flex justify-between"><span>Received by</span><span className="font-semibold">{latestViewPayment?.received_by || ''}</span></div>
+                      <div className="flex items-start justify-between gap-4">
+                        <span>Created by</span>
+                        {creatorFullName ? (
+                          <span className="flex flex-wrap items-center justify-end gap-2 text-right">
+                            <span className="font-semibold">{creatorFullName}</span>
+                            <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-blue-700">
+                              {creatorRole || 'N/A'}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="font-semibold">N/A</span>
+                        )}
+                      </div>
                       {selectedBill.status === 'Cancelled' && (
                         <>
                           <div className="flex justify-between"><span>Cancelled by</span><span className="font-semibold">{selectedBillMeta.cancelledBy || 'Staff'}</span></div>
