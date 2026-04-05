@@ -33,15 +33,12 @@ const router = createBrowserRouter([
         children: [
           { path: "dashboard", element: <Dashboard /> },
           { path: "overview", element: <Dashboard /> },
-          // Pharmacy - Inventory & Alerts
           { path: "pharmacy/inventory", element: <CurrentStocks /> },
           { path: "inventory", element: <CurrentStocks /> },
           { path: "inventory/alerts", element: <CurrentStocks /> },
-          // Pharmacy - Restock & Suppliers
           { path: "pharmacy/restock", element: <RestockSuppliers /> },
           { path: "restock", element: <RestockSuppliers /> },
           { path: "suppliers", element: <RestockSuppliers /> },
-          // Billing & Reports
           { path: "billing", element: <BillingAndPayments /> },
           { path: "billing/records", element: <BillingAndPayments /> },
           { path: "billing/payments", element: <BillingAndPayments /> },
@@ -49,7 +46,6 @@ const router = createBrowserRouter([
           { path: "billing/reports", element: <RevenueReports /> },
           { path: "transactions", element: <Transactions /> },
           { path: "reports", element: <RevenueReports /> },
-          // Settings
           { path: "settings", element: <Settings /> },
         ],
       },
