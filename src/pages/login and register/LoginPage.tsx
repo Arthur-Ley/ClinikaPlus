@@ -1,6 +1,6 @@
 // src/pages/LoginPage.tsx
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   clearAuthSession,
   login,
@@ -12,6 +12,26 @@ import {
 interface FormData {
   email: string;
   password: string;
+}
+
+type LoginLocationState = {
+  from?: {
+    pathname: string;
+    search?: string;
+    hash?: string;
+  };
+};
+
+function normalizeRedirectTarget(value: string | null): string | null {
+  if (!value || !value.startsWith('/')) {
+    return null;
+  }
+
+  if (value.startsWith('//')) {
+    return null;
+  }
+
+  return value;
 }
 
 // ── Component ───────────────────────────────────────────────────────
@@ -27,6 +47,13 @@ export default function LoginPage() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   const navigate = useNavigate();
+  const location = useLocation() as ReturnType<typeof useLocation> & { state: LoginLocationState | null };
+  const [searchParams] = useSearchParams();
+  const queryRedirect = normalizeRedirectTarget(searchParams.get('redirect'));
+  const redirectTo =
+    typeof location.state?.from?.pathname === 'string'
+      ? normalizeRedirectTarget(`${location.state.from.pathname}${location.state.from.search || ''}${location.state.from.hash || ''}`)
+      : queryRedirect;
 
   // ── Stable scroll: reserve gutter always, hide track visually ──
   useEffect(() => {
@@ -95,7 +122,9 @@ export default function LoginPage() {
       });
       saveAuthSession(response);
 
-      if (response.user.role === 'admin') {
+      if (redirectTo && redirectTo !== '/login' && redirectTo !== '/register') {
+        navigate(redirectTo, { replace: true });
+      } else if (response.user.role === 'admin') {
         navigate('/admin/patients');
       } else if (response.user.role === 'ambulance') {
         navigate('/emergency');
