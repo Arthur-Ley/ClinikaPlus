@@ -36,11 +36,24 @@ export type SearchSupplier = {
   status: string;
 };
 
+export type SearchTransaction = {
+  payment_id: number;
+  payment_code: string;
+  bill_code: string;
+  patient_name: string;
+  method: string;
+  date: string;
+  reference_number: string;
+  received_by: string;
+  status: string;
+};
+
 type GlobalSearchDataContextValue = {
   medications: SearchMedication[];
   alerts: SearchAlert[];
   restockRequests: SearchRestockRequest[];
   suppliers: SearchSupplier[];
+  transactions: SearchTransaction[];
   isLoading: boolean;
   hasLoaded: boolean;
   refresh: () => Promise<void>;
@@ -78,6 +91,19 @@ type SupplierApiItem = {
   status: string | null;
 };
 
+type TransactionApiItem = {
+  payment_id: number;
+  payment_code: string | null;
+  bill_code: string | null;
+  patient_name: string | null;
+  method: string | null;
+  date: string | null;
+  reference_number: string | null;
+  received_by: string | null;
+  bill_status?: string | null;
+  status?: string | null;
+};
+
 const GlobalSearchDataContext = createContext<GlobalSearchDataContextValue | undefined>(undefined);
 
 export function GlobalSearchDataProvider({ children }: { children: ReactNode }) {
@@ -85,20 +111,22 @@ export function GlobalSearchDataProvider({ children }: { children: ReactNode }) 
   const [alerts, setAlerts] = useState<SearchAlert[]>([]);
   const [restockRequests, setRestockRequests] = useState<SearchRestockRequest[]>([]);
   const [suppliers, setSuppliers] = useState<SearchSupplier[]>([]);
+  const [transactions, setTransactions] = useState<SearchTransaction[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
 
   const refresh = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [medicationsRes, alertsRes, restockRes, suppliersRes] = await Promise.all([
+      const [medicationsRes, alertsRes, restockRes, suppliersRes, transactionsRes] = await Promise.all([
         fetch(`${API_BASE_URL}/medications`),
         fetch(`${API_BASE_URL}/inventory-alerts`),
         fetch(`${API_BASE_URL}/restock-requests`),
         fetch(`${API_BASE_URL}/suppliers`),
+        fetch(`${API_BASE_URL}/billing/transactions?page=1&page_size=100`),
       ]);
 
-      if (!medicationsRes.ok || !alertsRes.ok || !restockRes.ok || !suppliersRes.ok) {
+      if (!medicationsRes.ok || !alertsRes.ok || !restockRes.ok || !suppliersRes.ok || !transactionsRes.ok) {
         throw new Error('Failed to load global search data.');
       }
 
@@ -106,6 +134,7 @@ export function GlobalSearchDataProvider({ children }: { children: ReactNode }) 
       const alertsJson = (await alertsRes.json()) as { items?: AlertApiItem[] };
       const restockJson = (await restockRes.json()) as { items?: RestockApiItem[] };
       const suppliersJson = (await suppliersRes.json()) as { suppliers?: SupplierApiItem[] };
+      const transactionsJson = (await transactionsRes.json()) as { items?: TransactionApiItem[] };
 
       setMedications(
         (medicationsJson.items || []).map((item) => ({
@@ -144,6 +173,20 @@ export function GlobalSearchDataProvider({ children }: { children: ReactNode }) 
           supplier_name: item.supplier_name || 'N/A',
           email_address: item.email_address || 'N/A',
           status: item.status || 'N/A',
+        })),
+      );
+
+      setTransactions(
+        (transactionsJson.items || []).map((item) => ({
+          payment_id: item.payment_id,
+          payment_code: item.payment_code || `PAY-${item.payment_id}`,
+          bill_code: item.bill_code || 'N/A',
+          patient_name: item.patient_name || 'N/A',
+          method: item.method || 'N/A',
+          date: item.date || 'N/A',
+          reference_number: item.reference_number || 'N/A',
+          received_by: item.received_by || 'N/A',
+          status: item.bill_status || item.status || 'N/A',
         })),
       );
     } finally {
@@ -186,11 +229,12 @@ export function GlobalSearchDataProvider({ children }: { children: ReactNode }) 
       alerts,
       restockRequests,
       suppliers,
+      transactions,
       isLoading,
       hasLoaded,
       refresh,
     }),
-    [medications, alerts, restockRequests, suppliers, isLoading, hasLoaded, refresh],
+    [medications, alerts, restockRequests, suppliers, transactions, isLoading, hasLoaded, refresh],
   );
 
   return <GlobalSearchDataContext.Provider value={value}>{children}</GlobalSearchDataContext.Provider>;

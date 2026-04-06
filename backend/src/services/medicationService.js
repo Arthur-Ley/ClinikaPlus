@@ -34,6 +34,7 @@ async function listMedicationStocks() {
       medication_name,
       form,
       strength,
+      storage_requirement,
       unit,
       reorder_threshold,
       tbl_categories(category_id, category_name),
@@ -79,6 +80,7 @@ async function listMedicationStocks() {
       category_name: medication.tbl_categories?.category_name || "Uncategorized",
       form: medication.form,
       strength: medication.strength,
+      storage_requirement: medication.storage_requirement,
       unit: medication.unit,
       reorder_threshold: medication.reorder_threshold,
       total_stock: totalStock,
@@ -104,12 +106,13 @@ async function createMedicationFlow(input) {
       category_id: input.categoryId,
       form: input.form,
       strength: input.strength,
+      storage_requirement: input.storageRequirement,
       unit: input.unit,
       reorder_threshold: input.reorderThreshold,
       created_at: now,
       updated_at: now,
     })
-    .select("medication_id, medication_name, category_id, form, strength, unit, reorder_threshold")
+    .select("medication_id, medication_name, category_id, form, strength, storage_requirement, unit, reorder_threshold")
     .single();
 
   if (medicationError) throw medicationError;
@@ -219,6 +222,7 @@ async function updateMedicationFlow(medicationId, input) {
       category_id: resolvedCategoryId,
       form: input.form,
       strength: input.strength,
+      storage_requirement: input.storageRequirement,
       reorder_threshold: input.reorderThreshold,
       updated_at: now,
     })

@@ -22,6 +22,7 @@ export function validateCreateMedicationInput(payload) {
   const medicationName = toTrimmedString(payload?.medication_name);
   const form = toTrimmedString(payload?.form);
   const strength = toTrimmedString(payload?.strength);
+  const storageRequirement = toTrimmedString(payload?.storage_requirement);
   const unit = toTrimmedString(payload?.unit);
   const batchNumber = toTrimmedString(payload?.batch_number);
   const expiryDate = toTrimmedString(payload?.expiry_date);
@@ -42,6 +43,9 @@ export function validateCreateMedicationInput(payload) {
   }
   if (!unit) {
     return { ok: false, message: "'unit' is required." };
+  }
+  if (!storageRequirement) {
+    return { ok: false, message: "'storage_requirement' is required." };
   }
   if (!reorderThreshold) {
     return { ok: false, message: "'reorder_threshold' must be a positive integer." };
@@ -66,6 +70,7 @@ export function validateCreateMedicationInput(payload) {
       categoryId,
       form,
       strength: strength || null,
+      storageRequirement,
       unit,
       reorderThreshold,
       batchNumber,
@@ -81,6 +86,7 @@ export function validateUpdateMedicationInput(payload) {
   const categoryName = toTrimmedString(payload?.category_name);
   const form = toTrimmedString(payload?.form);
   const strength = toTrimmedString(payload?.strength);
+  const storageRequirement = toTrimmedString(payload?.storage_requirement);
   const supplierName = toTrimmedString(payload?.supplier_name);
   const categoryId = toPositiveInt(payload?.category_id);
   const supplierId = toPositiveInt(payload?.supplier_id);
@@ -96,6 +102,9 @@ export function validateUpdateMedicationInput(payload) {
   }
   if (!form) {
     return { ok: false, message: "'form' is required." };
+  }
+  if (!storageRequirement) {
+    return { ok: false, message: "'storage_requirement' is required." };
   }
   if (totalStock === null) {
     return { ok: false, message: "'total_stock' must be an integer greater than or equal to 0." };
@@ -115,6 +124,7 @@ export function validateUpdateMedicationInput(payload) {
       categoryName,
       form,
       strength: strength || null,
+      storageRequirement,
       totalStock,
       reorderThreshold,
       supplierId: supplierId || null,

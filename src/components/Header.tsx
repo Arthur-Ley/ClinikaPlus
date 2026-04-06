@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { CircleUserRound, Search, X } from 'lucide-react';
+import { Search, Settings, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useGlobalSearchData } from '../context/GlobalSearchDataContext.tsx';
 import { useBillingPayments } from '../context/useBillingPayments.ts';
+import { getAuthSession, getCurrentUser, type LoginResponse } from '../services/authApi';
 
 type NavigationEntry = {
   id: string;
@@ -14,7 +15,7 @@ type NavigationEntry = {
 type SearchResult = {
   id: string;
   section: 'navigation' | 'inventory' | 'billing';
-  entityType?: 'medication' | 'alert' | 'request' | 'supplier' | 'bill';
+  entityType?: 'medication' | 'alert' | 'request' | 'supplier' | 'bill' | 'transaction';
   label: string;
   sublabel?: string;
   status?: string;
@@ -110,9 +111,12 @@ export default function Header() {
   const [rawQuery, setRawQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
-  const { medications, alerts, restockRequests, suppliers, isLoading: searchLoading } = useGlobalSearchData();
+  const { medications, alerts, restockRequests, suppliers, transactions, isLoading: searchLoading } = useGlobalSearchData();
   const { billingRecords, isLoading: billingLoading } = useBillingPayments();
+  const authSession = useMemo(() => getAuthSession(), []);
+  const [currentUser, setCurrentUser] = useState<LoginResponse['user'] | null>(authSession?.user ?? null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -125,6 +129,7 @@ export default function Header() {
     function handlePointerDown(event: MouseEvent) {
       if (!rootRef.current?.contains(event.target as Node)) {
         setIsOpen(false);
+        setIsProfileOpen(false);
         setHighlightedIndex(-1);
       }
     }
@@ -132,6 +137,36 @@ export default function Header() {
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function hydrateCurrentUser() {
+      if (!authSession?.accessToken) return;
+
+      const hasName = Boolean(authSession.user.firstName?.trim() || authSession.user.lastName?.trim());
+      if (hasName && authSession.user.email) {
+        setCurrentUser(authSession.user);
+        return;
+      }
+
+      try {
+        const response = await getCurrentUser(authSession.accessToken);
+        if (isMounted) {
+          setCurrentUser(response.user);
+        }
+      } catch {
+        if (isMounted) {
+          setCurrentUser(authSession.user);
+        }
+      }
+    }
+
+    hydrateCurrentUser();
+    return () => {
+      isMounted = false;
+    };
+  }, [authSession]);
 
   const navigationMatches = useMemo(() => {
     const query = normalize(debouncedQuery);
@@ -247,7 +282,7 @@ export default function Header() {
     const query = normalize(debouncedQuery);
     if (!query) return [] as SearchResult[];
 
-    return billingRecords
+    const billResults = billingRecords
       .map((row) => {
         const fields = [row.id, row.patient, row.date, row.status];
         const score = Math.max(...fields.map((field) => textMatchScore(field, query)));
@@ -266,7 +301,28 @@ export default function Header() {
       })
       .filter(isDefined)
       .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
-  }, [debouncedQuery, billingRecords]);
+
+    const transactionResults: SearchResult[] = transactions
+      .map((row) => {
+        const fields = [row.payment_code, row.bill_code, row.patient_name, row.method, row.reference_number, row.received_by, row.status];
+        const score = Math.max(...fields.map((field) => textMatchScore(field, query)));
+        if (score <= 0) return null;
+        return {
+          id: `transaction-${row.payment_id}`,
+          section: 'billing',
+          entityType: 'transaction',
+          label: row.payment_code,
+          sublabel: `${row.bill_code} | ${row.patient_name} | ${row.method} | ${formatDateLabel(row.date)}`,
+          status: row.status,
+          path: '/billing/transactions',
+          score,
+        } satisfies SearchResult;
+      })
+      .filter(isDefined);
+
+    return [...billResults, ...transactionResults]
+      .sort((a, b) => b.score - a.score || a.label.localeCompare(b.label));
+  }, [debouncedQuery, billingRecords, transactions]);
 
   const visibleNavigation = navigationMatches.slice(0, 5);
   const visibleInventory = inventoryMatches.slice(0, 5);
@@ -370,6 +426,15 @@ export default function Header() {
   }
 
   const pageTitle = getPageTitle(location.pathname);
+  const fullName = [currentUser?.firstName, currentUser?.lastName]
+    .filter(Boolean)
+    .join(' ')
+    .trim();
+  const profileInitials = [currentUser?.firstName, currentUser?.lastName]
+    .map((value) => value?.trim().charAt(0).toUpperCase() || '')
+    .filter(Boolean)
+    .join('')
+    .slice(0, 2) || (currentUser?.email?.trim().charAt(0).toUpperCase() || 'U');
 
   return (
     <header className="relative z-20 h-16 bg-[#F5F7FA] px-5 flex items-end pb-3">
@@ -545,9 +610,53 @@ export default function Header() {
             </div>
           )}
           </div>
-          <button type="button" className="text-blue-600" onClick={() => navigate('/settings')} aria-label="Open settings">
-            <CircleUserRound size={26} />
-          </button>
+          <div className="relative">
+            <button
+              type="button"
+              className="flex h-10 w-10 items-center justify-center rounded-full border border-blue-200 bg-gradient-to-br from-blue-600 to-blue-700 text-sm font-bold tracking-wide text-white shadow-sm transition hover:border-blue-300 hover:from-blue-700 hover:to-blue-700"
+              onClick={() => {
+                setIsProfileOpen((prev) => !prev);
+                setIsOpen(false);
+                setHighlightedIndex(-1);
+              }}
+              aria-label="Open profile menu"
+              aria-expanded={isProfileOpen}
+            >
+              <span>{profileInitials}</span>
+            </button>
+
+            {isProfileOpen && (
+              <div className="absolute right-0 top-[calc(100%+10px)] z-50 w-72 rounded-2xl border border-gray-200 bg-white p-4 shadow-lg">
+                <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Signed in as</p>
+                <div className="mt-3 rounded-xl bg-gray-50 px-4 py-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Full Name</p>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-semibold text-gray-800">{fullName || 'Current user'}</p>
+                      <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-blue-700">
+                        {currentUser?.role || authSession?.user.role || 'pharmacist'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Email Address</p>
+                    <p className="mt-1 break-all text-sm text-gray-600">{currentUser?.email || authSession?.user.email || 'No email available'}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsProfileOpen(false);
+                    navigate('/settings');
+                  }}
+                  className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
+                >
+                  <Settings size={16} />
+                  Settings
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </header>

@@ -9,6 +9,7 @@ import {
   getPayments,
   getPaymentsByBillId,
   getBillDetails,
+  markBillPrinted,
   getBillingAnalytics,
   getBillingReportsOverview,
   getPatients,
@@ -38,3 +39,4 @@ billingRouter.patch("/bills/:billId/items/:billItemId", asyncHandler(updateBillI
 billingRouter.delete("/bills/:billId/items/:billItemId", asyncHandler(removeBillItem));
 billingRouter.post("/bills/:billId/payments", asyncHandler(createPayment));
 billingRouter.patch("/bills/:billId/cancel", asyncHandler(cancelBill));
+billingRouter.patch("/bills/:billId/printed", asyncHandler(markBillPrinted));

@@ -12,8 +12,11 @@ import {
   Truck,
   FileText,
   ArrowLeftRight,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
 import { RESTOCK_REQUESTS_CHANGED_EVENT } from '../pages/pharmacy/restockRequestsStore';
+import { clearAuthSession } from '../services/authApi';
 
 type LinkIcon = React.ComponentType<{ size?: number; className?: string }>;
 type BadgeCount = number;
@@ -139,6 +142,7 @@ export default function Sidebar() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const [inventoryAlertCount, setInventoryAlertCount] = useState(0);
+  const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   const matchesRoute = (base: string) => pathname === base || pathname.startsWith(`${base}/`);
   const pharmacyActive = ['/pharmacy', '/inventory', '/restock', '/suppliers'].some(matchesRoute);
@@ -178,18 +182,20 @@ export default function Sidebar() {
 
   function handleLogout() {
     try {
-      window.sessionStorage.clear();
-      window.localStorage.removeItem('isLoggedIn');
+      clearAuthSession();
+      window.sessionStorage.removeItem('auth');
       window.localStorage.removeItem('auth');
       window.localStorage.removeItem('token');
     } catch {
       // No-op
     }
-    navigate('/signin');
+    setShowLogoutModal(false);
+    navigate('/login', { replace: true });
   }
 
   return (
-    <aside className="relative z-30 flex h-full w-[250px] flex-col overflow-hidden bg-[#F5F7FA] px-5 pt-5">
+    <>
+      <aside className="relative z-30 flex h-full w-[250px] flex-col overflow-hidden bg-[#F5F7FA] px-5 pt-5">
       <div className="flex items-center gap-2.5 text-blue-600 mb-7">
         <HeartPulse size={30} />
         <span className="text-xl font-bold tracking-tight">CLINIKA+</span>
@@ -225,13 +231,71 @@ export default function Sidebar() {
               <Settings size={18} />
               Settings
             </button>
-            <button type="button" onClick={handleLogout} className="w-full flex items-center gap-2.5 px-3 py-2 text-base font-semibold text-gray-800 text-left rounded-lg hover:bg-gray-200 transition">
-              <LogOut size={18} />
-              Logout
+            <button
+              type="button"
+              onClick={() => setShowLogoutModal(true)}
+              className="w-full rounded-xl border border-gray-200 bg-white px-3.5 py-2.5 text-left text-gray-800 transition-colors duration-200 hover:border-red-500 hover:bg-red-500 hover:text-white active:scale-[0.99]"
+              aria-label="Log out of your account"
+            >
+              <span className="flex items-center gap-2.5 text-base font-semibold">
+                <LogOut size={18} />
+                Logout
+              </span>
             </button>
           </div>
         </div>
       </div>
-    </aside>
+      </aside>
+
+      {showLogoutModal && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/35 px-4 backdrop-blur-[2px]"
+          onClick={() => setShowLogoutModal(false)}
+        >
+          <div
+            className="w-full max-w-sm rounded-2xl border border-slate-200 bg-[#F5F7FA]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex justify-end px-4 pt-4">
+              <button
+                type="button"
+                onClick={() => setShowLogoutModal(false)}
+                className="flex h-9 w-9 items-center justify-center rounded-full text-slate-500 transition hover:bg-slate-200 hover:text-slate-700"
+                aria-label="Close logout confirmation"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="px-6 pb-7 pt-1 text-center sm:px-8">
+              <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-red-50 text-red-500">
+                <AlertTriangle size={38} strokeWidth={2.2} />
+              </div>
+              <h3 className="mt-5 text-xl font-bold leading-tight text-slate-900">Confirm Logout?</h3>
+              <p className="mx-auto mt-3 max-w-[280px] text-sm leading-6 text-slate-600">
+                You will be signed out of your account. Any unsaved changes may be lost.
+              </p>
+
+              <div className="mt-7 flex flex-col-reverse gap-3 sm:flex-row sm:justify-center">
+                <button
+                  type="button"
+                  onClick={() => setShowLogoutModal(false)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 sm:w-[132px]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="w-full rounded-xl bg-red-500 px-5 py-3 text-sm font-semibold text-white transition hover:bg-red-600 sm:w-[132px]"
+                >
+                  Log out
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }

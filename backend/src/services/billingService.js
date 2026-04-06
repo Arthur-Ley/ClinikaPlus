@@ -12,6 +12,7 @@ import {
   fetchAnalyticsPayments,
   fetchBillItemsForReports,
   fetchPaymentsWithBillContext,
+  getAppUserById,
   getBillById,
   getBillItemById,
   getBillItemsByBillId,
@@ -100,6 +101,48 @@ function resolvePatientName(patientRelation, patientId) {
 function normalizeMethodLabel(value) {
   const normalized = normalizeText(value);
   return normalized || "Unspecified";
+}
+
+function resolveUserDisplayName(userRelation) {
+  const user = Array.isArray(userRelation) ? userRelation[0] : userRelation;
+  if (!user || typeof user !== "object") {
+    return null;
+  }
+
+  const fullName = [user.first_name, user.last_name]
+    .filter((value) => typeof value === "string" && value.trim())
+    .join(" ")
+    .trim();
+
+  return fullName || null;
+}
+
+async function attachBillCreator(bill) {
+  if (!bill || typeof bill !== "object") {
+    return bill;
+  }
+
+  const creator = await getAppUserById(bill.created_by);
+  return {
+    ...bill,
+    creator,
+  };
+}
+
+async function attachPaymentReceiver(payment) {
+  if (!payment || typeof payment !== "object") {
+    return payment;
+  }
+
+  const receiver = await getAppUserById(payment.received_by);
+  return {
+    ...payment,
+    receiver,
+  };
+}
+
+async function attachPaymentReceivers(payments) {
+  return Promise.all((payments || []).map((payment) => attachPaymentReceiver(payment)));
 }
 
 function toIsoDateOnly(value) {
@@ -324,7 +367,7 @@ function toTransactionRecord(row) {
     date: toIsoDateOnly(paymentDate),
     paid_at: paymentDate,
     reference_number: row.reference_number || null,
-    received_by: row.received_by || null,
+    received_by: resolveUserDisplayName(row.receiver),
     bill_status: bill?.status || "Paid",
     status: "Paid",
   };
@@ -575,10 +618,11 @@ async function createBillWithGeneratedCode(payload) {
     const billCode = await getNextCode("tbl_bills", "bill_code", "BILL");
 
     try {
-      return await createBill({
+      const bill = await createBill({
         ...payload,
         bill_code: billCode,
       });
+      return attachBillCreator(bill);
     } catch (error) {
       if (isUniqueConstraintError(error, "tbl_bills_bill_code_key")) {
         continue;
@@ -595,10 +639,11 @@ async function createPaymentWithGeneratedCode(payload) {
     const paymentCode = await getNextCode("tbl_payments", "payment_code", "PAY");
 
     try {
-      return await createPayment({
+      const payment = await createPayment({
         ...payload,
         payment_code: paymentCode,
       });
+      return attachPaymentReceiver(payment);
     } catch (error) {
       if (isUniqueConstraintError(error, "tbl_payments_payment_code_key")) {
         continue;
@@ -610,7 +655,7 @@ async function createPaymentWithGeneratedCode(payload) {
   throw conflict("Unable to generate unique payment code. Please retry.");
 }
 
-async function createBillFlow(payload) {
+async function createBillFlow(payload, currentUserId = null) {
   const rawPatientId = payload?.patient_id;
   const hasPatientId = rawPatientId !== undefined && rawPatientId !== null && String(rawPatientId).trim() !== "";
   const patientId = hasPatientId ? toPositiveInt(rawPatientId) : null;
@@ -669,6 +714,7 @@ async function createBillFlow(payload) {
   try {
     bill = await createBillWithGeneratedCode({
       patient_id: patientId,
+      created_by: currentUserId,
       doctor_in_charge: toNullableText(payload?.doctor_in_charge),
       final_diagnosis: toNullableText(payload?.final_diagnosis),
       admission_datetime: toNullableText(payload?.admission_datetime),
@@ -1092,7 +1138,7 @@ async function removeBillItemFlow(billId, billItemId) {
   }
 }
 
-async function createPaymentFlow(payload, fallbackBillId = null) {
+async function createPaymentFlow(payload, fallbackBillId = null, currentUser = null) {
   const numericBillId = toPositiveInt(payload?.bill_id ?? fallbackBillId);
   if (!numericBillId) {
     throw badRequest("'bill_id' is required and must be a positive integer.");
@@ -1115,6 +1161,7 @@ async function createPaymentFlow(payload, fallbackBillId = null) {
       amount_paid: paymentInput.amount_paid,
       reference_number: paymentInput.reference_number,
       payment_date: paymentInput.payment_date,
+      received_by: currentUser?.id || null,
       notes: paymentInput.notes,
     });
 
@@ -1177,6 +1224,22 @@ async function cancelBillFlow(billId) {
   return updated;
 }
 
+async function markBillPrintedFlow(billId) {
+  const numericBillId = toPositiveInt(billId);
+  if (!numericBillId) {
+    throw badRequest("'billId' must be a positive integer.");
+  }
+
+  await ensureBillExists(numericBillId);
+
+  const updated = await updateBillById(numericBillId, {
+    is_printed: true,
+    printed_at: new Date().toISOString(),
+  });
+
+  return updated;
+}
+
 async function getBillDetailsFlow(billId) {
   const numericBillId = toPositiveInt(billId);
   if (!numericBillId) {
@@ -1188,14 +1251,16 @@ async function getBillDetailsFlow(billId) {
     getBillItemsByBillId(numericBillId),
     getPaymentsByBillId(numericBillId),
   ]);
+  const hydratedBill = await attachBillCreator(bill);
+  const hydratedPayments = await attachPaymentReceivers(payments);
 
   const totalPaid = roundCurrency(payments.reduce((sum, row) => sum + Number(row.amount_paid || 0), 0));
   const remainingBalance = roundCurrency(Math.max(0, Number(bill.net_amount || 0) - totalPaid));
 
   return {
-    bill,
+    bill: hydratedBill,
     items,
-    payments,
+    payments: hydratedPayments,
     total_paid: totalPaid,
     remaining_balance: remainingBalance,
   };
@@ -1291,8 +1356,9 @@ async function getBillingAnalyticsFlow() {
 async function listBillingTransactionsFlow(query) {
   const params = parseTransactionListParams(query);
   const rows = await fetchPaymentsWithBillContext();
+  const hydratedRows = await attachPaymentReceivers(rows);
 
-  const allTransactions = rows
+  const allTransactions = hydratedRows
     .map(toTransactionRecord)
     .filter((row) => row.amount > 0)
     .sort((a, b) => new Date(b.paid_at || 0).getTime() - new Date(a.paid_at || 0).getTime());
@@ -1343,8 +1409,9 @@ async function getBillingReportsOverviewFlow(query = {}) {
     fetchPaymentsWithBillContext(),
     fetchBillItemsForReports(),
   ]);
+  const hydratedPaymentRows = await attachPaymentReceivers(paymentRows);
 
-  const transactions = paymentRows
+  const transactions = hydratedPaymentRows
     .map(toTransactionRecord)
     .filter((row) => row.amount > 0)
     .sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime());
@@ -1443,8 +1510,9 @@ function toPaymentListItem(row) {
 
 async function listPaymentsFlow() {
   const rows = await listPaymentsWithBillPatient();
+  const hydratedRows = await attachPaymentReceivers(rows);
   return {
-    items: rows.map(toPaymentListItem),
+    items: hydratedRows.map(toPaymentListItem),
   };
 }
 
@@ -1454,8 +1522,9 @@ async function listPaymentsByBillIdFlow(billId) {
     throw badRequest("'bill_id' must be a positive integer.");
   }
   const rows = await listPaymentsByBillIdWithBillPatient(numericBillId);
+  const hydratedRows = await attachPaymentReceivers(rows);
   return {
-    items: rows.map(toPaymentListItem),
+    items: hydratedRows.map(toPaymentListItem),
   };
 }
 
@@ -1539,6 +1608,7 @@ async function listServiceCatalogFlow() {
 export {
   addBillItemFlow,
   cancelBillFlow,
+  markBillPrintedFlow,
   createBillFlow,
   createPaymentFlow,
   getBillDetailsFlow,

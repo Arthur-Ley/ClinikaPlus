@@ -5,6 +5,7 @@ const BILL_SELECT = [
   "bill_code",
   "bill_type",
   "patient_id",
+  "created_by",
   "doctor_in_charge",
   "final_diagnosis",
   "admission_datetime",
@@ -33,6 +34,14 @@ const BILL_SELECT = [
   "created_at",
   "updated_at",
   "tbl_patients(*)",
+].join(", ");
+
+const APP_USER_SELECT = [
+  "user_id",
+  "first_name",
+  "last_name",
+  "email",
+  "role",
 ].join(", ");
 
 const BILL_ITEM_SELECT = [
@@ -612,7 +621,21 @@ async function listActiveServices() {
   return data || [];
 }
 
+async function getAppUserById(userId) {
+  if (!userId) return null;
+
+  const { data, error } = await supabase
+    .from("tbl_users")
+    .select(APP_USER_SELECT)
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data || null;
+}
+
 export {
+  getAppUserById,
   createBill,
   createBillItem,
   createBillItems,
