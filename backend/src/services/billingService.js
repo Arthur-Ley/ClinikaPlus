@@ -152,6 +152,110 @@ function toIsoDateOnly(value) {
   return parsed.toISOString().slice(0, 10);
 }
 
+function parseDateOnly(value, fieldName) {
+  const normalized = normalizeText(value);
+  if (!normalized) return null;
+
+  const parsed = new Date(`${normalized}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    throw badRequest(`'${fieldName}' must be a valid date.`);
+  }
+
+  return parsed.toISOString().slice(0, 10);
+}
+
+function getTodayDateOnly() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function addDays(dateOnly, days) {
+  const parsed = new Date(`${dateOnly}T00:00:00.000Z`);
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function startOfWeekDateOnly(dateOnly) {
+  const parsed = new Date(`${dateOnly}T00:00:00.000Z`);
+  const day = parsed.getUTCDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  parsed.setUTCDate(parsed.getUTCDate() + diff);
+  return parsed.toISOString().slice(0, 10);
+}
+
+function startOfMonthDateOnly(dateOnly) {
+  const [year, month] = dateOnly.split("-").map(Number);
+  return `${year}-${String(month).padStart(2, "0")}-01`;
+}
+
+function getRangeLabel(startDate, endDate) {
+  const start = new Date(`${startDate}T00:00:00.000Z`);
+  const end = new Date(`${endDate}T00:00:00.000Z`);
+  const formatter = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return `${formatter.format(start)} - ${formatter.format(end)}`;
+}
+
+function parseReportRange(query) {
+  const preset = normalizeText(query?.preset).toLowerCase() || "this_month";
+  let startDate = parseDateOnly(query?.start_date, "start_date");
+  let endDate = parseDateOnly(query?.end_date, "end_date");
+
+  if (!startDate || !endDate) {
+    const today = getTodayDateOnly();
+
+    if (preset === "today") {
+      startDate = today;
+      endDate = today;
+    } else if (preset === "this_week") {
+      startDate = startOfWeekDateOnly(today);
+      endDate = today;
+    } else {
+      startDate = startOfMonthDateOnly(today);
+      endDate = today;
+    }
+  }
+
+  if (startDate > endDate) {
+    throw badRequest("'start_date' must be less than or equal to 'end_date'.");
+  }
+
+  const daySpan = Math.max(
+    1,
+    Math.round(
+      (new Date(`${endDate}T00:00:00.000Z`).getTime() - new Date(`${startDate}T00:00:00.000Z`).getTime())
+        / 86400000
+    ) + 1
+  );
+
+  const previousEndDate = addDays(startDate, -1);
+  const previousStartDate = addDays(previousEndDate, -(daySpan - 1));
+
+  return {
+    preset,
+    startDate,
+    endDate,
+    previousStartDate,
+    previousEndDate,
+    daySpan,
+    label: getRangeLabel(startDate, endDate),
+  };
+}
+
+function isDateWithinRange(dateOnly, startDate, endDate) {
+  return Boolean(dateOnly && dateOnly >= startDate && dateOnly <= endDate);
+}
+
+function getBillActivityDate(bill) {
+  return toIsoDateOnly(bill?.bill_date || bill?.created_at);
+}
+
+function percentageChange(currentValue, previousValue) {
+  if (!previousValue) {
+    return currentValue > 0 ? 100 : 0;
+  }
+
+  return roundCurrency(((currentValue - previousValue) / previousValue) * 100);
+}
+
 function incrementGroupedValue(map, key, amount) {
   map.set(key, roundCurrency((map.get(key) || 0) + amount));
 }
@@ -176,6 +280,12 @@ function formatDayLabel(isoDate) {
   const parsed = new Date(`${isoDate}T00:00:00.000Z`);
   if (Number.isNaN(parsed.getTime())) return isoDate;
   return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function formatWeekLabel(isoDate) {
+  const parsed = new Date(`${isoDate}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) return isoDate;
+  return `Week of ${parsed.toLocaleDateString("en-US", { month: "short", day: "numeric" })}`;
 }
 
 function resolveServiceBucketLabel(item) {
@@ -261,6 +371,84 @@ function toTransactionRecord(row) {
     bill_status: bill?.status || "Paid",
     status: "Paid",
   };
+}
+
+function buildPaymentsByBillId(payments) {
+  const paymentsByBillId = new Map();
+
+  for (const payment of payments) {
+    if (!paymentsByBillId.has(payment.bill_id)) {
+      paymentsByBillId.set(payment.bill_id, []);
+    }
+    paymentsByBillId.get(payment.bill_id).push(payment);
+  }
+
+  return paymentsByBillId;
+}
+
+function buildReportAnalytics(bills, transactions, paymentsByBillId) {
+  const totalPendingBills = bills.filter((bill) => bill.status === "Pending").length;
+  const totalPaidBills = bills.filter((bill) => bill.status === "Paid").length;
+  const totalRevenue = roundCurrency(transactions.reduce((sum, transaction) => sum + transaction.amount, 0));
+  const totalOutstandingBalance = roundCurrency(
+    bills
+      .filter((bill) => bill.status !== "Cancelled")
+      .reduce((sum, bill) => {
+        const billPayments = paymentsByBillId.get(bill.bill_id) || [];
+        const paid = billPayments.reduce((innerSum, payment) => innerSum + Number(payment.amount_paid || 0), 0);
+        return sum + Math.max(Number(bill.net_amount || 0) - paid, 0);
+      }, 0)
+  );
+  const averageBillAmount = transactions.length ? roundCurrency(totalRevenue / transactions.length) : 0;
+
+  return {
+    total_pending_bills: totalPendingBills,
+    total_paid_bills: totalPaidBills,
+    total_transactions: transactions.length,
+    total_revenue: totalRevenue,
+    total_outstanding_balance: totalOutstandingBalance,
+    average_bill_amount: averageBillAmount,
+  };
+}
+
+function getChartGranularity(daySpan) {
+  if (daySpan <= 31) return "day";
+  if (daySpan <= 180) return "week";
+  return "month";
+}
+
+function getStartOfWeekFromDateOnly(dateOnly) {
+  return startOfWeekDateOnly(dateOnly);
+}
+
+function buildRevenueSeries(transactions, granularity) {
+  const grouped = new Map();
+
+  for (const transaction of transactions) {
+    if (!transaction.date) continue;
+
+    const key =
+      granularity === "month"
+        ? transaction.date.slice(0, 7)
+        : granularity === "week"
+          ? getStartOfWeekFromDateOnly(transaction.date)
+          : transaction.date;
+
+    incrementGroupedValue(grouped, key, transaction.amount);
+  }
+
+  return [...grouped.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([rawLabel, value]) => ({
+      label:
+        granularity === "month"
+          ? formatMonthLabel(rawLabel)
+          : granularity === "week"
+            ? formatWeekLabel(rawLabel)
+            : formatDayLabel(rawLabel),
+      value,
+      raw_label: rawLabel,
+    }));
 }
 
 async function ensureBillExists(billId) {
@@ -1214,9 +1402,10 @@ async function listBillingTransactionsFlow(query) {
   };
 }
 
-async function getBillingReportsOverviewFlow() {
-  const [analytics, paymentRows, billItemRows] = await Promise.all([
-    getBillingAnalyticsFlow(),
+async function getBillingReportsOverviewFlow(query = {}) {
+  const range = parseReportRange(query);
+  const [bills, paymentRows, billItemRows] = await Promise.all([
+    fetchAnalyticsBills(),
     fetchPaymentsWithBillContext(),
     fetchBillItemsForReports(),
   ]);
@@ -1227,42 +1416,74 @@ async function getBillingReportsOverviewFlow() {
     .filter((row) => row.amount > 0)
     .sort((a, b) => new Date(a.date || 0).getTime() - new Date(b.date || 0).getTime());
 
-  const revenueByMonthMap = new Map();
-  const revenueByDateMap = new Map();
+  const paymentsByBillId = buildPaymentsByBillId(paymentRows);
+  const filteredTransactions = transactions.filter((transaction) =>
+    isDateWithinRange(transaction.date, range.startDate, range.endDate)
+  );
+  const previousTransactions = transactions.filter((transaction) =>
+    isDateWithinRange(transaction.date, range.previousStartDate, range.previousEndDate)
+  );
+  const filteredBills = bills.filter((bill) =>
+    isDateWithinRange(getBillActivityDate(bill), range.startDate, range.endDate)
+  );
+  const previousBills = bills.filter((bill) =>
+    isDateWithinRange(getBillActivityDate(bill), range.previousStartDate, range.previousEndDate)
+  );
+
+  const analytics = buildReportAnalytics(filteredBills, filteredTransactions, paymentsByBillId);
+  const previousAnalytics = buildReportAnalytics(previousBills, previousTransactions, paymentsByBillId);
   const revenueByMethodMap = new Map();
 
-  for (const transaction of transactions) {
-    if (!transaction.date) continue;
-
-    incrementGroupedValue(revenueByMonthMap, transaction.date.slice(0, 7), transaction.amount);
-    incrementGroupedValue(revenueByDateMap, transaction.date, transaction.amount);
+  for (const transaction of filteredTransactions) {
     incrementGroupedValue(revenueByMethodMap, transaction.method, transaction.amount);
   }
 
   const revenueByServiceMap = new Map();
+  const filteredBillIds = new Set(filteredTransactions.map((transaction) => transaction.bill_id));
   for (const item of billItemRows) {
     const bill = Array.isArray(item?.tbl_bills) ? item.tbl_bills[0] : item?.tbl_bills;
-    if (bill?.status !== "Paid") continue;
+    if (bill?.status !== "Paid" || !filteredBillIds.has(item.bill_id)) continue;
 
     const label = resolveServiceBucketLabel(item);
     incrementGroupedValue(revenueByServiceMap, label, Number(item?.subtotal || 0));
   }
 
+  const chartGranularity = getChartGranularity(range.daySpan);
+
   return {
     analytics,
+    comparison_analytics: previousAnalytics,
+    date_range: {
+      preset: range.preset,
+      start_date: range.startDate,
+      end_date: range.endDate,
+      previous_start_date: range.previousStartDate,
+      previous_end_date: range.previousEndDate,
+      label: range.label,
+      granularity: chartGranularity,
+    },
     charts: {
-      revenue_by_month: takeLastSortedEntries(revenueByMonthMap, 4, formatMonthLabel),
-      revenue_by_date: takeLastSortedEntries(revenueByDateMap, 7, formatDayLabel),
+      revenue_by_period: buildRevenueSeries(filteredTransactions, chartGranularity),
+      revenue_by_date: buildRevenueSeries(filteredTransactions, "day").slice(-Math.min(range.daySpan, 14)),
       revenue_by_method: [...revenueByMethodMap.entries()]
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 4)
+        .slice(0, 5)
         .map(([label, value]) => ({ label, value })),
       revenue_by_service: [...revenueByServiceMap.entries()]
         .sort((a, b) => b[1] - a[1])
-        .slice(0, 4)
+        .slice(0, 5)
         .map(([label, value]) => ({ label, value })),
     },
-    recent_transactions: [...transactions]
+    trends: {
+      total_revenue_pct: percentageChange(analytics.total_revenue, previousAnalytics.total_revenue),
+      total_transactions_pct: percentageChange(analytics.total_transactions, previousAnalytics.total_transactions),
+      total_outstanding_balance_pct: percentageChange(
+        analytics.total_outstanding_balance,
+        previousAnalytics.total_outstanding_balance
+      ),
+      average_bill_amount_pct: percentageChange(analytics.average_bill_amount, previousAnalytics.average_bill_amount),
+    },
+    recent_transactions: [...filteredTransactions]
       .sort((a, b) => new Date(b.paid_at || 0).getTime() - new Date(a.paid_at || 0).getTime())
       .slice(0, 5),
   };

@@ -308,7 +308,7 @@ async function listPaymentsForBills(billIds) {
 async function fetchAnalyticsBills() {
   const { data, error } = await supabase
     .from("tbl_bills")
-    .select("bill_id, net_amount, total_amount, status");
+    .select("bill_id, net_amount, total_amount, status, bill_date, created_at");
 
   if (error) throw error;
   return data || [];
