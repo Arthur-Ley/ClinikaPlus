@@ -153,7 +153,6 @@ const BILL_QUEUE_PAGE_SIZE = 10;
 function toAmount(total: string) { const p = Number(total.replace(/[^\d.-]/g, '')); return Number.isFinite(p) ? p : 0; }
 function formatPhp(value: number) { return `PHP ${Math.round(value).toLocaleString()}`; }
 function formatDateForTable(value: string) { const p = new Date(value); if (Number.isNaN(p.getTime())) return value; return p.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }); }
-function formatDateLong(value: string) { const p = new Date(value); if (Number.isNaN(p.getTime())) return value; return p.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }); }
 function formatDateMed(value: string) { const p = new Date(value); if (Number.isNaN(p.getTime())) return value; return p.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }); }
 function escapeHtml(value: string) { return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;'); }
 function parsePositiveInt(value: string) { const n = value.trim(); if (!/^\d+$/.test(n)) return null; const p = Number(n); if (!Number.isInteger(p) || p <= 0) return null; return p; }
@@ -193,7 +192,6 @@ function toDateTimeDisplayNoTimezoneShift(value: string) {
   }
   return toDateTimeDisplay(value);
 }
-function toSortRank(status: BillStatus) { if (status === 'Pending') return 0; if (status === 'Paid') return 1; return 2; }
 function normalizeBreakdownType(service: ServiceItem) {
   if (service.type === 'medication') return 'Medications';
   const raw = (service.serviceType || '').trim().toLowerCase();
@@ -965,11 +963,6 @@ export default function BillingAndPayments() {
   }
 
   function removeService(index: number) { setServices(prev => prev.filter((_, i) => i !== index)); }
-
-  function handleCreateStatusChange(value: BillStatus) {
-    setBillStatusInput(value);
-    setBillIdInput(toAutoIds(value, billingRecords).billId);
-  }
 
   async function handleSubmitBill() {
     try {

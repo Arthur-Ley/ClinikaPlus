@@ -77,8 +77,8 @@ export async function getBillingTransactions(req, res) {
   return res.status(200).json(result);
 }
 
-export async function getBillingReportsOverview(_req, res) {
-  const result = await getBillingReportsOverviewFlow();
+export async function getBillingReportsOverview(req, res) {
+  const result = await getBillingReportsOverviewFlow(req.query);
   return res.status(200).json(result);
 }
 
