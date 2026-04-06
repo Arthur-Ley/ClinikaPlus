@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { authenticateRequest } from "../middlewares/authenticateRequest.js";
 import { supplierRouter } from "../modules/suppliers/supplier.routes.js";
 import { authRouter } from "./auth.js";
 import { billingRouter } from "./billing.js";
@@ -14,6 +15,7 @@ export const apiRouter = Router();
 
 apiRouter.use("/health", healthRouter);
 apiRouter.use("/auth", authRouter);
+apiRouter.use(authenticateRequest);
 apiRouter.use("/overview", overviewRouter);
 apiRouter.use("/inventory-alerts", inventoryAlertRouter);
 apiRouter.use("/medications", medicationRouter);

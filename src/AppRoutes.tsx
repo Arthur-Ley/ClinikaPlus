@@ -1,5 +1,7 @@
-import { createBrowserRouter, RouterProvider } from "react-router-dom";
+import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 import { ProtectedRoute, PublicOnlyRoute } from "./components/AuthGuards";
+import { BillingPaymentsProvider } from "./context/BillingPaymentsContext";
+import { GlobalSearchDataProvider } from "./context/GlobalSearchDataContext";
 import MainLayout from "./layouts/MainLayout";
 import Dashboard from "./pages/Dashboard";
 import LandingPage from "./pages/LandingPage";
@@ -11,6 +13,16 @@ import RegisterPage from "./pages/login and register/RegisterPage";
 import CurrentStocks from "./pages/pharmacy/CurrentStocks";
 import RestockSuppliers from "./pages/pharmacy/RestockSuppliers";
 import Settings from "./pages/Settings";
+
+function ProtectedAppProviders() {
+  return (
+    <BillingPaymentsProvider>
+      <GlobalSearchDataProvider>
+        <Outlet />
+      </GlobalSearchDataProvider>
+    </BillingPaymentsProvider>
+  );
+}
 
 const router = createBrowserRouter([
   {
@@ -27,6 +39,9 @@ const router = createBrowserRouter([
   {
     element: <ProtectedRoute />,
     children: [
+      {
+        element: <ProtectedAppProviders />,
+        children: [
       {
         path: "/",
         element: <MainLayout />,
@@ -47,6 +62,8 @@ const router = createBrowserRouter([
           { path: "transactions", element: <Transactions /> },
           { path: "reports", element: <RevenueReports /> },
           { path: "settings", element: <Settings /> },
+        ],
+      },
         ],
       },
     ],
