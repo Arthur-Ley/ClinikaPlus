@@ -7,7 +7,6 @@ import {
   CircleDollarSign,
   Coins,
   HandCoins,
-  LineChart,
   LoaderCircle,
   PieChart,
   TrendingDown,
@@ -144,34 +143,43 @@ function getTrendIcon(value: number) {
   return value < 0 ? TrendingDown : TrendingUp;
 }
 
-function buildPolylinePoints(data: ChartPoint[]) {
-  if (data.length === 0) return { points: [], line: '', area: '' };
-
-  const width = 520;
-  const height = 220;
-  const paddingX = 24;
-  const paddingY = 18;
-  const innerWidth = width - paddingX * 2;
-  const innerHeight = height - paddingY * 2;
-  const max = Math.max(...data.map((item) => item.value), 1);
-  const step = data.length === 1 ? 0 : innerWidth / (data.length - 1);
-
-  const points = data.map((item, index) => {
-    const x = paddingX + step * index;
-    const y = height - paddingY - (item.value / max) * innerHeight;
-    return { ...item, x, y };
-  });
-
-  const line = points.map((point) => `${point.x},${point.y}`).join(' ');
-  const area = `${paddingX},${height - paddingY} ${line} ${paddingX + innerWidth},${height - paddingY}`;
-
-  return { points, line, area };
+function truncateLabel(value: string, max = 18) {
+  if (value.length <= max) return value;
+  return `${value.slice(0, Math.max(0, max - 3))}...`;
 }
 
 function EmptyChartState({ message }: { message: string }) {
   return (
     <div className="flex h-[240px] items-center justify-center rounded-3xl border border-dashed border-slate-300 bg-slate-50/70 px-6 text-center text-sm text-slate-500">
       {message}
+    </div>
+  );
+}
+
+function ChartStat({
+  label,
+  value,
+  tone = 'slate',
+}: {
+  label: string;
+  value: string;
+  tone?: 'slate' | 'sky' | 'amber' | 'emerald' | 'violet';
+}) {
+  const toneClass =
+    tone === 'sky'
+      ? 'border-sky-100 bg-sky-50 text-sky-900'
+      : tone === 'amber'
+        ? 'border-amber-100 bg-amber-50 text-amber-900'
+        : tone === 'emerald'
+          ? 'border-emerald-100 bg-emerald-50 text-emerald-900'
+          : tone === 'violet'
+            ? 'border-violet-100 bg-violet-50 text-violet-900'
+            : 'border-slate-200 bg-slate-50 text-slate-900';
+
+  return (
+    <div className={`rounded-2xl border px-3 py-3 ${toneClass}`}>
+      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</p>
+      <p className="mt-2 text-lg font-semibold">{value}</p>
     </div>
   );
 }
@@ -306,11 +314,13 @@ function ChartShell({
   icon: Icon,
   title,
   subtitle,
+  headerContent,
   children,
 }: {
   icon: ComponentType<{ className?: string }>;
   title: string;
   subtitle: string;
+  headerContent?: ReactNode;
   children: ReactNode;
 }) {
   return (
@@ -326,6 +336,7 @@ function ChartShell({
           <p className="mt-2 text-sm text-slate-500">{subtitle}</p>
         </div>
       </div>
+      {headerContent ? <div className="mb-5 grid grid-cols-1 gap-3 md:grid-cols-3">{headerContent}</div> : null}
       {children}
     </section>
   );
@@ -334,104 +345,62 @@ function ChartShell({
 function RevenueOverTimeChart({ data, granularity }: { data: ChartPoint[]; granularity: string }) {
   const max = Math.max(...data.map((item) => item.value), 1);
   const title = granularity === 'month' ? 'Revenue by Month' : granularity === 'week' ? 'Revenue by Week' : 'Revenue by Day';
+  const total = data.reduce((sum, item) => sum + item.value, 0);
+  const peak = data.reduce<ChartPoint | null>((best, item) => (!best || item.value > best.value ? item : best), null);
+  const average = data.length ? total / data.length : 0;
 
   return (
     <ChartShell
       icon={BarChart3}
       title={title}
       subtitle="The selected date range drives every bar, so this view stays aligned with the cards above."
+      headerContent={
+        <>
+          <ChartStat label="Periods" value={String(data.length)} />
+          <ChartStat label="Peak" value={peak ? formatCompactMoney(peak.value) : 'PHP 0'} tone="sky" />
+          <ChartStat label="Average" value={formatCompactMoney(average)} tone="emerald" />
+        </>
+      }
     >
       {data.length === 0 ? (
         <EmptyChartState message="No revenue points were found for this date range." />
       ) : (
         <div className="overflow-x-auto pb-1">
-          <div className="flex min-w-[560px] items-end gap-3 rounded-[26px] bg-[linear-gradient(180deg,rgba(14,165,233,0.06),rgba(255,255,255,0.94))] p-4">
-            {data.map((item) => {
-              const height = Math.max(24, (item.value / max) * 220);
-              return (
-                <div key={`${item.raw_label || item.label}-${item.value}`} className="group flex min-w-[64px] flex-1 flex-col items-center gap-2">
-                  <div className="relative flex h-[240px] w-full items-end justify-center overflow-visible">
-                    <div className="pointer-events-none absolute bottom-[calc(100%+12px)] z-20 w-48 rounded-2xl border border-slate-200 bg-slate-950 px-3 py-2 text-left text-xs text-white opacity-0 shadow-2xl transition duration-200 group-hover:opacity-100">
-                      <div className="font-semibold">{item.raw_label || item.label}</div>
-                      <div className="mt-1 text-slate-300">Revenue: {formatMoney(item.value)}</div>
-                    </div>
-                    <div
-                      className="w-full rounded-t-[22px] bg-[linear-gradient(180deg,#38bdf8_0%,#0f766e_100%)] shadow-[0_18px_30px_rgba(14,165,233,0.25)] transition-[height,transform] duration-500 group-hover:-translate-y-1"
-                      style={{ height: `${height}px` }}
-                    />
-                  </div>
-                  <p className="text-center text-xs font-semibold text-slate-700">{item.label}</p>
-                  <p className="text-xs text-slate-400">{formatCompactMoney(item.value)}</p>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </ChartShell>
-  );
-}
-
-function DailyCollectionsChart({ data }: { data: ChartPoint[] }) {
-  const { points, line, area } = buildPolylinePoints(data);
-  const max = Math.max(...data.map((item) => item.value), 1);
-
-  return (
-    <ChartShell
-      icon={LineChart}
-      title="Daily Collections"
-      subtitle="Hover over any point to inspect exact values and the date behind it."
-    >
-      {data.length === 0 ? (
-        <EmptyChartState message="No daily collection activity is available for this range." />
-      ) : data.length === 1 ? (
-        <div className="rounded-[26px] border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">
-          A single payment was found on {data[0].raw_label || data[0].label} for {formatMoney(data[0].value)}.
-        </div>
-      ) : (
-        <div className="rounded-[26px] bg-[radial-gradient(circle_at_top,rgba(245,158,11,0.18),transparent_58%),linear-gradient(180deg,rgba(255,255,255,0.98),rgba(255,247,237,0.95))] p-4">
-          <div className="relative h-[260px] overflow-visible rounded-[22px] border border-amber-100 bg-white/80">
-            <svg viewBox="0 0 520 220" className="h-full w-full">
-              <defs>
-                <linearGradient id="dailyCollectionsArea" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.35" />
-                  <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.03" />
-                </linearGradient>
-              </defs>
-              {[0, 0.25, 0.5, 0.75, 1].map((tick) => {
-                const y = 220 - 18 - tick * (220 - 36);
-                return <line key={tick} x1="24" y1={y} x2="496" y2={y} stroke="rgba(148,163,184,0.18)" strokeDasharray="4 6" />;
-              })}
-              <polygon points={area} fill="url(#dailyCollectionsArea)" />
-              <polyline fill="none" stroke="#d97706" strokeWidth="4" strokeLinejoin="round" strokeLinecap="round" points={line} />
-              {points.map((point) => (
-                <circle key={point.raw_label || point.label} cx={point.x} cy={point.y} r="6" fill="#b45309" stroke="#fff7ed" strokeWidth="3" />
-              ))}
-            </svg>
-
-            {points.map((point) => (
+          <div className="min-w-[560px] rounded-[26px] bg-[linear-gradient(180deg,rgba(14,165,233,0.08),rgba(255,255,255,0.94))] p-4">
+            <div className="relative flex items-end gap-3">
               <div
-                key={`${point.raw_label || point.label}-tooltip`}
-                className="group absolute"
-                style={{ left: `${(point.x / 520) * 100}%`, top: `${(point.y / 220) * 100}%`, transform: 'translate(-50%, -50%)' }}
-              >
-                <div className="h-6 w-6 rounded-full" />
-                <div className="pointer-events-none absolute bottom-[calc(100%+12px)] left-1/2 z-20 w-52 -translate-x-1/2 rounded-2xl border border-slate-200 bg-slate-950 px-3 py-2 text-xs text-white opacity-0 shadow-2xl transition duration-200 group-hover:opacity-100">
-                  <div className="font-semibold">{point.raw_label || point.label}</div>
-                  <div className="mt-1 text-slate-300">Collections: {formatMoney(point.value)}</div>
-                  <div className="mt-1 text-slate-400">{Math.round((point.value / max) * 100)}% of peak daily value</div>
-                </div>
+                className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-slate-300"
+                style={{ bottom: `${Math.max(24, (average / max) * 220) + 16}px` }}
+              />
+              <div className="pointer-events-none absolute right-0 top-0 rounded-full bg-white/80 px-2 py-1 text-[11px] font-semibold text-slate-500 shadow-sm">
+                Avg {formatCompactMoney(average)}
               </div>
-            ))}
-          </div>
-
-          <div className="mt-4 grid grid-cols-2 gap-2 md:grid-cols-4">
-            {data.slice(-4).map((item) => (
-              <div key={`${item.raw_label || item.label}-chip`} className="rounded-2xl border border-amber-100 bg-white/80 px-3 py-2 text-sm text-slate-600">
-                <div className="font-semibold text-slate-800">{item.label}</div>
-                <div className="mt-1 text-xs text-slate-500">{formatMoney(item.value)}</div>
-              </div>
-            ))}
+              {data.map((item) => {
+                const height = Math.max(24, (item.value / max) * 220);
+                const isPeak = peak?.label === item.label && peak?.value === item.value;
+                return (
+                  <div key={`${item.raw_label || item.label}-${item.value}`} className="group flex min-w-[64px] flex-1 flex-col items-center gap-2">
+                    <div className="relative flex h-[240px] w-full items-end justify-center overflow-visible">
+                      <div className="pointer-events-none absolute bottom-[calc(100%+12px)] z-20 w-48 rounded-2xl border border-slate-200 bg-slate-950 px-3 py-2 text-left text-xs text-white opacity-0 shadow-2xl transition duration-200 group-hover:opacity-100">
+                        <div className="font-semibold">{item.raw_label || item.label}</div>
+                        <div className="mt-1 text-slate-300">Revenue: {formatMoney(item.value)}</div>
+                        <div className="mt-1 text-slate-400">{average > 0 ? `${((item.value / average) * 100).toFixed(0)}% of average` : 'No average yet'}</div>
+                      </div>
+                      <div
+                        className={`w-full rounded-t-[22px] ${
+                          isPeak
+                            ? 'bg-[linear-gradient(180deg,#0ea5e9_0%,#1d4ed8_100%)] shadow-[0_18px_30px_rgba(14,165,233,0.35)]'
+                            : 'bg-[linear-gradient(180deg,#38bdf8_0%,#0f766e_100%)] shadow-[0_18px_30px_rgba(14,165,233,0.25)]'
+                        } transition-[height,transform] duration-500 group-hover:-translate-y-1`}
+                        style={{ height: `${height}px` }}
+                      />
+                    </div>
+                    <p className="text-center text-xs font-semibold text-slate-700">{item.label}</p>
+                    <p className="text-xs text-slate-400">{formatCompactMoney(item.value)}</p>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
@@ -441,53 +410,65 @@ function DailyCollectionsChart({ data }: { data: ChartPoint[] }) {
 
 function PaymentMethodChart({ data }: { data: ChartPoint[] }) {
   const total = data.reduce((sum, item) => sum + item.value, 0);
-  const palette = [
-    'from-sky-400 to-sky-600',
-    'from-emerald-400 to-emerald-600',
-    'from-amber-400 to-orange-500',
-    'from-fuchsia-400 to-violet-600',
-    'from-slate-400 to-slate-600',
-  ];
+  const palette = ['from-sky-400 to-sky-600', 'from-emerald-400 to-emerald-600', 'from-amber-400 to-orange-500', 'from-fuchsia-400 to-violet-600', 'from-slate-400 to-slate-600'];
+  const topMethod = data[0];
+  const visibleData = data.filter((item) => item.value > 0);
+
+  if (visibleData.length <= 1) return null;
 
   return (
     <ChartShell
       icon={PieChart}
       title="Payment Method Distribution"
       subtitle="Hover over each segment or legend row for a clearer breakdown of the selected range."
+      headerContent={
+        <>
+          <ChartStat label="Methods" value={String(data.length)} />
+          <ChartStat
+            label="Top Method"
+            value={topMethod ? truncateLabel(topMethod.label, 14) : 'N/A'}
+            tone="emerald"
+          />
+          <ChartStat label="Revenue Covered" value={formatMoney(total)} tone="sky" />
+        </>
+      }
     >
-      {data.length === 0 ? (
+      {visibleData.length === 0 ? (
         <EmptyChartState message="No payment methods are available because there are no transactions in this range." />
       ) : (
         <div className="space-y-5 rounded-[26px] bg-[linear-gradient(180deg,rgba(236,253,245,0.96),rgba(255,255,255,0.98))] p-4">
-          <div className="flex h-7 w-full overflow-hidden rounded-full bg-slate-100 shadow-inner">
-            {data.map((item, index) => {
+          <div className="space-y-3">
+            {visibleData.map((item, index) => {
               const width = total > 0 ? (item.value / total) * 100 : 0;
               return (
-                <div key={item.label} className="group relative h-full" style={{ width: `${width}%` }}>
-                  <div className={`h-full w-full bg-gradient-to-r ${palette[index % palette.length]} transition-transform duration-300 group-hover:scale-y-110`} />
-                  <div className="pointer-events-none absolute bottom-[calc(100%+12px)] left-1/2 z-20 w-48 -translate-x-1/2 rounded-2xl border border-slate-200 bg-slate-950 px-3 py-2 text-xs text-white opacity-0 shadow-2xl transition duration-200 group-hover:opacity-100">
-                    <div className="font-semibold">{item.label}</div>
-                    <div className="mt-1 text-slate-300">{formatMoney(item.value)}</div>
-                    <div className="mt-1 text-slate-400">{total > 0 ? ((item.value / total) * 100).toFixed(1) : '0.0'}% share</div>
+                <div
+                  key={`${item.label}-legend`}
+                  className="group rounded-2xl border border-transparent bg-white/80 px-3 py-3 transition hover:border-slate-200 hover:bg-white"
+                >
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <span className={`h-3.5 w-3.5 rounded-full bg-gradient-to-r ${palette[index % palette.length]}`} />
+                      <div>
+                        <p className="font-semibold text-slate-800">{item.label}</p>
+                        <p className="text-xs text-slate-500">{total > 0 ? ((item.value / total) * 100).toFixed(1) : '0.0'}% of filtered revenue</p>
+                      </div>
+                    </div>
+                    <p className="text-sm font-semibold text-slate-700">{formatMoney(item.value)}</p>
+                  </div>
+                  <div className="relative h-3 overflow-visible rounded-full bg-slate-100">
+                    <div className="pointer-events-none absolute bottom-[calc(100%+10px)] right-0 z-20 w-44 rounded-2xl border border-slate-200 bg-slate-950 px-3 py-2 text-xs text-white opacity-0 shadow-2xl transition duration-200 group-hover:opacity-100">
+                      <div className="font-semibold">{item.label}</div>
+                      <div className="mt-1 text-slate-300">{formatMoney(item.value)}</div>
+                      <div className="mt-1 text-slate-400">{total > 0 ? `${((item.value / total) * 100).toFixed(1)}% share` : '0.0% share'}</div>
+                    </div>
+                    <div
+                      className={`h-full rounded-full bg-gradient-to-r ${palette[index % palette.length]} transition-transform duration-200 group-hover:scale-y-110`}
+                      style={{ width: `${Math.max(width, width > 0 ? 10 : 0)}%` }}
+                    />
                   </div>
                 </div>
               );
             })}
-          </div>
-
-          <div className="space-y-2">
-            {data.map((item, index) => (
-              <div key={`${item.label}-legend`} className="group flex items-center justify-between rounded-2xl border border-transparent bg-white/80 px-3 py-3 transition hover:border-slate-200 hover:bg-white">
-                <div className="flex items-center gap-3">
-                  <span className={`h-3.5 w-3.5 rounded-full bg-gradient-to-r ${palette[index % palette.length]}`} />
-                  <div>
-                    <p className="font-semibold text-slate-800">{item.label}</p>
-                    <p className="text-xs text-slate-500">{total > 0 ? ((item.value / total) * 100).toFixed(1) : '0.0'}% of filtered revenue</p>
-                  </div>
-                </div>
-                <p className="text-sm font-semibold text-slate-700">{formatMoney(item.value)}</p>
-              </div>
-            ))}
           </div>
         </div>
       )}
@@ -497,25 +478,47 @@ function PaymentMethodChart({ data }: { data: ChartPoint[] }) {
 
 function RevenueByServiceChart({ data }: { data: ChartPoint[] }) {
   const max = Math.max(...data.map((item) => item.value), 1);
+  const total = data.reduce((sum, item) => sum + item.value, 0);
+  const topService = data[0];
 
   return (
     <ChartShell
       icon={BarChartHorizontal}
       title="Revenue by Service"
       subtitle="This list focuses on the highest-contributing services tied to the current filtered activity."
+      headerContent={
+        <>
+          <ChartStat label="Services" value={String(data.length)} />
+          <ChartStat label="Top Service" value={topService ? truncateLabel(topService.label, 14) : 'N/A'} tone="violet" />
+          <ChartStat label="Service Revenue" value={formatMoney(total)} tone="sky" />
+        </>
+      }
     >
       {data.length === 0 ? (
         <EmptyChartState message="No service-level revenue was found for the current date range." />
       ) : (
         <div className="space-y-3 rounded-[26px] bg-[linear-gradient(180deg,rgba(238,242,255,0.92),rgba(255,255,255,0.98))] p-4">
+          <div className="rounded-2xl border border-indigo-100 bg-white/80 px-4 py-3 text-sm text-slate-600">
+            {data.length < 3
+              ? 'There are only a few billable service entries in this range, so the service breakdown is still forming.'
+              : `${topService?.label || 'Top service'} currently leads with ${topService && total > 0 ? ((topService.value / total) * 100).toFixed(1) : '0.0'}% of service revenue.`}
+          </div>
           {data.map((item, index) => (
             <div key={item.label} className="group rounded-2xl bg-white/80 p-3 transition hover:bg-white">
               <div className="mb-2 flex items-center justify-between gap-3">
-                <div>
-                  <p className="font-semibold text-slate-800">{item.label}</p>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600">
+                      {index + 1}
+                    </span>
+                    <p className="truncate font-semibold text-slate-800">{item.label}</p>
+                  </div>
                   <p className="text-xs text-slate-500">{((item.value / max) * 100).toFixed(0)}% of top service value</p>
                 </div>
-                <p className="text-sm font-semibold text-slate-700">{formatMoney(item.value)}</p>
+                <div className="text-right">
+                  <p className="text-sm font-semibold text-slate-700">{formatMoney(item.value)}</p>
+                  <p className="text-xs text-slate-400">{total > 0 ? `${((item.value / total) * 100).toFixed(1)}% share` : '0.0% share'}</p>
+                </div>
               </div>
               <div className="relative h-3 overflow-visible rounded-full bg-slate-100">
                 <div
@@ -535,19 +538,25 @@ function RevenueByServiceChart({ data }: { data: ChartPoint[] }) {
 
 function RevenueReportsSkeleton() {
   return (
-    <div className="space-y-5 animate-pulse">
-      <div className="h-36 rounded-[28px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]" />
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {[1, 2, 3, 4].map((item) => (
-          <div key={item} className="h-48 rounded-[28px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]" />
-        ))}
+    <section className="space-y-5 rounded-2xl bg-gray-300/80 p-5 animate-pulse">
+      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
+        <div className="h-36 rounded-[28px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]" />
       </div>
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        {[1, 2, 3, 4].map((item) => (
-          <div key={item} className="h-[360px] rounded-[30px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]" />
-        ))}
+      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {[1, 2, 3, 4].map((item) => (
+            <div key={item} className="h-48 rounded-[28px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]" />
+          ))}
+        </div>
       </div>
-    </div>
+      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
+        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          {[1, 2].map((item) => (
+            <div key={item} className="h-[360px] rounded-[30px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]" />
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -711,50 +720,46 @@ export default function RevenueReports() {
   }, [analytics, charts]);
 
   return (
-    <div className="flex min-h-full flex-col">
-      <section className="flex min-h-0 flex-1 flex-col rounded-[32px] bg-[radial-gradient(circle_at_top,rgba(56,189,248,0.14),transparent_38%),linear-gradient(180deg,rgba(241,245,249,0.95),rgba(226,232,240,0.72))] p-5">
-        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto">
-          {isLoading ? (
-            <RevenueReportsSkeleton />
-          ) : (
-            <>
-              <DateFilterBar
-                preset={preset}
-                onPresetChange={setPreset}
-                customStart={customStart}
-                customEnd={customEnd}
-                onCustomStartChange={setCustomStart}
-                onCustomEndChange={setCustomEnd}
-                isRefreshing={isRefreshing}
-                rangeLabel={rangeLabel}
-                validationMessage={validationMessage}
-              />
+    <div className="space-y-5">
+      {isLoading ? (
+        <RevenueReportsSkeleton />
+      ) : (
+        <section className="space-y-5 rounded-2xl bg-gray-300/80 p-5">
+          <DateFilterBar
+            preset={preset}
+            onPresetChange={setPreset}
+            customStart={customStart}
+            customEnd={customEnd}
+            onCustomStartChange={setCustomStart}
+            onCustomEndChange={setCustomEnd}
+            isRefreshing={isRefreshing}
+            rangeLabel={rangeLabel}
+            validationMessage={validationMessage}
+          />
 
-              {loadError && <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{loadError}</div>}
+          {loadError && <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{loadError}</div>}
 
-              {!loadError && !hasAnyData && (
-                <div className="rounded-[28px] border border-dashed border-slate-300 bg-white/70 px-6 py-12 text-center shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
-                  <p className="text-lg font-semibold text-slate-800">No report data for this date range</p>
-                  <p className="mt-2 text-sm text-slate-500">Try a wider date range or switch from a custom filter to this month.</p>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-                {cards.map((card) => (
-                  <SummaryCard key={card.title} card={card} isRefreshing={isRefreshing} />
-                ))}
-              </div>
-
-              <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-                <RevenueOverTimeChart data={charts.revenue_by_period} granularity={granularity} />
-                <DailyCollectionsChart data={charts.revenue_by_date} />
-                <PaymentMethodChart data={charts.revenue_by_method} />
-                <RevenueByServiceChart data={charts.revenue_by_service} />
-              </div>
-            </>
+          {!loadError && !hasAnyData && (
+            <div className="rounded-[28px] border border-dashed border-slate-300 bg-white/70 px-6 py-12 text-center shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+              <p className="text-lg font-semibold text-slate-800">No report data for this date range</p>
+              <p className="mt-2 text-sm text-slate-500">Try a wider date range or switch from a custom filter to this month.</p>
+            </div>
           )}
-        </div>
-      </section>
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {cards.map((card) => (
+              <SummaryCard key={card.title} card={card} isRefreshing={isRefreshing} />
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+            <RevenueOverTimeChart data={charts.revenue_by_period} granularity={granularity} />
+            <RevenueByServiceChart data={charts.revenue_by_service} />
+          </div>
+
+          <PaymentMethodChart data={charts.revenue_by_method} />
+        </section>
+      )}
     </div>
   );
 }
