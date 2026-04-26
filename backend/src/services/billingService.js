@@ -21,7 +21,7 @@ import {
   getMedicationById,
   getNextCode,
   getPaymentsByBillId,
-  hasPatientById,
+  findPatientUuidByIdentifier,
   hasAnyPayment,
   createPrescriptionUsageLog,
   deletePrescriptionUsageLogById,
@@ -658,14 +658,15 @@ async function createPaymentWithGeneratedCode(payload) {
 async function createBillFlow(payload, currentUserId = null) {
   const rawPatientId = payload?.patient_id;
   const hasPatientId = rawPatientId !== undefined && rawPatientId !== null && String(rawPatientId).trim() !== "";
-  const patientId = hasPatientId ? toPositiveInt(rawPatientId) : null;
+  const patientId = hasPatientId ? String(rawPatientId).trim() : null;
   if (hasPatientId && !patientId) {
-    throw badRequest("'patient_id' must be a positive integer when provided.");
+    throw badRequest("'patient_id' is required when provided.");
   }
 
+  let resolvedPatientUuid = null;
   if (patientId) {
-    const patientExists = await hasPatientById(patientId);
-    if (!patientExists) {
+    resolvedPatientUuid = await findPatientUuidByIdentifier(patientId);
+    if (!resolvedPatientUuid) {
       throw badRequest("Invalid 'patient_id'. Patient does not exist.");
     }
   }
@@ -713,7 +714,7 @@ async function createBillFlow(payload, currentUserId = null) {
 
   try {
     bill = await createBillWithGeneratedCode({
-      patient_id: patientId,
+      patient_id: resolvedPatientUuid,
       created_by: currentUserId,
       doctor_in_charge: toNullableText(payload?.doctor_in_charge),
       final_diagnosis: toNullableText(payload?.final_diagnosis),
