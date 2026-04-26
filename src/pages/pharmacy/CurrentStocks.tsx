@@ -82,6 +82,13 @@ type CreateMedicationResponse = {
     last_updated: string;
   };
 };
+type CreateCategoryResponse = {
+  category: {
+    category_id: number;
+    category_name: string;
+    description: string | null;
+  };
+};
 
 // ─── API response types (replaces `any`) ────────────────────────────────────
 
@@ -143,6 +150,11 @@ type NewMedicationForm = {
   supplierId: string;
 };
 type AddMedicationFieldErrors = Partial<Record<keyof NewMedicationForm, string>>;
+type NewCategoryForm = {
+  categoryName: string;
+  description: string;
+};
+type AddCategoryFieldErrors = Partial<Record<keyof NewCategoryForm, string>>;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -155,6 +167,9 @@ const MEDICATION_UPDATE_TIMEOUT_MS = 9000;
 const MEDICATION_UPDATE_RETRY_LIMIT = 2;
 const RETRYABLE_HTTP_STATUS = new Set([408, 425, 429, 500, 502, 503, 504]);
 const ADD_MEDICATION_TIMEOUT_MS = 12000;
+const ADD_CATEGORY_TIMEOUT_MS = 12000;
+const ADD_MEDICATION_ICON_URL = 'https://api.iconify.design/mdi:pill.svg?color=%23475569';
+const ADD_CATEGORY_ICON_URL = 'https://api.iconify.design/mdi:shape-outline.svg?color=%23475569';
 const EMPTY_NEW_MEDICATION: NewMedicationForm = {
   name: '',
   categoryId: '',
@@ -167,6 +182,10 @@ const EMPTY_NEW_MEDICATION: NewMedicationForm = {
   reorder: '',
   expiry: '',
   supplierId: '',
+};
+const EMPTY_NEW_CATEGORY: NewCategoryForm = {
+  categoryName: '',
+  description: '',
 };
 
 const severityColors: Record<Severity, string> = {
@@ -348,15 +367,22 @@ export default function CurrentStocks() {
   const [medicationEditError, setMedicationEditError] = useState('');
   const [medicationDraft, setMedicationDraft] = useState({ name: '', categoryId: '', form: '', strength: '', storageRequirement: '', stock: '', reorder: '', supplierId: '' });
   const [medicationToast, setMedicationToast] = useState<ToastState>(null);
+  const [isAddChoiceOpen, setIsAddChoiceOpen] = useState(false);
   const [isAddMedicationOpen, setIsAddMedicationOpen] = useState(false);
+  const [isAddCategoryOpen, setIsAddCategoryOpen] = useState(false);
   const [isAddedSuccessOpen, setIsAddedSuccessOpen] = useState(false);
+  const [addSuccessMessage, setAddSuccessMessage] = useState('');
   const [isSubmittingMedication, setIsSubmittingMedication] = useState(false);
+  const [isSubmittingCategory, setIsSubmittingCategory] = useState(false);
   const [formError, setFormError] = useState('');
   const [addMedicationFieldErrors, setAddMedicationFieldErrors] = useState<AddMedicationFieldErrors>({});
+  const [categoryFormError, setCategoryFormError] = useState('');
+  const [addCategoryFieldErrors, setAddCategoryFieldErrors] = useState<AddCategoryFieldErrors>({});
   const [categoryDropdown, setCategoryDropdown] = useState<CategoryOption[]>([]);
   const [supplierDropdown, setSupplierDropdown] = useState<SupplierOption[]>([]);
   const [restockSupplierDropdown, setRestockSupplierDropdown] = useState<SupplierOption[]>([]);
   const [newMedication, setNewMedication] = useState<NewMedicationForm>(EMPTY_NEW_MEDICATION);
+  const [newCategory, setNewCategory] = useState<NewCategoryForm>(EMPTY_NEW_CATEGORY);
 
   const [restockTarget, setRestockTarget] = useState<InventoryAlert | null>(null);
   const [restockDetails, setRestockDetails] = useState({ supplier: '', quantity: '', neededBy: '', notes: '' });
@@ -452,9 +478,36 @@ export default function CurrentStocks() {
   }, [isSubmittingMedication, resetAddMedicationState, categoryDropdown, supplierDropdown]);
 
   const openAddMedicationModal = useCallback(() => {
+    setIsAddChoiceOpen(false);
     resetAddMedicationState(categoryDropdown, supplierDropdown);
     setIsAddMedicationOpen(true);
   }, [resetAddMedicationState, categoryDropdown, supplierDropdown]);
+
+  const resetAddCategoryState = useCallback(() => {
+    setCategoryFormError('');
+    setAddCategoryFieldErrors({});
+    setNewCategory(EMPTY_NEW_CATEGORY);
+  }, []);
+
+  const closeAddCategoryModal = useCallback(() => {
+    if (isSubmittingCategory) return;
+    setIsAddCategoryOpen(false);
+    resetAddCategoryState();
+  }, [isSubmittingCategory, resetAddCategoryState]);
+
+  const openAddCategoryModal = useCallback(() => {
+    setIsAddChoiceOpen(false);
+    resetAddCategoryState();
+    setIsAddCategoryOpen(true);
+  }, [resetAddCategoryState]);
+
+  const openAddChoiceModal = useCallback(() => {
+    setIsAddChoiceOpen(true);
+  }, []);
+
+  const closeAddChoiceModal = useCallback(() => {
+    setIsAddChoiceOpen(false);
+  }, []);
 
   useEffect(() => {
     if (!isAddMedicationOpen) return;
@@ -810,6 +863,7 @@ export default function CurrentStocks() {
 
       setIsAddMedicationOpen(false);
       resetAddMedicationState(categoryDropdown, supplierDropdown);
+      setAddSuccessMessage('Medication record has been successfully added.');
       setIsAddedSuccessOpen(true);
       await loadData();
       emitGlobalSearchRefresh();
@@ -825,6 +879,83 @@ export default function CurrentStocks() {
     } finally {
       window.clearTimeout(timeout);
       setIsSubmittingMedication(false);
+    }
+  }
+
+  async function handleAddCategorySubmit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (isSubmittingCategory) return;
+
+    const categoryName = newCategory.categoryName.trim();
+    const description = newCategory.description.trim();
+    const errors: AddCategoryFieldErrors = {};
+
+    if (!categoryName) {
+      errors.categoryName = 'Category name is required.';
+    } else if (categoryName.length > 255) {
+      errors.categoryName = 'Category name must be 255 characters or fewer.';
+    }
+
+    setAddCategoryFieldErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      setCategoryFormError('Please fix the highlighted fields and try again.');
+      return;
+    }
+    if (!navigator.onLine) {
+      setCategoryFormError('You appear to be offline. Check your connection and try again.');
+      return;
+    }
+
+    setIsSubmittingCategory(true);
+    setCategoryFormError('');
+    setAddCategoryFieldErrors({});
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), ADD_CATEGORY_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/medications/categories`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          category_name: categoryName,
+          description: description || null,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await parseApiErrorMessage(response, 'Failed to create category.'));
+      }
+
+      const json = (await response.json()) as CreateCategoryResponse;
+      const createdCategory = json.category;
+      if (createdCategory?.category_id && createdCategory?.category_name) {
+        setCategoryDropdown((prev) => {
+          const next = [...prev, {
+            category_id: createdCategory.category_id,
+            category_name: createdCategory.category_name,
+          }];
+          next.sort((a, b) => a.category_name.localeCompare(b.category_name));
+          return next;
+        });
+      }
+
+      setIsAddCategoryOpen(false);
+      resetAddCategoryState();
+      setAddSuccessMessage('Category has been successfully added.');
+      setIsAddedSuccessOpen(true);
+      emitGlobalSearchRefresh();
+    } catch (error) {
+      const isAbort = error instanceof DOMException && error.name === 'AbortError';
+      const message = isAbort
+        ? 'Add category request timed out. Please try again.'
+        : error instanceof Error
+          ? error.message
+          : 'Failed to create category.';
+      setCategoryFormError(message);
+    } finally {
+      window.clearTimeout(timeout);
+      setIsSubmittingCategory(false);
     }
   }
 
@@ -1202,7 +1333,7 @@ function buildMedicationUpdatePayload(
                 <>
                   <Button
                     className="inline-flex h-10 items-center gap-2 whitespace-nowrap bg-green-600 pl-3 pr-4 py-1.5 text-sm text-white hover:bg-green-700"
-                    onClick={openAddMedicationModal}
+                    onClick={openAddChoiceModal}
                   >
                     <Plus size={16} className="shrink-0" />
                     Add Medication
@@ -1363,6 +1494,50 @@ function buildMedicationUpdatePayload(
         document.body,
       )}
 
+      {/* ── Add Choice Modal ── */}
+      {isAddChoiceOpen && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={closeAddChoiceModal}>
+          <div className="w-full max-w-[620px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="mb-5 flex items-center justify-between border-b border-gray-300 pb-3">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-800">What would you like to add?</h2>
+                <p className="mt-1 text-sm text-gray-600">Choose whether to create a medication record or add a category only.</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeAddChoiceModal}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={openAddMedicationModal}
+                className="rounded-xl border border-gray-300 bg-white p-4 text-left transition hover:border-blue-300 hover:bg-blue-50"
+              >
+                <img src={ADD_MEDICATION_ICON_URL} alt="Medication icon" className="h-10 w-10" />
+                <h3 className="mt-3 text-base font-semibold text-gray-800">Add Medication</h3>
+                <p className="mt-1 text-sm text-gray-600">Create a medication record with stock, batch, and supplier details.</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={openAddCategoryModal}
+                className="rounded-xl border border-gray-300 bg-white p-4 text-left transition hover:border-blue-300 hover:bg-blue-50"
+              >
+                <img src={ADD_CATEGORY_ICON_URL} alt="Category icon" className="h-10 w-10" />
+                <h3 className="mt-3 text-base font-semibold text-gray-800">Add Category Only</h3>
+                <p className="mt-1 text-sm text-gray-600">Create a category entry without adding medication stock yet.</p>
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
       {/* ── Add Medication Modal ── */}
       {isAddMedicationOpen && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={closeAddMedicationModal}>
@@ -1394,6 +1569,68 @@ function buildMedicationUpdatePayload(
             )}
             {formError && <p className="mt-3 text-sm text-red-600">{formError}</p>}
             <button type="submit" className="mt-5 h-9 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white disabled:opacity-60" disabled={isSubmittingMedication}>{isSubmittingMedication ? 'Saving...' : 'Add Medication'}</button>
+          </form>
+        </div>,
+        document.body,
+      )}
+
+      {/* ── Add Category Modal ── */}
+      {isAddCategoryOpen && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={closeAddCategoryModal}>
+          <form className="w-full max-w-[460px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(event) => event.stopPropagation()} onSubmit={handleAddCategorySubmit}>
+            <div className="mb-4 flex items-center justify-between border-b border-gray-300 pb-3">
+              <h2 className="flex items-center gap-2 text-xl font-semibold text-gray-700">
+                <img src={ADD_CATEGORY_ICON_URL} alt="Category icon" className="h-5 w-5" />
+                Add Category
+              </h2>
+              <button
+                type="button"
+                onClick={closeAddCategoryModal}
+                disabled={isSubmittingCategory}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700 disabled:opacity-50"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            {isSubmittingCategory && <p className="mb-3 rounded-lg bg-blue-50 px-3 py-2 text-sm font-medium text-blue-700">Submitting category...</p>}
+
+            <div className="grid grid-cols-1 gap-3">
+              <label className="text-sm text-gray-700">
+                Category Name
+                <input
+                  required
+                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
+                  value={newCategory.categoryName}
+                  onChange={(event) => setNewCategory((prev) => ({ ...prev, categoryName: event.target.value }))}
+                />
+              </label>
+
+              <label className="text-sm text-gray-700">
+                Description
+                <textarea
+                  rows={4}
+                  className="mt-1 w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2 text-sm"
+                  value={newCategory.description}
+                  onChange={(event) => setNewCategory((prev) => ({ ...prev, description: event.target.value }))}
+                  placeholder="Optional"
+                />
+              </label>
+            </div>
+
+            {Object.values(addCategoryFieldErrors).length > 0 && (
+              <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2">
+                {Object.values(addCategoryFieldErrors).map((message, index) => (
+                  <p key={`${index}-${message}`} className="text-xs text-red-600">{message}</p>
+                ))}
+              </div>
+            )}
+
+            {categoryFormError && <p className="mt-3 text-sm text-red-600">{categoryFormError}</p>}
+
+            <button type="submit" className="mt-5 h-9 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white disabled:opacity-60" disabled={isSubmittingCategory}>
+              {isSubmittingCategory ? 'Saving...' : 'Add Category'}
+            </button>
           </form>
         </div>,
         document.body,
@@ -1530,7 +1767,7 @@ function buildMedicationUpdatePayload(
           <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-gray-100 p-6 text-center shadow-xl" onClick={e => e.stopPropagation()}>
             <CheckCircle2 className="mx-auto h-14 w-14 text-green-500" strokeWidth={2} />
             <h3 className="mt-2 text-4xl font-bold text-gray-800">Added Successfully!</h3>
-            <p className="mt-2 text-sm text-gray-600">Medication record has been successfully added.</p>
+            <p className="mt-2 text-sm text-gray-600">{addSuccessMessage || 'Record has been successfully added.'}</p>
             <button type="button" onClick={() => setIsAddedSuccessOpen(false)} className="mt-5 h-9 w-28 rounded-lg bg-blue-600 text-sm font-semibold text-white">Done</button>
           </div>
         </div>,

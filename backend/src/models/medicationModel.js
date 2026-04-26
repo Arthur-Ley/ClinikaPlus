@@ -132,3 +132,21 @@ export function validateUpdateMedicationInput(payload) {
     },
   };
 }
+
+export function validateCreateCategoryInput(payload) {
+  const categoryName = toTrimmedString(payload?.category_name);
+  const descriptionRaw = payload?.description;
+  const description = typeof descriptionRaw === "string" ? descriptionRaw.trim() : "";
+
+  if (!categoryName) {
+    return { ok: false, message: "'category_name' is required." };
+  }
+
+  return {
+    ok: true,
+    data: {
+      categoryName,
+      description: description || null,
+    },
+  };
+}

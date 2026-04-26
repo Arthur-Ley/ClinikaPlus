@@ -1937,7 +1937,6 @@ export default function BillingAndPayments() {
               <div className="sticky top-0 z-20 border-b border-gray-200 bg-white px-6 py-5">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400">Bill Control Panel</p>
                     <h3 className="mt-1 text-2xl font-bold text-gray-900">{selectedBill.id}</h3>
                     <p className="mt-1 text-sm text-gray-500">Date created: {toDateTimeDisplay((viewBill && typeof viewBill.created_at === 'string' && viewBill.created_at) ? viewBill.created_at : selectedBillMeta.createdAt)}</p>
                   </div>
@@ -2130,6 +2129,16 @@ export default function BillingAndPayments() {
                     )}
                     {selectedBill.status === 'Paid' && (
                       <>
+                        <button
+                          type="button"
+                          onClick={() => printBillDocument('receipt')}
+                          className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white"
+                        >
+                          <span className="inline-flex items-center justify-center gap-2">
+                            <Printer size={15} />
+                            Print Receipt
+                          </span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => { void handlePrintBill(selectedBill); }}
