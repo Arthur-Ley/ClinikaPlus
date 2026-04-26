@@ -176,10 +176,6 @@ export default function Sidebar() {
     };
   }, [pathname]);
 
-  function handleOpenSettings() {
-    navigate('/settings');
-  }
-
   function handleLogout() {
     try {
       clearAuthSession();
@@ -227,14 +223,21 @@ export default function Sidebar() {
         <div className="mt-auto border-t border-gray-200 pt-4 pb-4">
           <div className="text-lg font-bold text-gray-500 mb-2">Others</div>
           <div className="space-y-2">
-            <button type="button" onClick={handleOpenSettings} className="w-full flex items-center gap-2.5 px-3 py-2 text-base font-semibold text-gray-800 text-left rounded-lg hover:bg-gray-200 transition">
+            <NavLink
+              to="/settings"
+              className={({ isActive }) =>
+                `w-full flex items-center gap-2.5 rounded-lg px-3 py-2 text-base font-semibold transition ${
+                  isActive ? 'bg-blue-600 text-white' : 'text-gray-800 hover:bg-gray-200'
+                }`
+              }
+            >
               <Settings size={18} />
               Settings
-            </button>
+            </NavLink>
             <button
               type="button"
               onClick={() => setShowLogoutModal(true)}
-              className="w-full rounded-xl border border-gray-200 bg-white px-3.5 py-2.5 text-left text-gray-800 transition-colors duration-200 hover:border-red-500 hover:bg-red-500 hover:text-white active:scale-[0.99]"
+              className="w-full rounded-lg px-3 py-2 text-left text-gray-800 transition-colors duration-200 hover:bg-red-500 hover:text-white active:scale-[0.99]"
               aria-label="Log out of your account"
             >
               <span className="flex items-center gap-2.5 text-base font-semibold">

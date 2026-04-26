@@ -2,7 +2,6 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  clearAuthSession,
   login,
   requestPasswordReset,
   saveAuthSession,
@@ -110,32 +109,62 @@ export default function LoginPage() {
   };
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setIsLoading(true);
-    setAuthError(null);
+      e.preventDefault();
+      setIsLoading(true);
+      setAuthError(null);
 
-    try {
-      clearAuthSession();
-      const response = await login({
-        email: form.email,
-        password: form.password,
-      });
-      saveAuthSession(response);
-
-      if (redirectTo && redirectTo !== '/login' && redirectTo !== '/register') {
-        navigate(redirectTo, { replace: true });
-      } else if (response.user.role === 'admin') {
-        navigate('/admin/patients');
-      } else if (response.user.role === 'ambulance') {
-        navigate('/emergency');
-      } else {
-        navigate('/dashboard');
+      // Validate form fields
+      if (!form.email.trim()) {
+        setAuthError('Please enter your email address.');
+        setIsLoading(false);
+        return;
       }
-    } catch (error) {
-      setAuthError(error instanceof Error ? error.message : 'Login failed. Please try again.');
-    } finally {
-      setIsLoading(false);
-    }
+
+      if (!form.password.trim()) {
+        setAuthError('Please enter your password.');
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        const response = await login({
+          email: form.email.trim(),
+          password: form.password,
+        });
+        
+        if (!response || !response.accessToken || !response.user?.id) {
+          throw new Error('Invalid server response. Please try again.');
+        }
+        
+        saveAuthSession(response);
+
+        if (redirectTo && redirectTo !== '/login' && redirectTo !== '/register') {
+          navigate(redirectTo, { replace: true });
+        } else if (response.user.role === 'admin') {
+          navigate('/admin/patients');
+        } else if (response.user.role === 'ambulance') {
+          navigate('/emergency');
+        } else {
+          navigate('/dashboard');
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Login failed. Please try again.';
+        
+        // Provide specific feedback for common errors
+        if (message.includes('Server error: 401') || message.includes('401')) {
+          setAuthError('Invalid email or password. Please check and try again.');
+        } else if (message.includes('Server error: 5') || message.includes('Unauthorized')) {
+          setAuthError('Server error. Please try again in a moment.');
+        } else if (message.includes('AbortError') || message.includes('timeout')) {
+          setAuthError('Connection timeout. Please check your internet connection and try again.');
+        } else if (message.includes('Failed to fetch')) {
+          setAuthError('Connection error. Please check your internet connection and try again.');
+        } else {
+          setAuthError(message);
+        }
+      } finally {
+        setIsLoading(false);
+      }
   };
 
   // ── Shared input base classes ────────────────────────────────────
