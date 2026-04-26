@@ -315,7 +315,7 @@ export default function Transactions() {
           <meta charset="utf-8" />
           <title>Receipt ${receiptNo}</title>
           <style>
-            body { font-family: Arial, sans-serif; margin: 32px; color: #111827; }
+            body { font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 32px; color: #111827; }
             .header { margin-bottom: 24px; }
             .title { font-size: 24px; font-weight: 700; margin: 0 0 6px; }
             .subtitle { color: #4b5563; margin: 0; }

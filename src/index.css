@@ -1,3 +1,5 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -13,6 +15,7 @@ html {
 
 body {
   @apply bg-gray-50 text-gray-900 antialiased;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
   margin: 0;
 }
 
@@ -20,3 +23,15 @@ body {
 a { font-weight: 500; }
 
 button { @apply rounded-lg font-medium; }
+
+/* Keep custom quantity controls by hiding native number steppers where needed. */
+input.no-native-stepper[type='number'] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+input.no-native-stepper[type='number']::-webkit-outer-spin-button,
+input.no-native-stepper[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

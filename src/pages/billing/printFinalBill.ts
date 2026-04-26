@@ -11,7 +11,7 @@ const CLINIC_LOGO_DATA_URL = `data:image/svg+xml;utf8,${encodeURIComponent(
     <circle cx="48" cy="48" r="36" fill="#e8f1f8" stroke="#0f4c81" stroke-width="2" />
     <rect x="42" y="26" width="12" height="44" rx="2" fill="#0f4c81" />
     <rect x="26" y="42" width="44" height="12" rx="2" fill="#0f4c81" />
-    <text x="48" y="84" font-size="10" font-family="Arial, sans-serif" text-anchor="middle" fill="#0f4c81">MMC</text>
+    <text x="48" y="84" font-size="10" font-family="Inter, sans-serif" text-anchor="middle" fill="#0f4c81">MMC</text>
   </svg>`,
 )}`;
 
@@ -208,7 +208,7 @@ function toPrintHtml(input: FinalBillPrintInput) {
         height: 297mm;
       }
       body {
-        font-family: Arial, sans-serif;
+        font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
         font-size: 14px;
         color: #111827;
         background: #ffffff;
@@ -521,9 +521,24 @@ async function waitForPrintCompletion(printWindow: Window) {
 
   await new Promise<void>((resolve) => {
     let done = false;
+    let closeWatcher: number | null = null;
+    let fallbackTimer: number | null = null;
+
+    const cleanup = () => {
+      if (closeWatcher !== null) {
+        window.clearInterval(closeWatcher);
+        closeWatcher = null;
+      }
+      if (fallbackTimer !== null) {
+        window.clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
+    };
+
     const finalize = () => {
       if (done) return;
       done = true;
+      cleanup();
       resolve();
     };
 
@@ -543,7 +558,13 @@ async function waitForPrintCompletion(printWindow: Window) {
       }, { once: true });
     }
 
-    window.setTimeout(finalize, 120000);
+    closeWatcher = window.setInterval(() => {
+      if (printWindow.closed) {
+        finalize();
+      }
+    }, 300);
+
+    fallbackTimer = window.setTimeout(finalize, 120000);
   });
 }
 

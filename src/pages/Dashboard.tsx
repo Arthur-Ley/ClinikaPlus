@@ -209,7 +209,6 @@ export default function Dashboard() {
       revenueToday: overview?.financial_summary.revenue_today || 0,
       pendingPayments: overview?.financial_summary.pending_payments || 0,
       totalTransactions: overview?.financial_summary.total_transactions || 0,
-      insuranceInProgress: overview?.financial_summary.insurance_claims_in_progress || 0,
     };
   }, [overview]);
 
@@ -301,7 +300,7 @@ export default function Dashboard() {
                     navigate(`/inventory/alerts?focusAlertName=${encodeURIComponent(item.title)}&focusAlertQuery=${encodeURIComponent(focusQuery)}`);
                   }
                 }}
-                className={`rounded-xl border p-3 ${item.tone === 'critical' ? 'border-red-300 bg-red-50' : 'border-amber-300 bg-amber-50'} cursor-pointer transition hover:-translate-y-0.5 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400`}
+                className={`rounded-xl border p-3 ${item.tone === 'critical' ? 'border-red-300 bg-red-50' : 'border-amber-300 bg-amber-50'} cursor-pointer transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400`}
               >
                 <p className={`text-base font-bold ${item.tone === 'critical' ? 'text-red-500' : 'text-amber-500'}`}>{item.title}</p>
                 <p className="text-sm text-gray-700">{item.message}</p>
@@ -389,8 +388,8 @@ export default function Dashboard() {
             </button>
           </div>
 
-          <div className="space-y-4">
-            <div className="rounded-2xl bg-gray-100 p-5 grid grid-cols-[140px_1fr_1fr] gap-4 items-start">
+          <div className="grid h-full grid-rows-2 gap-4">
+            <div className="h-full rounded-2xl bg-gray-100 p-5 grid grid-cols-[140px_1fr_1fr] gap-4 items-start">
               <div className="text-gray-500">
                 <Truck size={44} className="text-blue-600 mb-2" />
                 <h3 className="text-xl leading-tight font-semibold">Restocking Overview</h3>
@@ -428,7 +427,7 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="rounded-2xl bg-gray-100 p-5 grid grid-cols-[140px_1fr] gap-4 items-start">
+            <div className="h-full rounded-2xl bg-gray-100 p-5 grid grid-cols-[140px_1fr] gap-4 items-start">
               <div className="text-gray-500">
                 <TrendingUp size={44} className="text-green-500 mb-2" />
                 <h3 className="text-xl leading-tight font-semibold">Financial Summary</h3>
@@ -452,10 +451,6 @@ export default function Dashboard() {
                 <div>
                   <p className="text-gray-500">Total Transactions</p>
                   <p className="text-xl text-gray-800">{summary.totalTransactions}</p>
-                </div>
-                <div>
-                  <p className="text-gray-500">Insurance Claims in Progress</p>
-                  <p className="text-xl text-gray-800">{summary.insuranceInProgress} records</p>
                 </div>
               </div>
             </div>

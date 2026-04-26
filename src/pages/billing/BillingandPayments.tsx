@@ -4,7 +4,7 @@ import {
   Search, ChevronDown, PlusCircle,
   CheckCircle2, X, ReceiptText, Stethoscope, CircleGauge,
   Info, CircleDollarSign, Coins, XCircle,
-  CreditCard, Hash, MinusCircle, User, Plus, Minus, Wallet, Printer, AlertTriangle, Check, Maximize2,
+  CreditCard, Hash, MinusCircle, User, Plus, Minus, Wallet, Printer, AlertTriangle, Check, Maximize2, LoaderCircle,
 } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import Pagination from '../../components/ui/Pagination';
@@ -119,6 +119,11 @@ type BillUiMeta = {
   amountPaid?: number;
   cancelledBy?: string;
   cancelledReason?: string;
+};
+type PendingReprintState = {
+  backendBillId: number;
+  detailsBill: Record<string, unknown>;
+  items: Record<string, unknown>[];
 };
 
 const fallbackMedicationCatalog: MedicationCatalogItem[] = [
@@ -382,6 +387,9 @@ export default function BillingAndPayments() {
   const [paymentNotes, setPaymentNotes] = useState('');
   const [paymentErrors, setPaymentErrors] = useState<PaymentValidationErrors>({});
   const [cancelReason, setCancelReason] = useState('');
+  const [printBillLoadingId, setPrintBillLoadingId] = useState<string | null>(null);
+  const [pendingReprintState, setPendingReprintState] = useState<PendingReprintState | null>(null);
+  const [isReprintConfirming, setIsReprintConfirming] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [focusHandledKey, setFocusHandledKey] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -458,6 +466,12 @@ export default function BillingAndPayments() {
     window.addEventListener('mousedown', handleOutsideClick);
     return () => window.removeEventListener('mousedown', handleOutsideClick);
   }, [showPatientDropdown]);
+
+  useEffect(() => {
+    if (modal === 'viewBill') return;
+    setPendingReprintState(null);
+    setIsReprintConfirming(false);
+  }, [modal]);
 
   useEffect(() => {
     setBillMetaById((prev) => {
@@ -972,6 +986,58 @@ export default function BillingAndPayments() {
     }
   }
 
+  async function completeBillPrintFlow(payload: PendingReprintState) {
+    const { backendBillId, detailsBill, items } = payload;
+
+    await printFinalBill({
+      bill: detailsBill,
+      items,
+    });
+
+    const markPrintedResponse = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}/printed`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!markPrintedResponse.ok) {
+      throw new Error(`Failed to mark bill as printed (${markPrintedResponse.status}).`);
+    }
+
+    const markPayload = (await markPrintedResponse.json()) as { bill?: Record<string, unknown> };
+    const updatedPrintedBill = markPayload.bill && typeof markPayload.bill === 'object'
+      ? markPayload.bill
+      : detailsBill;
+
+    setViewBillDetails((prev) => {
+      if (!prev || !prev.bill || Number((prev.bill as Record<string, unknown>).bill_id) !== backendBillId) return prev;
+      return {
+        ...prev,
+        bill: {
+          ...(prev.bill as Record<string, unknown>),
+          is_printed: updatedPrintedBill.is_printed ?? true,
+          printed_at: updatedPrintedBill.printed_at ?? new Date().toISOString(),
+        },
+      };
+    });
+
+    setToast({ type: 'success', message: 'Bill printed successfully.' });
+  }
+
+  async function handleConfirmReprint() {
+    if (!pendingReprintState || isReprintConfirming) return;
+
+    try {
+      const reprintPayload = pendingReprintState;
+      setPendingReprintState(null);
+      setIsReprintConfirming(true);
+      await completeBillPrintFlow(reprintPayload);
+    } catch (error) {
+      setToast({ type: 'error', message: error instanceof Error ? error.message : 'Unable to print bill.' });
+    } finally {
+      setIsReprintConfirming(false);
+    }
+  }
+
   async function handlePrintBill(bill: BillRow) {
     const backendBillId = bill.backendBillId ?? billingRecords.find((row) => row.id === bill.id)?.backendBillId;
     if (!backendBillId) {
@@ -980,6 +1046,7 @@ export default function BillingAndPayments() {
     }
 
     try {
+      setPrintBillLoadingId(bill.id);
       const detailsResponse = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}`);
       if (!detailsResponse.ok) {
         throw new Error(`Bill details request failed (${detailsResponse.status}).`);
@@ -994,46 +1061,26 @@ export default function BillingAndPayments() {
         throw new Error('Unable to print bill. Missing bill details.');
       }
 
+      const printItems = (Array.isArray(detailsPayload.items) ? detailsPayload.items : []) as Record<string, unknown>[];
       const wasPrinted = detailsBill.is_printed === true;
       if (wasPrinted) {
-        const shouldPrintAgain = window.confirm('This bill has already been printed. Print again?');
-        if (!shouldPrintAgain) return;
+        setPendingReprintState({
+          backendBillId,
+          detailsBill,
+          items: printItems,
+        });
+        return;
       }
 
-      await printFinalBill({
-        bill: detailsBill,
-        items: (Array.isArray(detailsPayload.items) ? detailsPayload.items : []) as Record<string, unknown>[],
+      await completeBillPrintFlow({
+        backendBillId,
+        detailsBill,
+        items: printItems,
       });
-
-      const markPrintedResponse = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}/printed`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      if (!markPrintedResponse.ok) {
-        throw new Error(`Failed to mark bill as printed (${markPrintedResponse.status}).`);
-      }
-
-      const markPayload = (await markPrintedResponse.json()) as { bill?: Record<string, unknown> };
-      const updatedPrintedBill = markPayload.bill && typeof markPayload.bill === 'object'
-        ? markPayload.bill
-        : detailsBill;
-
-      setViewBillDetails((prev) => {
-        if (!prev || !prev.bill || Number((prev.bill as Record<string, unknown>).bill_id) !== backendBillId) return prev;
-        return {
-          ...prev,
-          bill: {
-            ...(prev.bill as Record<string, unknown>),
-            is_printed: updatedPrintedBill.is_printed ?? true,
-            printed_at: updatedPrintedBill.printed_at ?? new Date().toISOString(),
-          },
-        };
-      });
-
-      setToast({ type: 'success', message: 'Bill printed successfully.' });
     } catch (error) {
       setToast({ type: 'error', message: error instanceof Error ? error.message : 'Unable to print bill.' });
+    } finally {
+      setPrintBillLoadingId((current) => (current === bill.id ? null : current));
     }
   }
 
@@ -1167,6 +1214,8 @@ export default function BillingAndPayments() {
     setPaymentNotes('');
     setPaymentErrors({});
     setCancelReason('');
+    setPendingReprintState(null);
+    setIsReprintConfirming(false);
   }
 
   function printBillDocument(kind: 'bill' | 'receipt') {
@@ -1208,7 +1257,7 @@ export default function BillingAndPayments() {
         <head>
           <title>${kind === 'receipt' ? 'Receipt' : 'Bill'} ${escapeHtml(activeBill.id)}</title>
           <style>
-            body { font-family: Arial, sans-serif; margin: 32px; color: #111827; }
+            body { font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 32px; color: #111827; }
             .header { margin-bottom: 24px; }
             .title { font-size: 24px; font-weight: 700; margin: 0 0 6px; }
             .subtitle { color: #4b5563; margin: 0; }
@@ -1894,7 +1943,16 @@ export default function BillingAndPayments() {
                   </div>
                   <div className="flex items-center gap-3">
                     <StatusPill status={selectedBill.status} />
-                    <button type="button" onClick={() => setModal('none')} className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"><X size={16} /></button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPendingReprintState(null);
+                        setModal('none');
+                      }}
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"
+                    >
+                      <X size={16} />
+                    </button>
                   </div>
                 </div>
               </div>
@@ -2053,16 +2111,58 @@ export default function BillingAndPayments() {
                       <>
                         <button type="button" onClick={() => openPaymentModal(selectedBill)} className="h-10 flex-1 rounded-xl bg-green-600 px-4 text-sm font-bold text-white hover:bg-green-700">Pay</button>
                         <button type="button" onClick={() => openCancelModal(selectedBill)} className="h-10 flex-1 rounded-xl bg-red-600 px-4 text-sm font-bold text-white hover:bg-red-700">Cancel</button>
-                        <button type="button" onClick={() => { void handlePrintBill(selectedBill); }} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
+                        <button
+                          type="button"
+                          onClick={() => { void handlePrintBill(selectedBill); }}
+                          disabled={printBillLoadingId === selectedBill.id}
+                          className={`h-10 flex-1 rounded-xl px-4 text-sm font-bold transition-colors duration-200 disabled:cursor-not-allowed ${
+                            printBillLoadingId === selectedBill.id
+                              ? 'border border-blue-600 bg-blue-600 text-white'
+                              : 'border border-gray-300 bg-white text-gray-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white'
+                          }`}
+                        >
+                          <span className="inline-flex items-center justify-center gap-2">
+                            {printBillLoadingId === selectedBill.id ? <LoaderCircle size={15} className="animate-spin" /> : <Printer size={15} />}
+                            {printBillLoadingId === selectedBill.id ? 'Preparing...' : 'Print Bill'}
+                          </span>
+                        </button>
                       </>
                     )}
                     {selectedBill.status === 'Paid' && (
                       <>
-                        <button type="button" onClick={() => { void handlePrintBill(selectedBill); }} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
+                        <button
+                          type="button"
+                          onClick={() => { void handlePrintBill(selectedBill); }}
+                          disabled={printBillLoadingId === selectedBill.id}
+                          className={`h-10 flex-1 rounded-xl px-4 text-sm font-bold transition-colors duration-200 disabled:cursor-not-allowed ${
+                            printBillLoadingId === selectedBill.id
+                              ? 'border border-blue-600 bg-blue-600 text-white'
+                              : 'border border-gray-300 bg-white text-gray-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white'
+                          }`}
+                        >
+                          <span className="inline-flex items-center justify-center gap-2">
+                            {printBillLoadingId === selectedBill.id ? <LoaderCircle size={15} className="animate-spin" /> : <Printer size={15} />}
+                            {printBillLoadingId === selectedBill.id ? 'Preparing...' : 'Print Bill'}
+                          </span>
+                        </button>
                       </>
                     )}
                     {selectedBill.status === 'Cancelled' && (
-                      <button type="button" onClick={() => { void handlePrintBill(selectedBill); }} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50">Print Bill</button>
+                      <button
+                        type="button"
+                        onClick={() => { void handlePrintBill(selectedBill); }}
+                        disabled={printBillLoadingId === selectedBill.id}
+                        className={`h-10 flex-1 rounded-xl px-4 text-sm font-bold transition-colors duration-200 disabled:cursor-not-allowed ${
+                          printBillLoadingId === selectedBill.id
+                            ? 'border border-blue-600 bg-blue-600 text-white'
+                            : 'border border-gray-300 bg-white text-gray-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white'
+                        }`}
+                      >
+                        <span className="inline-flex items-center justify-center gap-2">
+                          {printBillLoadingId === selectedBill.id ? <LoaderCircle size={15} className="animate-spin" /> : <Printer size={15} />}
+                          {printBillLoadingId === selectedBill.id ? 'Preparing...' : 'Print Bill'}
+                        </span>
+                      </button>
                     )}
                   </div>
                 </div>
@@ -2114,6 +2214,54 @@ export default function BillingAndPayments() {
                           <div className="h-6 animate-pulse rounded bg-gray-200" />
                         </div>
                       </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {pendingReprintState && (
+                <div
+                  className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-900/35 px-4 backdrop-blur-md"
+                  onClick={() => setPendingReprintState(null)}
+                >
+                  <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                    <div className="flex items-start gap-3">
+                      <div className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
+                        <Printer size={20} />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">Print Confirmation</p>
+                        <h4 className="mt-1 text-xl font-bold text-gray-900">Bill Already Printed</h4>
+                        <p className="mt-2 text-sm leading-6 text-gray-600">
+                          This bill has already been printed before. Do you want to print another copy?
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2.5 text-sm text-blue-800">
+                      <p className="flex items-start gap-2">
+                        <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                        <span>Reprinting will keep this bill marked as printed and generate a new print copy.</span>
+                      </p>
+                    </div>
+
+                    <div className="mt-6 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPendingReprintState(null)}
+                        disabled={isReprintConfirming}
+                        className="h-10 flex-1 rounded-xl border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { void handleConfirmReprint(); }}
+                        disabled={isReprintConfirming}
+                        className="h-10 flex-1 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isReprintConfirming ? 'Printing...' : 'Print Again'}
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -2180,16 +2328,16 @@ export default function BillingAndPayments() {
                   )}
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3 mb-5">
-                <div>
+              <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="min-w-0">
                   <label className="block text-sm font-semibold text-gray-700 mb-1.5">Quantity</label>
-                  <div className="flex items-center gap-2">
-                    <input type="number" min={1} value={serviceQty} onChange={e => setServiceQty(Math.max(1, Number(e.target.value)))} className="h-10 flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm text-center" />
-                    <button type="button" onClick={() => setServiceQty(q => q + 1)} className="h-8 w-8 flex items-center justify-center rounded-full border border-gray-200 bg-gray-100 hover:bg-gray-200"><Plus size={14} /></button>
-                    <button type="button" onClick={() => setServiceQty(q => Math.max(1, q - 1))} className="h-8 w-8 flex items-center justify-center rounded-full border border-gray-200 bg-gray-100 hover:bg-gray-200"><Minus size={14} /></button>
+                  <div className="grid grid-cols-[1fr_auto_auto] items-center gap-2">
+                    <input type="number" min={1} value={serviceQty} onChange={e => setServiceQty(Math.max(1, Number(e.target.value)))} className="no-native-stepper h-10 min-w-0 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm text-center" />
+                    <button type="button" onClick={() => setServiceQty(q => q + 1)} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-gray-100 hover:bg-gray-200"><Plus size={14} /></button>
+                    <button type="button" onClick={() => setServiceQty(q => Math.max(1, q - 1))} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-gray-100 hover:bg-gray-200"><Minus size={14} /></button>
                   </div>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <label className="block text-sm font-semibold text-gray-700 mb-1.5">Unit Price</label>
                   <input type="number" min={0} value={serviceUnitPrice} onChange={e => setServiceUnitPrice(Number(e.target.value))} className="h-10 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm" />
                 </div>

@@ -1,13 +1,37 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BadgeCheck, Loader2, LockKeyhole, Mail, MonitorCog, Save, Send, ShieldCheck, User, UserCog } from 'lucide-react';
+import { getAuthSession, validateAuthSession, type LoginResponse } from '../services/authApi';
 
 type SettingsTab = 'user' | 'system';
 type SystemMode = 'integrated' | 'standalone';
 
+function resolveFullNameFromSession(user: LoginResponse['user'] | null | undefined) {
+  if (!user) return 'Current User';
+
+  const firstName = typeof user.firstName === 'string' ? user.firstName.trim() : '';
+  const lastName = typeof user.lastName === 'string' ? user.lastName.trim() : '';
+  const combined = `${firstName} ${lastName}`.trim();
+  if (combined) return combined;
+
+  if (typeof user.email === 'string' && user.email.trim()) {
+    const emailPrefix = user.email.split('@')[0]?.trim();
+    if (emailPrefix) return emailPrefix;
+  }
+
+  return 'Current User';
+}
+
+function resolveEmailFromSession(user: LoginResponse['user'] | null | undefined) {
+  if (!user) return '';
+  return typeof user.email === 'string' ? user.email.trim() : '';
+}
+
 export default function Settings() {
+  const initialSession = getAuthSession();
+  const initialUser = initialSession?.user;
   const [activeTab, setActiveTab] = useState<SettingsTab>('user');
-  const [fullName, setFullName] = useState('Clinic Admin');
-  const [email, setEmail] = useState('admin@clinikapluss.local');
+  const [fullName, setFullName] = useState(() => resolveFullNameFromSession(initialUser));
+  const [email, setEmail] = useState(() => resolveEmailFromSession(initialUser));
   const [password, setPassword] = useState('password123');
   const role = 'Pharmacist';
   const [showEmailUpdateForm, setShowEmailUpdateForm] = useState(false);
@@ -32,6 +56,8 @@ export default function Settings() {
     () => fullName.trim() && email.trim() && password.trim(),
     [email, fullName, password],
   );
+  const saveButtonLabel = activeTab === 'user' ? 'Update Profile' : 'Save System Settings';
+  const isSaveDisabled = activeTab === 'user' ? !canSave : false;
 
   function handleSave() {
     if (!canSave) return;
@@ -120,6 +146,22 @@ export default function Settings() {
     { id: 'user', label: 'User Settings', icon: UserCog },
     { id: 'system', label: 'System Settings', icon: MonitorCog },
   ];
+
+  useEffect(() => {
+    let isMounted = true;
+
+    (async () => {
+      const validatedSession = await validateAuthSession();
+      if (!isMounted || !validatedSession?.user) return;
+
+      setFullName(resolveFullNameFromSession(validatedSession.user));
+      setEmail(resolveEmailFromSession(validatedSession.user));
+    })();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     setTabLoading(true);
@@ -315,7 +357,6 @@ export default function Settings() {
                               <Send className="h-4 w-4" />
                               Send Verification Link
                             </button>
-                            <p className="text-xs text-gray-600">No OTP needed. Link-based verification confirms ownership of the new email.</p>
                           </div>
 
                           {emailUpdateError ? <p className="mt-2 text-xs font-semibold text-red-600">{emailUpdateError}</p> : null}
@@ -422,7 +463,6 @@ export default function Settings() {
                               <Send className="h-4 w-4" />
                               Update Password
                             </button>
-                            <p className="text-xs text-gray-600">Password changes require current-password confirmation for security.</p>
                           </div>
 
                           {passwordUpdateError ? <p className="mt-2 text-xs font-semibold text-red-600">{passwordUpdateError}</p> : null}
@@ -524,16 +564,15 @@ export default function Settings() {
             )}
           </div>
 
-          <div className="mt-4 flex flex-col gap-3 text-sm text-gray-600 md:flex-row md:items-center md:justify-between">
-            <p>This page currently uses frontend-only state and is not wired to backend settings yet.</p>
+          <div className="mt-4 flex flex-col gap-3 text-sm text-gray-600 md:flex-row md:items-center md:justify-end">
             <button
               type="button"
               onClick={handleSave}
-              disabled={!canSave}
+              disabled={isSaveDisabled}
               className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white disabled:opacity-60"
             >
               <Save className="h-4 w-4" />
-              Save Settings
+              {saveButtonLabel}
             </button>
           </div>
           {savedAt ? <p className="mt-2 text-xs text-green-700">Saved on {savedAt}</p> : null}
