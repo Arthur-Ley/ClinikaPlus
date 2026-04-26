@@ -47,7 +47,7 @@ export default function Settings() {
   const [passwordUpdateNotice, setPasswordUpdateNotice] = useState('');
   const [tabLoading, setTabLoading] = useState(true);
   const [isTabContentVisible, setIsTabContentVisible] = useState(true);
-  const [systemMode, setSystemMode] = useState<SystemMode>('integrated');
+  const [systemMode, setSystemMode] = useState<SystemMode>('standalone');
   const [isModeSwitching, setIsModeSwitching] = useState(false);
   const [targetSystemMode, setTargetSystemMode] = useState<SystemMode | null>(null);
   const [savedAt, setSavedAt] = useState('');

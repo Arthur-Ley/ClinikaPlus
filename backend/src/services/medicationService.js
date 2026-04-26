@@ -16,6 +16,20 @@ async function listCategories() {
   return data;
 }
 
+async function createCategory(input) {
+  const { data, error } = await supabase
+    .from("tbl_categories")
+    .insert({
+      category_name: input.categoryName,
+      description: input.description,
+    })
+    .select("category_id, category_name, description")
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
 async function listSuppliers() {
   const { data, error } = await supabase
     .from("tbl_suppliers")
@@ -280,4 +294,4 @@ async function updateMedicationFlow(medicationId, input) {
   }
 }
 
-export { listCategories, listSuppliers, listMedicationStocks, createMedicationFlow, updateMedicationFlow };
+export { listCategories, createCategory, listSuppliers, listMedicationStocks, createMedicationFlow, updateMedicationFlow };

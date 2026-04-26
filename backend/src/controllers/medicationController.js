@@ -1,11 +1,16 @@
 import {
+  createCategory,
   createMedicationFlow,
   listCategories,
   listMedicationStocks,
   listSuppliers,
   updateMedicationFlow,
 } from "../services/medicationService.js";
-import { validateCreateMedicationInput, validateUpdateMedicationInput } from "../models/medicationModel.js";
+import {
+  validateCreateCategoryInput,
+  validateCreateMedicationInput,
+  validateUpdateMedicationInput,
+} from "../models/medicationModel.js";
 
 export async function getMedicationCategories(_req, res) {
   const categories = await listCategories();
@@ -30,6 +35,24 @@ export async function createMedication(req, res) {
 
   const result = await createMedicationFlow(validation.data);
   return res.status(201).json(result);
+}
+
+export async function createMedicationCategory(req, res) {
+  const validation = validateCreateCategoryInput(req.body);
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.message });
+  }
+
+  try {
+    const category = await createCategory(validation.data);
+    return res.status(201).json({ category });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to create category.";
+    if (message.toLowerCase().includes("duplicate") || message.toLowerCase().includes("unique")) {
+      return res.status(409).json({ error: "Category name already exists." });
+    }
+    throw error;
+  }
 }
 
 export async function updateMedication(req, res) {
