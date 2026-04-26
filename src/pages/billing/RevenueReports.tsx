@@ -538,7 +538,7 @@ function RevenueByServiceChart({ data }: { data: ChartPoint[] }) {
 
 function RevenueReportsSkeleton() {
   return (
-    <section className="space-y-5 rounded-2xl bg-gray-300/80 p-5 animate-pulse">
+    <section className="space-y-5 rounded-2xl bg-gray-300/80 p-5 font-sans animate-pulse">
       <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
         <div className="h-36 rounded-[28px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]" />
       </div>
@@ -720,7 +720,7 @@ export default function RevenueReports() {
   }, [analytics, charts]);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 font-sans">
       {isLoading ? (
         <RevenueReportsSkeleton />
       ) : (
