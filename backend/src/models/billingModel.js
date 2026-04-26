@@ -308,7 +308,7 @@ async function listPaymentsForBills(billIds) {
 async function fetchAnalyticsBills() {
   const { data, error } = await supabase
     .from("tbl_bills")
-    .select("bill_id, net_amount, total_amount, status");
+    .select("bill_id, net_amount, total_amount, status, bill_date, created_at");
 
   if (error) throw error;
   return data || [];
@@ -444,6 +444,44 @@ async function hasPatientById(patientId) {
 
   if (error) throw error;
   return (count || 0) > 0;
+}
+
+async function findPatientUuidByIdentifier(patientIdentifier) {
+  if (patientIdentifier === undefined || patientIdentifier === null) {
+    return null;
+  }
+
+  const normalizedIdentifier = String(patientIdentifier).trim();
+  if (!normalizedIdentifier) {
+    return null;
+  }
+
+  const uuidPattern =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  if (uuidPattern.test(normalizedIdentifier)) {
+    const { data, error } = await supabase
+      .from("tbl_patients")
+      .select("patient_uuid")
+      .eq("patient_uuid", normalizedIdentifier)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data?.patient_uuid || null;
+  }
+
+  if (!/^\d+$/.test(normalizedIdentifier)) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("tbl_patients")
+    .select("patient_uuid")
+    .eq("patient_id", Number(normalizedIdentifier))
+    .maybeSingle();
+
+  if (error) throw error;
+  return data?.patient_uuid || null;
 }
 
 async function listPatients({ search, limit }) {
@@ -669,6 +707,7 @@ export {
   listMedicationBillItemsByBillId,
   listAvailableBatchesByMedicationId,
   hasPatientById,
+  findPatientUuidByIdentifier,
   createPrescriptionUsageLog,
   deletePrescriptionUsageLogById,
   updateInventoryByMedicationId,

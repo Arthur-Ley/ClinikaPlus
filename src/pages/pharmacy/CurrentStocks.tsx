@@ -873,10 +873,10 @@ function buildMedicationUpdatePayload(
     if (!storageRequirement) {
       return { payload: null, message: 'Storage requirement is required.' };
     }
-    if (!Number.isInteger(stock) || stock < 0) {
+    if (stock === null || stock < 0) {
       return { payload: null, message: 'Stock must be an integer greater than or equal to 0.' };
     }
-    if (!Number.isInteger(reorder) || reorder < 0) {
+    if (reorder === null || reorder < 0) {
       return { payload: null, message: 'Threshold must be an integer greater than or equal to 0.' };
     }
     if (!Number.isInteger(categoryId) || categoryId <= 0) {
