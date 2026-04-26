@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Eye, X } from 'lucide-react';
 import Pagination from '../../components/ui/Pagination';
@@ -80,8 +80,7 @@ type ReceiptBillDetails = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
-const MIN_TABLE_ROWS = 1;
-const MAX_TABLE_ROWS = 100;
+const TRANSACTIONS_PAGE_SIZE = 9;
 
 function formatPeso(value: number) {
   return `PHP ${value.toLocaleString('en-PH', {
@@ -147,54 +146,7 @@ export default function Transactions() {
   const [receiptLoadError, setReceiptLoadError] = useState('');
   const [loadError, setLoadError] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const [tablePageSize, setTablePageSize] = useState(8);
-  const tableCardRef = useRef<HTMLDivElement | null>(null);
-  const tableToolbarRef = useRef<HTMLDivElement | null>(null);
-  const tableFooterRef = useRef<HTMLDivElement | null>(null);
-  const tableHeadRef = useRef<HTMLTableSectionElement | null>(null);
-  const effectivePageSize = Math.max(MIN_TABLE_ROWS, tablePageSize);
-
-  useEffect(() => {
-    function measureRowsThatFit() {
-      const card = tableCardRef.current;
-      const toolbar = tableToolbarRef.current;
-      const footer = tableFooterRef.current;
-      const tableHead = tableHeadRef.current;
-      if (!card || !toolbar) return;
-
-      const cardHeight = card.clientHeight;
-      if (!cardHeight) return;
-
-      const toolbarHeight = toolbar.offsetHeight;
-      const footerHeight = footer?.offsetHeight ?? 0;
-      const headerHeight = tableHead?.getBoundingClientRect().height || 44;
-      const rowNode = card.querySelector<HTMLTableRowElement>('tbody tr[data-transaction-row="true"]');
-      const rowHeight = rowNode?.getBoundingClientRect().height || 52;
-      const bottomReserve = 28;
-      const availableBodyHeight = cardHeight - toolbarHeight - footerHeight - headerHeight - bottomReserve;
-      const nextPageSize = Math.max(MIN_TABLE_ROWS, Math.min(MAX_TABLE_ROWS, Math.floor(availableBodyHeight / Math.max(rowHeight, 1))));
-      setTablePageSize((prev) => (prev === nextPageSize ? prev : nextPageSize));
-    }
-
-    measureRowsThatFit();
-    const frame = window.requestAnimationFrame(() => measureRowsThatFit());
-    const settleTimer = window.setTimeout(() => measureRowsThatFit(), 120);
-    const observer = new ResizeObserver(() => measureRowsThatFit());
-    const mutationObserver = new MutationObserver(() => measureRowsThatFit());
-    if (tableCardRef.current) observer.observe(tableCardRef.current);
-    if (tableToolbarRef.current) observer.observe(tableToolbarRef.current);
-    if (tableFooterRef.current) observer.observe(tableFooterRef.current);
-    if (tableCardRef.current) mutationObserver.observe(tableCardRef.current, { childList: true, subtree: true });
-    window.addEventListener('resize', measureRowsThatFit);
-
-    return () => {
-      window.cancelAnimationFrame(frame);
-      window.clearTimeout(settleTimer);
-      observer.disconnect();
-      mutationObserver.disconnect();
-      window.removeEventListener('resize', measureRowsThatFit);
-    };
-  }, [allTransactions.length, isLoading]);
+  const effectivePageSize = TRANSACTIONS_PAGE_SIZE;
 
   useEffect(() => {
     let active = true;
@@ -250,7 +202,7 @@ export default function Transactions() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [methodFilter, searchTerm, effectivePageSize]);
+  }, [methodFilter, searchTerm]);
 
   const filteredTransactions = allTransactions.filter((row) => {
     const matchesMethod = methodFilter === 'all' || row.method === methodFilter;
@@ -446,8 +398,8 @@ export default function Transactions() {
     <>
       <div className="flex h-full min-h-0 flex-col pb-4">
         <section className="flex flex-1 min-h-0 flex-col rounded-2xl bg-gray-300/80 p-5">
-          <div ref={tableCardRef} className="flex min-h-0 flex-1 flex-col rounded-2xl border border-gray-200 bg-gray-100 p-4 md:p-5">
-            <div ref={tableToolbarRef}>
+          <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-gray-200 bg-gray-100 px-3 py-4 md:px-4 md:py-5">
+            <div>
               {isLoading ? (
                 <>
                   <SkeletonBlock className="h-8 w-40" />
@@ -480,7 +432,7 @@ export default function Transactions() {
               )}
             </div>
 
-            <div className="mt-4 min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-2xl border border-gray-200 bg-white">
+            <div className="mt-4 min-h-0 flex-1 rounded-2xl border border-gray-200 bg-white">
               {isLoading ? (
                 <BillingTableSkeleton
                   columns={[
@@ -493,56 +445,53 @@ export default function Transactions() {
                     { headerWidthClass: 'w-16', cellWidthClass: 'w-16', align: 'center' },
                     { headerWidthClass: 'w-16', cellWidthClass: 'w-24', align: 'right' },
                   ]}
-                  rowCount={Math.max(5, Math.min(effectivePageSize, 12))}
+                  rowCount={effectivePageSize}
                 />
               ) : (
-                <table className="w-full text-left text-sm">
-                  <thead ref={tableHeadRef} className="bg-gray-50 text-gray-500">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-gray-200/90 text-gray-700">
                     <tr>
-                      <th className="px-4 py-3 font-semibold">Payment Code</th>
-                      <th className="px-4 py-3 font-semibold">Bill Code</th>
-                      <th className="px-4 py-3 font-semibold">Patient</th>
-                      <th className="px-4 py-3 font-semibold">Method</th>
-                      <th className="px-4 py-3 font-semibold">Payment Date</th>
-                      <th className="px-4 py-3 font-semibold text-right">Amount Paid</th>
-                      <th className="px-4 py-3 font-semibold text-center">Status</th>
-                      <th className="px-4 py-3 font-semibold">Reference No.</th>
-                      <th className="px-4 py-3 font-semibold text-center">Action</th>
+                      <th className="px-3 py-2 text-left font-semibold">Payment Code</th>
+                      <th className="px-3 py-2 text-left font-semibold">Bill Code</th>
+                      <th className="px-3 py-2 text-left font-semibold">Patient</th>
+                      <th className="px-3 py-2 text-left font-semibold">Method</th>
+                      <th className="px-3 py-2 text-left font-semibold">Payment Date</th>
+                      <th className="px-3 py-2 text-right font-semibold">Amount Paid</th>
+                      <th className="px-3 py-2 text-center font-semibold">Status</th>
+                      <th className="px-3 py-2 text-left font-semibold">Reference No.</th>
+                      <th className="px-3 py-2 text-center font-semibold">Action</th>
                     </tr>
                   </thead>
                   <tbody>
                     {pagedTransactions.length > 0 ? (
                       pagedTransactions.map((row) => (
-                        <tr key={row.payment_id} data-transaction-row="true" className="border-t border-gray-100 text-gray-800">
-                          <td className="px-4 py-4 font-semibold">{row.payment_code || `PAY-${row.payment_id}`}</td>
-                          <td className="px-4 py-4">{row.bill_code || `BILL-${row.bill_id}`}</td>
-                          <td className="px-4 py-4">{row.patient_name}</td>
-                          <td className="px-4 py-4">{row.method || '-'}</td>
-                          <td className="px-4 py-4">{formatDate(row.date)}</td>
-                          <td className="px-4 py-4 text-right font-semibold">{formatPeso(row.amount)}</td>
-                          <td className="px-4 py-4 text-center">
+                        <tr key={row.payment_id} className="border-t border-gray-200 text-gray-800 hover:bg-gray-200/40">
+                          <td className="px-3 py-2 font-semibold">{row.payment_code || `PAY-${row.payment_id}`}</td>
+                          <td className="px-3 py-2">{row.bill_code || `BILL-${row.bill_id}`}</td>
+                          <td className="px-3 py-2">{row.patient_name}</td>
+                          <td className="px-3 py-2">{row.method || '-'}</td>
+                          <td className="px-3 py-2">{formatDate(row.date)}</td>
+                          <td className="px-3 py-2 text-right font-semibold">{formatPeso(row.amount)}</td>
+                          <td className="px-3 py-2 text-center">
                             <span className={`inline-flex min-w-[90px] items-center justify-center rounded-full px-2 py-1 text-xs font-semibold ${statusBadgeClass(row.bill_status || row.status || 'Paid')}`}>
                               {row.bill_status || row.status || 'Paid'}
                             </span>
                           </td>
-                          <td className="px-4 py-4">{paymentReferenceFor(row)}</td>
-                          <td className="px-4 py-4 text-center">
-                            <div className="flex justify-center">
-                              <button
-                                type="button"
-                                onClick={() => setSelectedReceipt(row)}
-                                className="inline-flex min-w-[132px] items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-blue-600 hover:bg-blue-50"
-                              >
-                                <Eye size={16} />
-                                View Receipt
-                              </button>
-                            </div>
+                          <td className="px-3 py-2">{paymentReferenceFor(row)}</td>
+                          <td className="px-3 py-2 text-center">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedReceipt(row)}
+                              className="font-semibold text-blue-600 hover:text-blue-700"
+                            >
+                              View Receipt
+                            </button>
                           </td>
                         </tr>
                       ))
                     ) : (
-                      <tr className="border-t border-gray-100">
-                        <td colSpan={9} className="px-4 py-12 text-center text-sm text-gray-500">
+                      <tr>
+                        <td colSpan={9} className="px-3 py-10 text-center text-sm text-gray-500">
                           {loadError || 'No transactions match your current filters.'}
                         </td>
                       </tr>
@@ -552,8 +501,8 @@ export default function Transactions() {
               )}
             </div>
 
-            <div ref={tableFooterRef} className="mt-4 flex items-center justify-between text-sm text-gray-600">
-              {isLoading ? <SkeletonBlock className="h-4 w-52" /> : <p>Showing <span className="rounded-md bg-gray-200 px-2">{pagedTransactions.length}</span> out of {filteredTransactions.length}</p>}
+            <div className="mt-4 flex flex-col gap-2.5 text-sm text-gray-600 md:flex-row md:items-center md:justify-between">
+              {isLoading ? <SkeletonBlock className="h-4 w-52" /> : <p>Showing <span className="rounded-md bg-gray-300 px-2">{pagedTransactions.length}</span> out of {filteredTransactions.length}</p>}
               {isLoading ? (
                 <BillingPaginationSkeleton />
               ) : (

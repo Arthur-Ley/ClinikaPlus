@@ -31,6 +31,7 @@ export type CurrentUserResponse = {
 const API_BASE_URL = import.meta.env.VITE_API_URL || "/api";
 const AUTH_STORAGE_KEY = "clinikaplus.auth";
 let pendingSessionValidation: Promise<LoginResponse | null> | null = null;
+let pendingSessionValidationToken: string | null = null;
 let authFetchInterceptorInstalled = false;
 
 function isAbsoluteUrl(value: string): boolean {
@@ -60,25 +61,59 @@ function toLoginRedirectUrl(): string {
   return `/login?redirect=${encodedCurrentPath}`;
 }
 
-async function postJson<TResponse>(path: string, body: unknown): Promise<TResponse> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+async function postJson<TResponse>(path: string, body: unknown, maxRetries = 3): Promise<TResponse> {
+  let lastError: Error | null = null;
 
-  const json = (await response.json().catch(() => null)) as { error?: string } | null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
-  if (!response.ok) {
-    throw new Error(json?.error || "Request failed.");
+      const response = await fetch(`${API_BASE_URL}${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      const json = (await response.json().catch(() => null)) as { error?: string } | null;
+
+      if (!response.ok) {
+        throw new Error(json?.error || `Server error: ${response.status}`);
+      }
+
+      return json as TResponse;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      // Don't retry on 4xx errors (client errors)
+      if (lastError.message.includes("Server error: 4")) {
+        throw lastError;
+      }
+
+      // If this is the last attempt, throw
+      if (attempt === maxRetries) {
+        throw lastError;
+      }
+
+      // Wait before retrying (exponential backoff: 300ms, 600ms)
+      await new Promise(resolve => setTimeout(resolve, 300 * attempt));
+    }
   }
 
-  return json as TResponse;
+  throw lastError || new Error("Request failed.");
 }
 
 export async function login(payload: LoginPayload): Promise<LoginResponse> {
+  // Clear any pending validation before starting a new login
+  pendingSessionValidation = null;
+  pendingSessionValidationToken = null;
+  clearAuthSession();
+  
   return postJson<LoginResponse>("/auth/login", payload);
 }
 
@@ -93,22 +128,59 @@ export async function requestPasswordReset(email: string, redirectTo: string): P
   return postJson<{ message: string }>("/auth/forgot-password", { email, redirectTo });
 }
 
-export async function getCurrentUser(accessToken: string): Promise<CurrentUserResponse> {
-  const response = await fetch(`${API_BASE_URL}/auth/me`, {
-    method: "GET",
-    cache: "no-store",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
-
-  const json = (await response.json().catch(() => null)) as { error?: string } | null;
-
-  if (!response.ok) {
-    throw new Error(json?.error || "Failed to load current user.");
+export async function getCurrentUser(accessToken: string, maxRetries = 3): Promise<CurrentUserResponse> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+  
+      const response = await fetch(`${API_BASE_URL}/auth/me`, {
+        method: "GET",
+        cache: "no-store",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+        signal: controller.signal,
+      });
+  
+      clearTimeout(timeoutId);
+  
+      const json = (await response.json().catch(() => null)) as { error?: string } | null;
+  
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error("Unauthorized");
+        }
+        throw new Error(json?.error || `Server error: ${response.status}`);
+      }
+  
+      return json as CurrentUserResponse;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+  
+      // Don't retry on 401 (unauthorized)
+      if (lastError.message === "Unauthorized") {
+        throw lastError;
+      }
+  
+      // Don't retry on 4xx errors (client errors)
+      if (lastError.message.includes("Server error: 4")) {
+        throw lastError;
+      }
+  
+      // If this is the last attempt, throw
+      if (attempt === maxRetries) {
+        throw lastError;
+      }
+  
+      // Wait before retrying (exponential backoff)
+      await new Promise(resolve => setTimeout(resolve, 300 * attempt));
+    }
   }
-
-  return json as CurrentUserResponse;
+  
+  throw lastError || new Error("Failed to load current user.");
 }
 
 export function saveAuthSession(session: LoginResponse): void {
@@ -147,13 +219,16 @@ export async function validateAuthSession(): Promise<LoginResponse | null> {
     return null;
   }
 
-  if (pendingSessionValidation) {
+  if (pendingSessionValidation && pendingSessionValidationToken === existingSession.accessToken) {
     return pendingSessionValidation;
   }
 
+  const tokenToValidate = existingSession.accessToken;
+  pendingSessionValidationToken = tokenToValidate;
+
   pendingSessionValidation = (async () => {
     try {
-      const response = await getCurrentUser(existingSession.accessToken);
+      const response = await getCurrentUser(tokenToValidate);
       const nextSession: LoginResponse = {
         ...existingSession,
         user: {
@@ -165,10 +240,16 @@ export async function validateAuthSession(): Promise<LoginResponse | null> {
       saveAuthSession(nextSession);
       return nextSession;
     } catch {
-      clearAuthSession();
+      const latestSession = getAuthSession();
+      if (!latestSession || latestSession.accessToken === tokenToValidate) {
+        clearAuthSession();
+      }
       return null;
     } finally {
-      pendingSessionValidation = null;
+      if (pendingSessionValidationToken === tokenToValidate) {
+        pendingSessionValidation = null;
+        pendingSessionValidationToken = null;
+      }
     }
   })();
 

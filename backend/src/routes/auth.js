@@ -7,6 +7,16 @@ import { asyncHandler } from "../utils/asyncHandler.js";
 export const authRouter = Router();
 const APP_USERS_SCHEMA = "subsystem3";
 const DEFAULT_ROLE = "pharmacist";
+const AUTH_CONNECTIVITY_ERROR_CODES = new Set([
+  "ABORT_ERR",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+]);
 
 function getUserMetadata(user) {
   if (user?.user_metadata && typeof user.user_metadata === "object") {
@@ -18,6 +28,22 @@ function getUserMetadata(user) {
   }
 
   return {};
+}
+
+function isAuthConnectivityError(error) {
+  const code = error?.cause?.code || error?.code || "";
+  return AUTH_CONNECTIVITY_ERROR_CODES.has(code) || error?.message === "fetch failed";
+}
+
+function sendAuthServiceUnavailable(res) {
+  return res.status(503).json({
+    error: "Authentication service is temporarily unavailable. Please try again in a moment.",
+  });
+}
+
+function isAuthDatabaseErrorMessage(message) {
+  const normalized = typeof message === "string" ? message.toLowerCase() : "";
+  return normalized.includes("database error saving new user");
 }
 
 async function loadAppUserProfile(userId) {
@@ -42,21 +68,40 @@ authRouter.post(
     }
 
     const redirectOrigin = env.corsOrigin.split(",")[0]?.trim() || "http://localhost:5173";
-    const { data, error } = await supabaseAuth.auth.signUp({
-      email: trimmedEmail,
-      password,
-      options: {
-        emailRedirectTo: `${redirectOrigin}/login`,
-        data: {
-          first_name: typeof firstName === "string" ? firstName.trim() : "",
-          last_name: typeof lastName === "string" ? lastName.trim() : "",
-          phone: typeof phone === "string" ? phone.trim() : "",
-          dob: typeof dob === "string" ? dob.trim() : "",
+    let signUpResult;
+
+    try {
+      signUpResult = await supabaseAuth.auth.signUp({
+        email: trimmedEmail,
+        password,
+        options: {
+          emailRedirectTo: `${redirectOrigin}/login`,
+          data: {
+            first_name: typeof firstName === "string" ? firstName.trim() : "",
+            last_name: typeof lastName === "string" ? lastName.trim() : "",
+            phone: typeof phone === "string" ? phone.trim() : "",
+            dob: typeof dob === "string" ? dob.trim() : "",
+          },
         },
-      },
-    });
+      });
+    } catch (error) {
+      if (isAuthConnectivityError(error)) {
+        return sendAuthServiceUnavailable(res);
+      }
+
+      throw error;
+    }
+
+    const { data, error } = signUpResult;
 
     if (error) {
+      if (isAuthDatabaseErrorMessage(error.message)) {
+        return res.status(500).json({
+          error:
+            "Supabase signup is failing because the auth user sync trigger is misconfigured. Apply backend/src/db/auth_user_profile_sync.sql in the Supabase SQL editor, then try again.",
+        });
+      }
+
       return res.status(400).json({ error: error.message });
     }
 
@@ -110,10 +155,22 @@ authRouter.post(
       return res.status(400).json({ error: "Email and password are required." });
     }
 
-    const { data, error } = await supabaseAuth.auth.signInWithPassword({
-      email: trimmedEmail,
-      password,
-    });
+    let signInResult;
+
+    try {
+      signInResult = await supabaseAuth.auth.signInWithPassword({
+        email: trimmedEmail,
+        password,
+      });
+    } catch (error) {
+      if (isAuthConnectivityError(error)) {
+        return sendAuthServiceUnavailable(res);
+      }
+
+      throw error;
+    }
+
+    const { data, error } = signInResult;
 
     if (error || !data.user || !data.session) {
       return res.status(401).json({ error: error?.message || "Invalid credentials." });
@@ -151,9 +208,21 @@ authRouter.post(
         ? redirectTo.trim()
         : `${(env.corsOrigin.split(",")[0] || "http://localhost:5173").trim()}/reset-password`;
 
-    const { error } = await supabaseAuth.auth.resetPasswordForEmail(trimmedEmail, {
-      redirectTo: safeRedirectTo,
-    });
+    let resetResult;
+
+    try {
+      resetResult = await supabaseAuth.auth.resetPasswordForEmail(trimmedEmail, {
+        redirectTo: safeRedirectTo,
+      });
+    } catch (error) {
+      if (isAuthConnectivityError(error)) {
+        return sendAuthServiceUnavailable(res);
+      }
+
+      throw error;
+    }
+
+    const { error } = resetResult;
 
     if (error) {
       return res.status(400).json({ error: error.message });
@@ -177,7 +246,19 @@ authRouter.get(
       return res.status(401).json({ error: "Missing access token." });
     }
 
-    const { data, error } = await supabaseAuth.auth.getUser(token);
+    let userResult;
+
+    try {
+      userResult = await supabaseAuth.auth.getUser(token);
+    } catch (error) {
+      if (isAuthConnectivityError(error)) {
+        return sendAuthServiceUnavailable(res);
+      }
+
+      throw error;
+    }
+
+    const { data, error } = userResult;
 
     if (error || !data.user) {
       return res.status(401).json({ error: error?.message || "Invalid session." });

@@ -146,17 +146,19 @@ export default function LandingPage() {
   const scrollToSection = (sectionId: string) => {
     setMobileMenuOpen(false);
     const element = document.getElementById(sectionId);
-    if (element) {
-      const offsetPosition = element.getBoundingClientRect().top + window.pageYOffset - 100;
-      window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
-    }
+    if (!element) return;
+
+    element.scrollIntoView({
+      behavior: 'smooth',
+      block: 'start',
+    });
   };
 
   return (
     <div className="min-h-screen flex flex-col bg-white font-['Inter','system-ui',sans-serif]">
 
       {/* ── Navbar ──────────────────────────────────────────────── */}
-      <header className="w-full bg-white/98 backdrop-blur-xl border-b border-gray-100 fixed top-0 z-30 shadow-sm">
+      <header className="fixed top-0 z-30 w-full border-b border-gray-200 bg-[#F5F7FA] shadow-sm">
         <div className="max-w-7xl mx-auto px-6 lg:px-10 h-20 flex items-center justify-between">
 
           {/* Logo */}
@@ -246,7 +248,7 @@ export default function LandingPage() {
       </div>
 
       {/* ── Features ────────────────────────────────────────────── */}
-      <section id="features" className="py-24 md:py-32 bg-gradient-to-b from-gray-50 to-white">
+      <section id="features" className="scroll-mt-28 py-24 md:py-32 bg-gradient-to-b from-gray-50 to-white">
         <div className="max-w-7xl mx-auto px-6 lg:px-10">
 
           <div className="text-center mb-16 md:mb-20">
@@ -358,7 +360,7 @@ export default function LandingPage() {
       </section>
 
       {/* ── About ───────────────────────────────────────────────── */}
-      <section id="about" className="py-24 md:py-32 bg-white">
+      <section id="about" className="scroll-mt-28 py-24 md:py-32 bg-white">
         <div className="max-w-7xl mx-auto px-6 lg:px-10">
           <div className="text-center mb-16 md:mb-20">
             <div className="inline-flex items-center gap-2 px-4 py-2 bg-purple-50 rounded-full mb-5">
@@ -409,7 +411,7 @@ export default function LandingPage() {
       </section>
 
       {/* ── Contact ─────────────────────────────────────────────── */}
-      <section id="contact" className="py-24 md:py-32 bg-gradient-to-b from-gray-50 to-white">
+      <section id="contact" className="scroll-mt-28 py-24 md:py-32 bg-gradient-to-b from-gray-50 to-white">
         <div className="max-w-7xl mx-auto px-6 lg:px-10">
           <div className="text-center mb-16 md:mb-20">
             <div className="inline-flex items-center gap-2 px-4 py-2 bg-green-50 rounded-full mb-5">
