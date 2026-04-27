@@ -34,6 +34,6 @@ export async function updateRestockRequest(req, res) {
     return res.status(400).json({ error: validation.message });
   }
 
-  await updateRestockRequestFlow(requestId, validation.data);
+  await updateRestockRequestFlow(requestId, validation.data, req.user?.id || null);
   return res.status(200).json({ ok: true });
 }

@@ -13,6 +13,7 @@ import RegisterPage from "./pages/login and register/RegisterPage";
 import CurrentStocks from "./pages/pharmacy/CurrentStocks";
 import RestockSuppliers from "./pages/pharmacy/RestockSuppliers";
 import Settings from "./pages/Settings";
+import NotificationsPage from "./pages/NotificationsPage";
 
 function ProtectedAppProviders() {
   return (
@@ -62,6 +63,7 @@ const router = createBrowserRouter([
           { path: "transactions", element: <Transactions /> },
           { path: "reports", element: <RevenueReports /> },
           { path: "settings", element: <Settings /> },
+          { path: "notifications", element: <NotificationsPage /> },
         ],
       },
         ],

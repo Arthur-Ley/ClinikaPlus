@@ -2971,7 +2971,15 @@ export default function BillingAndPayments() {
                 <div className="mt-2 flex justify-between"><span>Date</span><span className="font-semibold">{formatDateMed(new Date().toISOString())}</span></div>
               </div>
               <div className="px-6 py-4">
-                <button type="button" onClick={closePayModals} className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">Done</button>
+                <div className="flex gap-2">
+                  <button type="button" onClick={printBillReceipt} className="h-10 flex-1 rounded-xl border border-gray-300 bg-white text-sm font-semibold text-gray-700 hover:border-blue-600 hover:bg-blue-600 hover:text-white">
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <Printer size={15} />
+                      Print Receipt
+                    </span>
+                  </button>
+                  <button type="button" onClick={closePayModals} className="h-10 flex-1 rounded-xl bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">Done</button>
+                </div>
               </div>
             </div>
           )}

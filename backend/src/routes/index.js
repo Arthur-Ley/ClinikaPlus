@@ -8,6 +8,7 @@ import { insuranceClaimRouter } from "./insuranceClaim.routes.js";
 import { inventoryAlertRouter } from "./inventoryAlert.js";
 import { medicationRouter } from "./medication.js";
 import { overviewRouter } from "./overview.js";
+import { notificationRouter } from "./notifications.js";
 import { restockRequestRouter } from "./restockRequest.js";
 import { storageRouter } from "./storage.js";
 
@@ -17,6 +18,7 @@ apiRouter.use("/health", healthRouter);
 apiRouter.use("/auth", authRouter);
 apiRouter.use(authenticateRequest);
 apiRouter.use("/overview", overviewRouter);
+apiRouter.use("/notifications", notificationRouter);
 apiRouter.use("/inventory-alerts", inventoryAlertRouter);
 apiRouter.use("/medications", medicationRouter);
 apiRouter.use("/restock-requests", restockRequestRouter);

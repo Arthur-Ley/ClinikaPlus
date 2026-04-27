@@ -13,6 +13,7 @@ type OverviewResponse = {
     inventory_stability: string;
     cash_flow_condition: string;
     outstanding_balance: number;
+    expiredBatches?: number;
   };
   alerts: Array<{
     title: string;
@@ -26,6 +27,12 @@ type OverviewResponse = {
     stock: number;
     unit: string;
     status: InventoryStatus;
+    expiry_label: string;
+  }>;
+  expired_batches: number;
+  expired_items: Array<{
+    medication_key: string;
+    medication_name: string;
     expiry_label: string;
   }>;
   near_expiry_batches: number;
@@ -206,6 +213,7 @@ export default function Dashboard() {
       cashFlowCondition: overview?.summary.cash_flow_condition || 'Stable',
       outstandingBalance: overview?.summary.outstanding_balance || 0,
       nearExpiryBatches: overview?.near_expiry_batches || 0,
+      expiredBatches: overview?.expired_batches || 0,
       revenueToday: overview?.financial_summary.revenue_today || 0,
       pendingPayments: overview?.financial_summary.pending_payments || 0,
       totalTransactions: overview?.financial_summary.total_transactions || 0,
@@ -244,7 +252,7 @@ export default function Dashboard() {
             </div>
             <p className="text-4xl font-bold text-gray-800">{summary.inventoryStability}</p>
             <div className={`my-4 h-2 rounded-full ${statusToneColor(summary.inventoryStability)}`} />
-            <p className="text-base font-semibold text-gray-700">Near-expiry & low-stock risks tracked</p>
+            <p className="text-base font-semibold text-gray-700">{summary.nearExpiryBatches} near-expiry batches · {summary.expiredBatches} expired batches</p>
           </div>
 
           <div className="group rounded-2xl border border-gray-200 bg-gray-100 p-5 transition-all duration-200 hover:border-green-200 hover:bg-white hover:shadow-xl hover:ring-1 hover:ring-inset hover:ring-green-200">

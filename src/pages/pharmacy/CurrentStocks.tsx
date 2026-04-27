@@ -159,7 +159,13 @@ type AddCategoryFieldErrors = Partial<Record<keyof NewCategoryForm, string>>;
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const ALERTS_PAGE_SIZE = 6;
-const DEFAULT_PAGE_SIZE = 5;
+const DEFAULT_PAGE_SIZE = 12;
+const MIN_STOCKS_PAGE_SIZE = 12;
+const MAX_STOCKS_PAGE_SIZE = 12;
+const ESTIMATED_TABLE_HEADER_HEIGHT = 38;
+const ESTIMATED_TABLE_ROW_HEIGHT = 38;
+const TABLE_FOOTER_RESERVED_HEIGHT = 92;
+const TABLE_VIEWPORT_BOTTOM_GUTTER = 24;
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 const formOptions = ['Tablet', 'Capsule', 'Pen', 'Syrup', 'Inhaler', 'Vial'] as const;
 const unitOptions = ['pcs', 'pens', 'vials', 'bottles', 'inhalers', 'sachets'] as const;
@@ -342,6 +348,7 @@ function Skeleton() {
 export default function CurrentStocks() {
   const location = useLocation();
   const handledFocusIdRef = useRef('');
+  const stocksTableViewportRef = useRef<HTMLDivElement | null>(null);
 
   const [items, setItems] = useState<InventoryRow[]>([]);
   const [alerts, setAlerts] = useState<InventoryAlert[]>([]);
@@ -360,6 +367,7 @@ export default function CurrentStocks() {
   const [filterStatus, setFilterStatus] = useState('All Status');
   const [filterMonth, setFilterMonth] = useState('This Year');
   const [currentPage, setCurrentPage] = useState(1);
+  const [stocksPageSize, setStocksPageSize] = useState(DEFAULT_PAGE_SIZE);
 
   const [selectedItem, setSelectedItem] = useState<InventoryRow | null>(null);
   const [isEditingMedication, setIsEditingMedication] = useState(false);
@@ -624,9 +632,9 @@ export default function CurrentStocks() {
   }, [items, searchTerm, filterStatus, filterCategory, filterMonth]);
 
   const categoryOptions = useMemo(() => Array.from(new Set(items.map(i => i.category))).sort(), [items]);
-  const totalPages = Math.max(1, Math.ceil(filteredItems.length / DEFAULT_PAGE_SIZE));
-  const startIndex = (currentPage - 1) * DEFAULT_PAGE_SIZE;
-  const pagedItems = filteredItems.slice(startIndex, startIndex + DEFAULT_PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / stocksPageSize));
+  const startIndex = (currentPage - 1) * stocksPageSize;
+  const pagedItems = filteredItems.slice(startIndex, startIndex + stocksPageSize);
 
   useEffect(() => setCurrentPage(1), [searchTerm, filterStatus, filterCategory, filterMonth]);
   useEffect(() => { if (currentPage > totalPages) setCurrentPage(totalPages); }, [currentPage, totalPages]);
@@ -707,7 +715,7 @@ export default function CurrentStocks() {
     if (handledFocusIdRef.current === focusMedicationId) return;
     const targetIndex = filteredItems.findIndex(i => i.id === focusMedicationId);
     if (targetIndex < 0) return;
-    setCurrentPage(Math.floor(targetIndex / DEFAULT_PAGE_SIZE) + 1);
+    setCurrentPage(Math.floor(targetIndex / stocksPageSize) + 1);
     setTimeout(() => {
       const node = document.querySelector(`[data-search-medication-id="${focusMedicationId}"]`);
       if (node instanceof HTMLElement) {
@@ -715,7 +723,32 @@ export default function CurrentStocks() {
         handledFocusIdRef.current = focusMedicationId;
       }
     }, 120);
-  }, [focusMedicationId, filteredItems]);
+  }, [focusMedicationId, filteredItems, stocksPageSize]);
+
+  useEffect(() => {
+    const viewport = stocksTableViewportRef.current;
+    if (!viewport) return;
+
+    const recomputePageSize = () => {
+      const viewportRect = viewport.getBoundingClientRect();
+      const availableHeight = window.innerHeight - viewportRect.top - TABLE_FOOTER_RESERVED_HEIGHT - TABLE_VIEWPORT_BOTTOM_GUTTER;
+      if (availableHeight <= 0) return;
+      const rows = Math.floor((availableHeight - ESTIMATED_TABLE_HEADER_HEIGHT) / ESTIMATED_TABLE_ROW_HEIGHT);
+      const nextPageSize = Math.max(MIN_STOCKS_PAGE_SIZE, Math.min(MAX_STOCKS_PAGE_SIZE, rows));
+      setStocksPageSize((prev) => (prev === nextPageSize ? prev : nextPageSize));
+    };
+
+    recomputePageSize();
+
+    const observer = new ResizeObserver(recomputePageSize);
+    observer.observe(viewport);
+    window.addEventListener('resize', recomputePageSize);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', recomputePageSize);
+    };
+  }, [showAllAlerts, filteredAlerts.length]);
 
   useEffect(() => {
     if (!openMedicationId || !items.length) return;
@@ -1366,7 +1399,7 @@ function buildMedicationUpdatePayload(
                 </>
               )}
             />
-            <div className="overflow-x-auto rounded-xl">
+            <div ref={stocksTableViewportRef} className="overflow-x-auto rounded-xl min-h-[360px]">
               <table className="w-full table-fixed text-xs md:text-sm">
                 <thead className="bg-gray-200/90 text-gray-700">
                   <tr>
@@ -1382,7 +1415,7 @@ function buildMedicationUpdatePayload(
                   </tr>
                 </thead>
                 <tbody>
-                  {isLoadingStocks && Array.from({ length: 5 }).map((_, i) => (
+                  {isLoadingStocks && Array.from({ length: stocksPageSize }).map((_, i) => (
                     <tr key={i} className="border-t border-gray-200">
                       <td colSpan={9} className="px-2 py-1.5"><div className="h-8 w-full animate-pulse rounded bg-gray-200" /></td>
                     </tr>

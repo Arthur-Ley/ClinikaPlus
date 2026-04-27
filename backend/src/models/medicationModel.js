@@ -150,3 +150,19 @@ export function validateCreateCategoryInput(payload) {
     },
   };
 }
+
+export function validateDisposeExpiredMedicationInput(payload) {
+  const reasonRaw = payload?.reason;
+  const reason = typeof reasonRaw === "string" ? reasonRaw.trim() : "";
+
+  if (reason.length > 500) {
+    return { ok: false, message: "'reason' must be 500 characters or fewer." };
+  }
+
+  return {
+    ok: true,
+    data: {
+      reason: reason || null,
+    },
+  };
+}

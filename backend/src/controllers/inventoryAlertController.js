@@ -11,6 +11,6 @@ export async function markInventoryAlertResolved(req, res) {
     return res.status(400).json({ error: "'alertId' must be a positive integer." });
   }
 
-  await resolveInventoryAlert(alertId);
+  await resolveInventoryAlert(alertId, req.user?.id || null);
   return res.status(200).json({ ok: true });
 }
