@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -15,17 +15,10 @@ import {
   AlertTriangle,
   X,
 } from 'lucide-react';
-import { RESTOCK_REQUESTS_CHANGED_EVENT } from '../pages/pharmacy/restockRequestsStore';
 import { clearAuthSession } from '../services/authApi';
 
 type LinkIcon = React.ComponentType<{ size?: number; className?: string }>;
 type BadgeCount = number;
-
-type InventoryAlertApiItem = {
-  medication_id: number;
-};
-
-const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 function CountBadge({ count, active }: { count: BadgeCount; active?: boolean }) {
   if (count <= 0) return null;
@@ -141,40 +134,11 @@ function Group({
 export default function Sidebar() {
   const { pathname } = useLocation();
   const navigate = useNavigate();
-  const [inventoryAlertCount, setInventoryAlertCount] = useState(0);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
 
   const matchesRoute = (base: string) => pathname === base || pathname.startsWith(`${base}/`);
   const pharmacyActive = ['/pharmacy', '/inventory', '/restock', '/suppliers'].some(matchesRoute);
   const billingActive = matchesRoute('/billing') || pathname === '/reports' || pathname === '/transactions';
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadInventoryAlertCount() {
-      try {
-        const response = await fetch(`${API_BASE_URL}/inventory-alerts`);
-        if (!response.ok) throw new Error('Failed to load inventory alerts counter.');
-        const json = (await response.json()) as { items: InventoryAlertApiItem[] };
-        const nextCount = (json.items || []).length;
-        if (isMounted) setInventoryAlertCount(nextCount);
-      } catch {
-        if (isMounted) setInventoryAlertCount(0);
-      }
-    }
-
-    loadInventoryAlertCount();
-
-    function handleRequestChange() {
-      loadInventoryAlertCount();
-    }
-
-    window.addEventListener(RESTOCK_REQUESTS_CHANGED_EVENT, handleRequestChange);
-    return () => {
-      isMounted = false;
-      window.removeEventListener(RESTOCK_REQUESTS_CHANGED_EVENT, handleRequestChange);
-    };
-  }, [pathname]);
 
   function handleLogout() {
     try {
@@ -207,9 +171,8 @@ export default function Sidebar() {
             active={pharmacyActive}
             label="Pharmacy"
             icon={Package}
-            badgeCount={inventoryAlertCount}
           >
-            <SubLink to="/pharmacy/inventory" label="Inventory & Alerts" icon={Boxes} badgeCount={inventoryAlertCount} />
+            <SubLink to="/pharmacy/inventory" label="Inventory & Alerts" icon={Boxes} />
             <SubLink to="/pharmacy/restock" label="Restock & Suppliers" icon={Truck} />
           </Group>
 

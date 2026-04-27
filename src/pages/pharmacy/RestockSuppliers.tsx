@@ -172,7 +172,7 @@ export default function RestockSuppliers() {
   const [restockRequests, setRestockRequests] = useState<RestockRequest[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
-  const [modal, setModal] = useState<'none' | 'add' | 'confirm' | 'success' | 'viewSupplier' | 'viewRequest' | 'editRequest' | 'cancelRequest'>('none');
+  const [modal, setModal] = useState<'none' | 'add' | 'confirm' | 'success' | 'viewSupplier' | 'viewRequest' | 'editRequest' | 'cancelRequest' | 'completeRequest'>('none');
   const [selectedSupplier, setSelectedSupplier] = useState<Supplier | null>(null);
   const [selectedRequest, setSelectedRequest] = useState<RestockRequest | null>(null);
   const [confirmChecked, setConfirmChecked] = useState(false);
@@ -631,6 +631,8 @@ export default function RestockSuppliers() {
 
   function openCancelRequest(request: RestockRequest) { setSelectedRequest(request); setModal('cancelRequest'); }
 
+  function openCompleteRequest(request: RestockRequest) { setSelectedRequest(request); setModal('completeRequest'); }
+
   async function confirmCancelRequest() {
     if (!selectedRequest) return;
     try {
@@ -1032,27 +1034,110 @@ export default function RestockSuppliers() {
 
       {modal === 'viewRequest' && selectedRequest && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setModal('none')}>
-          <div className="w-full max-w-[520px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-3 flex items-center justify-between border-b border-gray-300 pb-3">
-              <h2 className="text-xl font-semibold text-gray-800">Stock Request Details</h2>
-              <button type="button" onClick={() => setModal('none')} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600"><X size={14} /></button>
+          <div className="w-full max-w-[760px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-3 border-b border-gray-300 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-gray-300 bg-white">
+                  <img
+                    src="https://api.iconify.design/mdi:clipboard-text-outline.svg?color=%23374151"
+                    alt="Stock request icon"
+                    className="h-7 w-7"
+                  />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-800">Stock Request Details</h2>
+                  <p className="text-sm text-gray-600">Review the request summary, stock snapshot, and supplier schedule.</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold ${selectedRequest.status === 'Completed' ? 'bg-green-100 text-green-700' : selectedRequest.status === 'Cancelled' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                  <CircleDot className="h-3.5 w-3.5" />
+                  {selectedRequest.status}
+                </span>
+                <button type="button" onClick={() => setModal('none')} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:bg-gray-400">
+                  <X size={14} />
+                </button>
+              </div>
             </div>
-            <div className="space-y-1.5 text-sm text-gray-800">
-              <p><span className="font-semibold">Request ID:</span> {selectedRequest.id}</p>
-              <p><span className="font-semibold">Medication:</span> {selectedRequest.medication}</p>
-              <p><span className="font-semibold">Category:</span> {selectedRequest.category}</p>
-              <p><span className="font-semibold">Severity:</span> {selectedRequest.severity}</p>
-              <p><span className="font-semibold">Quantity:</span> {selectedRequest.quantity} {selectedRequest.unit}</p>
-              <p><span className="font-semibold">Stock / Threshold:</span> {selectedRequest.currentStock} {selectedRequest.unit} / {selectedRequest.threshold} {selectedRequest.unit}</p>
-              <p><span className="font-semibold">Supplier:</span> {selectedRequest.supplier}</p>
-              <p><span className="font-semibold">Requested On:</span> {selectedRequest.requestedOn}</p>
-              <p><span className="font-semibold">Needed By:</span> {selectedRequest.neededBy || 'N/A'}</p>
-              <p><span className="font-semibold">Status:</span> <span className={statusAccentClass(selectedRequest.status)}>{selectedRequest.status}</span></p>
-              <p><span className="font-semibold">Notes:</span> {selectedRequest.notes || 'N/A'}</p>
+
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <section className="rounded-xl border border-gray-200 bg-white p-4 lg:col-span-2">
+                <div className="mb-3 flex items-center gap-2 text-gray-700">
+                  <ClipboardList className="h-4 w-4" />
+                  <h3 className="text-sm font-bold uppercase tracking-wide">Request Overview</h3>
+                </div>
+                <dl className="grid grid-cols-1 gap-3 text-sm text-gray-800 md:grid-cols-2">
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <dt className="text-xs text-gray-500">Request ID</dt>
+                    <dd className="mt-1 font-semibold text-gray-900">{selectedRequest.id}</dd>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <dt className="text-xs text-gray-500">Medication</dt>
+                    <dd className="mt-1 font-semibold text-gray-900">{selectedRequest.medication}</dd>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <dt className="text-xs text-gray-500">Category</dt>
+                    <dd className="mt-1 font-semibold text-gray-900">{selectedRequest.category}</dd>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <dt className="text-xs text-gray-500">Severity</dt>
+                    <dd className={`mt-1 inline-flex rounded-full px-2 py-1 text-xs font-semibold ${selectedRequest.severity === 'Critical' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                      {selectedRequest.severity}
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+
+              <section className="rounded-xl border border-gray-200 bg-white p-4">
+                <div className="mb-3 flex items-center gap-2 text-gray-700">
+                  <Shield className="h-4 w-4" />
+                  <h3 className="text-sm font-bold uppercase tracking-wide">Inventory Snapshot</h3>
+                </div>
+                <div className="space-y-3 text-sm text-gray-800">
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <p className="text-xs text-gray-500">Requested Quantity</p>
+                    <p className="mt-1 text-base font-bold text-gray-900">{selectedRequest.quantity} {selectedRequest.unit}</p>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <p className="text-xs text-gray-500">Current Stock</p>
+                    <p className="mt-1 text-base font-bold text-gray-900">{selectedRequest.currentStock} {selectedRequest.unit}</p>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <p className="text-xs text-gray-500">Reorder Threshold</p>
+                    <p className="mt-1 text-base font-bold text-gray-900">{selectedRequest.threshold} {selectedRequest.unit}</p>
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-gray-200 bg-white p-4 lg:col-span-3">
+                <div className="mb-3 flex items-center gap-2 text-gray-700">
+                  <Truck className="h-4 w-4" />
+                  <h3 className="text-sm font-bold uppercase tracking-wide">Supplier and Schedule</h3>
+                </div>
+                <dl className="grid grid-cols-1 gap-3 text-sm text-gray-800 md:grid-cols-3">
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <dt className="text-xs text-gray-500">Supplier</dt>
+                    <dd className="mt-1 font-semibold text-gray-900">{selectedRequest.supplier}</dd>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <dt className="text-xs text-gray-500">Requested On</dt>
+                    <dd className="mt-1 font-semibold text-gray-900">{selectedRequest.requestedOn}</dd>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <dt className="text-xs text-gray-500">Needed By</dt>
+                    <dd className="mt-1 font-semibold text-gray-900">{selectedRequest.neededBy || 'N/A'}</dd>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 md:col-span-3">
+                    <dt className="text-xs text-gray-500">Notes</dt>
+                    <dd className="mt-1 whitespace-pre-wrap text-gray-900">{selectedRequest.notes || 'N/A'}</dd>
+                  </div>
+                </dl>
+              </section>
             </div>
-            <div className="mt-4 flex items-center justify-end gap-2">
+
+            <div className="mt-5 flex items-center justify-end gap-2 border-t border-gray-300 pt-4">
               {selectedRequest.status === 'Pending' && (
-                <button type="button" onClick={markRequestAsCompleted} className="h-9 rounded-lg bg-[#22C55E] px-4 text-sm font-semibold text-white hover:bg-[#16A34A]">Mark as Completed</button>
+                <button type="button" onClick={() => openCompleteRequest(selectedRequest)} className="h-9 rounded-lg bg-[#22C55E] px-4 text-sm font-semibold text-white hover:bg-[#16A34A]">Mark as Completed</button>
               )}
               <button type="button" onClick={() => setModal('none')} className="h-9 rounded-lg border border-gray-300 px-4 text-sm font-semibold text-gray-700">Close</button>
             </div>
@@ -1063,36 +1148,84 @@ export default function RestockSuppliers() {
 
       {modal === 'editRequest' && selectedRequest && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setModal('none')}>
-          <div className="w-full max-w-[520px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-3 flex items-center justify-between border-b border-gray-300 pb-3">
-              <h2 className="text-xl font-semibold text-gray-800">Adjust Restock Request</h2>
-              <button type="button" onClick={() => setModal('none')} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600"><X size={14} /></button>
+          <div className="w-full max-w-[760px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-3 border-b border-gray-300 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-gray-300 bg-white">
+                  <img
+                    src="https://api.iconify.design/mdi:tune-variant.svg?color=%23374151"
+                    alt="Adjust request icon"
+                    className="h-7 w-7"
+                  />
+                </div>
+                <div>
+                  <h2 className="text-xl font-bold text-gray-800">Adjust Restock Request</h2>
+                  <p className="text-sm text-gray-600">Update supplier, quantity, schedule, and notes before saving.</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => setModal('none')} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:bg-gray-400">
+                <X size={14} />
+              </button>
             </div>
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <label className="text-sm text-gray-700 md:col-span-2">
-                Supplier
-                <select className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={restockEdit.supplierId} onChange={(e) => setRestockEdit((prev) => ({ ...prev, supplierId: e.target.value }))}>
-                  <option value="">Select supplier</option>
-                  {supplierRows.map((s) => <option key={s.id} value={String(s.supplierId)}>{s.name}</option>)}
-                </select>
-                {restockEditErrors.supplier && <p className="mt-1 text-xs text-red-500">{restockEditErrors.supplier}</p>}
-              </label>
-              <label className="text-sm text-gray-700">
-                Quantity ({selectedRequest.unit})
-                <input type="number" min={1} className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={restockEdit.quantity} onChange={(e) => setRestockEdit((prev) => ({ ...prev, quantity: e.target.value }))} />
-                {restockEditErrors.quantity && <p className="mt-1 text-xs text-red-500">{restockEditErrors.quantity}</p>}
-              </label>
-              <label className="text-sm text-gray-700">
-                Needed By
-                <input type="date" className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm" value={restockEdit.neededBy} onChange={(e) => setRestockEdit((prev) => ({ ...prev, neededBy: e.target.value }))} />
-                {restockEditErrors.neededBy && <p className="mt-1 text-xs text-red-500">{restockEditErrors.neededBy}</p>}
-              </label>
-              <label className="text-sm text-gray-700 md:col-span-2">
-                Notes (Optional)
-                <textarea className="mt-1 w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2 text-sm" rows={3} value={restockEdit.notes} onChange={(e) => setRestockEdit((prev) => ({ ...prev, notes: e.target.value }))} />
-              </label>
+
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <section className="rounded-xl border border-gray-200 bg-white p-4 lg:col-span-1">
+                <div className="mb-3 flex items-center gap-2 text-gray-700">
+                  <ClipboardList className="h-4 w-4" />
+                  <h3 className="text-sm font-bold uppercase tracking-wide">Request Context</h3>
+                </div>
+                <dl className="space-y-3 text-sm text-gray-800">
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <dt className="text-xs text-gray-500">Request ID</dt>
+                    <dd className="mt-1 font-semibold text-gray-900">{selectedRequest.id}</dd>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <dt className="text-xs text-gray-500">Medication</dt>
+                    <dd className="mt-1 font-semibold text-gray-900">{selectedRequest.medication}</dd>
+                  </div>
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <dt className="text-xs text-gray-500">Current / Threshold</dt>
+                    <dd className="mt-1 font-semibold text-gray-900">{selectedRequest.currentStock} {selectedRequest.unit} / {selectedRequest.threshold} {selectedRequest.unit}</dd>
+                  </div>
+                </dl>
+              </section>
+
+              <section className="rounded-xl border border-gray-200 bg-white p-4 lg:col-span-2">
+                <div className="mb-3 flex items-center gap-2 text-gray-700">
+                  <Pencil className="h-4 w-4" />
+                  <h3 className="text-sm font-bold uppercase tracking-wide">Editable Fields</h3>
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <label className="text-sm text-gray-700 md:col-span-2">
+                    Supplier
+                    <select className="mt-1 h-10 w-full rounded-lg border border-gray-300 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" value={restockEdit.supplierId} onChange={(e) => setRestockEdit((prev) => ({ ...prev, supplierId: e.target.value }))}>
+                      <option value="">Select supplier</option>
+                      {supplierRows.map((s) => <option key={s.id} value={String(s.supplierId)}>{s.name}</option>)}
+                    </select>
+                    {restockEditErrors.supplier && <p className="mt-1 text-xs text-red-500">{restockEditErrors.supplier}</p>}
+                  </label>
+                  <label className="text-sm text-gray-700">
+                    Quantity ({selectedRequest.unit})
+                    <input type="number" min={1} className="mt-1 h-10 w-full rounded-lg border border-gray-300 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" value={restockEdit.quantity} onChange={(e) => setRestockEdit((prev) => ({ ...prev, quantity: e.target.value }))} />
+                    {restockEditErrors.quantity && <p className="mt-1 text-xs text-red-500">{restockEditErrors.quantity}</p>}
+                  </label>
+                  <label className="text-sm text-gray-700">
+                    Needed By
+                    <input type="date" className="mt-1 h-10 w-full rounded-lg border border-gray-300 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" value={restockEdit.neededBy} onChange={(e) => setRestockEdit((prev) => ({ ...prev, neededBy: e.target.value }))} />
+                    {restockEditErrors.neededBy && <p className="mt-1 text-xs text-red-500">{restockEditErrors.neededBy}</p>}
+                  </label>
+                  <label className="text-sm text-gray-700 md:col-span-2">
+                    Notes (Optional)
+                    <textarea className="mt-1 w-full rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" rows={4} value={restockEdit.notes} onChange={(e) => setRestockEdit((prev) => ({ ...prev, notes: e.target.value }))} />
+                  </label>
+                </div>
+              </section>
             </div>
-            <button type="button" onClick={saveAdjustedRequest} className="mt-4 h-10 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700">Save Changes</button>
+
+            <div className="mt-5 flex flex-col gap-2 border-t border-gray-300 pt-4 md:flex-row md:justify-end">
+              <button type="button" onClick={() => setModal('none')} className="h-10 rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">Cancel</button>
+              <button type="button" onClick={saveAdjustedRequest} className="h-10 rounded-lg bg-blue-600 px-5 text-sm font-semibold text-white hover:bg-blue-700">Save Changes</button>
+            </div>
           </div>
         </div>,
         document.body,
@@ -1100,12 +1233,78 @@ export default function RestockSuppliers() {
 
       {modal === 'cancelRequest' && selectedRequest && typeof document !== 'undefined' && createPortal(
         <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setModal('none')}>
-          <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-gray-100 p-6 text-center shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-2xl font-bold text-gray-800">Cancel Request?</h3>
-            <p className="mt-2 text-sm text-gray-600">This will mark <span className="font-semibold text-gray-800">{selectedRequest.id}</span> as Cancelled.</p>
-            <div className="mt-5 flex items-center justify-center gap-3">
-              <button type="button" onClick={() => setModal('none')} className="h-9 rounded-lg border border-gray-300 px-4 text-sm font-semibold text-gray-700">Keep Pending</button>
-              <button type="button" onClick={confirmCancelRequest} className="h-9 rounded-lg bg-[#EF4444] px-4 text-sm font-semibold text-white hover:bg-[#DC2626]">Confirm Cancel</button>
+          <div className="w-full max-w-[460px] rounded-2xl border border-gray-300 bg-gray-100 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-red-200 bg-red-50">
+                <img
+                  src="https://api.iconify.design/mdi:close-octagon-outline.svg?color=%23DC2626"
+                  alt="Cancel request icon"
+                  className="h-7 w-7"
+                />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-2xl font-bold text-gray-800">Cancel Request?</h3>
+                <p className="mt-1 text-sm text-gray-600">Confirm this action to cancel the request and move it to the cancelled queue.</p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-wide text-gray-500">Request Summary</p>
+              <div className="mt-2 grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <p className="text-gray-500">Request ID</p>
+                  <p className="font-semibold text-gray-800">{selectedRequest.id}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">Medication</p>
+                  <p className="truncate font-semibold text-gray-800" title={selectedRequest.medication}>{selectedRequest.medication}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-3">
+              <button type="button" onClick={() => setModal('none')} className="h-10 rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">Keep Pending</button>
+              <button type="button" onClick={confirmCancelRequest} className="h-10 rounded-lg bg-[#EF4444] px-5 text-sm font-semibold text-white hover:bg-[#DC2626]">Confirm Cancel</button>
+            </div>
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {modal === 'completeRequest' && selectedRequest && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setModal('none')}>
+          <div className="w-full max-w-[460px] rounded-2xl border border-gray-300 bg-gray-100 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-start gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-green-200 bg-green-50">
+                <img
+                  src="https://api.iconify.design/mdi:check-decagram-outline.svg?color=%2316A34A"
+                  alt="Complete request icon"
+                  className="h-7 w-7"
+                />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-2xl font-bold text-gray-800">Mark as Completed?</h3>
+                <p className="mt-1 text-sm text-gray-600">Confirm this action to close the request and move it to the completed queue.</p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-gray-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-wide text-gray-500">Request Summary</p>
+              <div className="mt-2 grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <p className="text-gray-500">Request ID</p>
+                  <p className="font-semibold text-gray-800">{selectedRequest.id}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">Medication</p>
+                  <p className="truncate font-semibold text-gray-800" title={selectedRequest.medication}>{selectedRequest.medication}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-3">
+              <button type="button" onClick={() => setModal('viewRequest')} className="h-10 rounded-lg border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700 hover:bg-gray-50">Go Back</button>
+              <button type="button" onClick={markRequestAsCompleted} className="h-10 rounded-lg bg-[#22C55E] px-5 text-sm font-semibold text-white hover:bg-[#16A34A]">Confirm Complete</button>
             </div>
           </div>
         </div>,

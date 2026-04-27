@@ -1,5 +1,23 @@
 import { supabase } from "../lib/supabase.js";
 
+const EXPIRY_WARNING_DAYS = 30;
+
+function daysUntil(dateValue) {
+  if (!dateValue) return null;
+  const target = new Date(dateValue);
+  if (Number.isNaN(target.getTime())) return null;
+  const diffMs = target.getTime() - Date.now();
+  return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+}
+
+function getExpiryStatus(expiryDate) {
+  const days = daysUntil(expiryDate);
+  if (days === null) return "N/A";
+  if (days < 0) return "Expired";
+  if (days <= EXPIRY_WARNING_DAYS) return "Near Expiry";
+  return "Valid";
+}
+
 function deriveInventoryStatus(totalStock, reorderThreshold) {
   if (totalStock <= 0) return "Critical";
   if (totalStock < reorderThreshold) return "Low";
@@ -64,6 +82,7 @@ async function listMedicationStocks() {
       batch_id,
       medication_id,
       batch_number,
+      quantity,
       expiry_date,
       received_date,
       supplier_id,
@@ -86,6 +105,7 @@ async function listMedicationStocks() {
     const batch = latestBatchByMedication.get(medication.medication_id) || null;
     const totalStock = inventory?.total_stock ?? 0;
     const computedStatus = deriveInventoryStatus(totalStock, medication.reorder_threshold);
+    const expiryStatus = getExpiryStatus(batch?.expiry_date || null);
 
     return {
       medication_id: medication.medication_id,
@@ -102,11 +122,110 @@ async function listMedicationStocks() {
       last_updated: inventory?.last_updated || null,
       batch_id: batch?.batch_id || null,
       batch_number: batch?.batch_number || null,
+      batch_quantity: Number(batch?.quantity || 0),
       expiry_date: batch?.expiry_date || null,
+      expiry_status: expiryStatus,
+      days_until_expiry: daysUntil(batch?.expiry_date || null),
+      is_expired: expiryStatus === "Expired",
       supplier_id: batch?.supplier_id || null,
       supplier_name: batch?.tbl_suppliers?.supplier_name || null,
     };
   });
+}
+
+async function disposeExpiredMedicationFlow(medicationId, input) {
+  const nowIso = new Date().toISOString();
+
+  const { data: medicationRow, error: medicationError } = await supabase
+    .from("tbl_medications")
+    .select("medication_id, medication_name, reorder_threshold")
+    .eq("medication_id", medicationId)
+    .maybeSingle();
+  if (medicationError) throw medicationError;
+  if (!medicationRow?.medication_id) {
+    throw new Error("Medication not found.");
+  }
+
+  const { data: latestBatch, error: latestBatchError } = await supabase
+    .from("tbl_batches")
+    .select("batch_id, medication_id, batch_number, quantity, expiry_date")
+    .eq("medication_id", medicationId)
+    .order("received_date", { ascending: false })
+    .order("batch_id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (latestBatchError) throw latestBatchError;
+  if (!latestBatch?.batch_id) {
+    throw new Error("No batch found for this medication.");
+  }
+
+  const expiryStatus = getExpiryStatus(latestBatch.expiry_date || null);
+  if (expiryStatus !== "Expired") {
+    throw new Error("Latest batch is not expired.");
+  }
+
+  const disposableQty = Number(latestBatch.quantity || 0);
+  if (disposableQty <= 0) {
+    throw new Error("Expired batch is already disposed.");
+  }
+
+  const { error: batchUpdateError } = await supabase
+    .from("tbl_batches")
+    .update({
+      quantity: 0,
+    })
+    .eq("batch_id", latestBatch.batch_id);
+  if (batchUpdateError) throw batchUpdateError;
+
+  const { data: totalsRows, error: totalsError } = await supabase
+    .from("tbl_batches")
+    .select("quantity")
+    .eq("medication_id", medicationId);
+  if (totalsError) throw totalsError;
+
+  const nextTotalStock = (totalsRows || []).reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+  const nextStatus = deriveInventoryStatus(nextTotalStock, Number(medicationRow.reorder_threshold || 0));
+
+  const { data: inventoryRow, error: inventoryReadError } = await supabase
+    .from("tbl_inventory")
+    .select("inventory_id")
+    .eq("medication_id", medicationId)
+    .maybeSingle();
+  if (inventoryReadError) throw inventoryReadError;
+
+  if (inventoryRow?.inventory_id) {
+    const { error: inventoryUpdateError } = await supabase
+      .from("tbl_inventory")
+      .update({
+        total_stock: nextTotalStock,
+        status: nextStatus,
+        last_updated: nowIso,
+      })
+      .eq("inventory_id", inventoryRow.inventory_id);
+    if (inventoryUpdateError) throw inventoryUpdateError;
+  } else {
+    const { error: inventoryInsertError } = await supabase
+      .from("tbl_inventory")
+      .insert({
+        medication_id: medicationId,
+        total_stock: nextTotalStock,
+        status: nextStatus,
+        last_updated: nowIso,
+      });
+    if (inventoryInsertError) throw inventoryInsertError;
+  }
+
+  return {
+    medication_id: medicationId,
+    medication_name: medicationRow.medication_name,
+    batch_id: latestBatch.batch_id,
+    batch_number: latestBatch.batch_number,
+    disposed_quantity: disposableQty,
+    remaining_total_stock: nextTotalStock,
+    status: nextStatus,
+    reason: input.reason,
+    disposed_at: nowIso,
+  };
 }
 
 async function createMedicationFlow(input) {
@@ -294,4 +413,4 @@ async function updateMedicationFlow(medicationId, input) {
   }
 }
 
-export { listCategories, createCategory, listSuppliers, listMedicationStocks, createMedicationFlow, updateMedicationFlow };
+export { listCategories, createCategory, listSuppliers, listMedicationStocks, createMedicationFlow, updateMedicationFlow, disposeExpiredMedicationFlow };

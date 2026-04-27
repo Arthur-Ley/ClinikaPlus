@@ -1,9 +1,19 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Search, Settings, X } from 'lucide-react';
+import { Bell, Search, Settings, X } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useGlobalSearchData } from '../context/GlobalSearchDataContext.tsx';
 import { useBillingPayments } from '../context/useBillingPayments.ts';
 import { getAuthSession, getCurrentUser, type LoginResponse } from '../services/authApi';
+import NotificationPanel from './notifications/NotificationPanel.tsx';
+import {
+  loadNotificationFeed,
+  loadNotificationSummary,
+  markAllNotificationsRead,
+  markNotificationRead,
+  resolveNotification,
+  type NotificationItem,
+  type NotificationSummary,
+} from '../services/notificationsApi.ts';
 
 type NavigationEntry = {
   id: string;
@@ -88,6 +98,7 @@ function highlight(text: string, query: string): ReactNode {
 function getPageTitle(pathname: string) {
   if (pathname === '/' || pathname.startsWith('/dashboard')) return 'Overview';
   if (pathname.startsWith('/settings')) return 'Settings';
+  if (pathname.startsWith('/notifications')) return 'Notifications';
   if (pathname.startsWith('/pharmacy/inventory') || pathname.startsWith('/inventory')) {
     return 'Pharmacy | Inventory & Alerts';
   }
@@ -104,6 +115,10 @@ function getPageTitle(pathname: string) {
   return 'Overview';
 }
 
+function isUnresolved(status: NotificationItem['status']) {
+  return status === 'Active' || status === 'InProgress';
+}
+
 export default function Header() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -112,11 +127,15 @@ export default function Header() {
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const { medications, alerts, restockRequests, suppliers, transactions, isLoading: searchLoading } = useGlobalSearchData();
   const { billingRecords, isLoading: billingLoading } = useBillingPayments();
   const authSession = useMemo(() => getAuthSession(), []);
   const [currentUser, setCurrentUser] = useState<LoginResponse['user'] | null>(authSession?.user ?? null);
+  const [notificationItems, setNotificationItems] = useState<NotificationItem[]>([]);
+  const [notificationSummary, setNotificationSummary] = useState<NotificationSummary | null>(null);
+  const [isNotificationLoading, setIsNotificationLoading] = useState(false);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -130,6 +149,7 @@ export default function Header() {
       if (!rootRef.current?.contains(event.target as Node)) {
         setIsOpen(false);
         setIsProfileOpen(false);
+        setIsNotificationsOpen(false);
         setHighlightedIndex(-1);
       }
     }
@@ -163,6 +183,70 @@ export default function Header() {
     }
 
     hydrateCurrentUser();
+    return () => {
+      isMounted = false;
+    };
+  }, [authSession]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadNotifications() {
+      const accessToken = authSession?.accessToken;
+      if (!accessToken) return;
+
+      setIsNotificationLoading(true);
+
+      try {
+        const [summaryResponse, feedResponse] = await Promise.all([
+          loadNotificationSummary(),
+          loadNotificationFeed(),
+        ]);
+
+        if (!isMounted) return;
+
+        setNotificationSummary(summaryResponse.summary);
+        setNotificationItems(feedResponse.items || []);
+      } catch {
+        if (isMounted) {
+          setNotificationSummary(null);
+          setNotificationItems([]);
+        }
+      } finally {
+        if (isMounted) setIsNotificationLoading(false);
+      }
+    }
+
+    if (isNotificationsOpen) {
+      loadNotifications();
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [authSession, isNotificationsOpen]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadNotificationSummaryOnly() {
+      const accessToken = authSession?.accessToken;
+      if (!accessToken) return;
+
+      try {
+        const response = await loadNotificationSummary();
+        if (isMounted) {
+          setNotificationSummary(response.summary);
+        }
+      } catch {
+        if (isMounted) {
+          setNotificationSummary(null);
+        }
+      }
+    }
+
+    loadNotificationSummaryOnly();
+
     return () => {
       isMounted = false;
     };
@@ -425,6 +509,124 @@ export default function Header() {
     return '';
   }
 
+  function refreshNotificationSummary() {
+    const accessToken = authSession?.accessToken;
+    if (!accessToken) return;
+
+    loadNotificationSummary()
+      .then((response) => setNotificationSummary(response.summary))
+      .catch(() => setNotificationSummary(null));
+  }
+
+  async function handleMarkNotificationRead(item: NotificationItem) {
+    if (item.is_read) return;
+
+    setNotificationItems((previous) => previous.map((entry) => (
+      entry.notification_id === item.notification_id
+        ? { ...entry, is_read: true, read_at: new Date().toISOString() }
+        : entry
+    )));
+
+    try {
+      await markNotificationRead(item.notification_id);
+    } catch {
+      try {
+        const { items } = await loadNotificationFeed();
+        setNotificationItems(items || []);
+      } catch {
+        setNotificationItems((previous) => previous.map((entry) => (
+          entry.notification_id === item.notification_id
+            ? { ...entry, is_read: false, read_at: null }
+            : entry
+        )));
+      }
+    }
+  }
+
+  async function handleResolveNotification(item: NotificationItem) {
+    if (item.action_ref) {
+      await handleNotificationAction(item);
+      return;
+    }
+
+    try {
+      await resolveNotification(item.notification_id);
+      const response = await loadNotificationFeed();
+      setNotificationItems(response.items || []);
+      setNotificationSummary(response.summary);
+      refreshNotificationSummary();
+    } catch {
+      const response = await loadNotificationFeed().catch(() => null);
+      if (response) {
+        setNotificationItems(response.items || []);
+        setNotificationSummary(response.summary);
+      }
+    }
+  }
+
+  async function handleNotificationAction(item: NotificationItem) {
+    if (!item.is_read && item.status !== 'Resolved') {
+      await handleMarkNotificationRead(item);
+    }
+
+    const ref = item.action_ref?.trim();
+    if (!ref) {
+      if (item.status !== 'Resolved') {
+        await handleResolveNotification(item);
+      }
+      return;
+    }
+
+    if (ref.startsWith('/')) {
+      const [path, query] = ref.split('?', 2);
+      navigate(query ? `${path}?${query}` : path);
+      setIsNotificationsOpen(false);
+      return;
+    }
+
+    window.location.href = ref;
+    setIsNotificationsOpen(false);
+  }
+
+  async function handleMarkAllNotificationsRead() {
+    const pendingIds = new Set(
+      notificationItems
+        .filter((item) => isUnresolved(item.status) && !item.is_read)
+        .map((item) => item.notification_id),
+    );
+
+    if (pendingIds.size === 0) return;
+
+    setNotificationItems((previous) => previous.map((entry) => (
+      pendingIds.has(entry.notification_id)
+        ? { ...entry, is_read: true, read_at: entry.read_at || new Date().toISOString() }
+        : entry
+    )));
+
+    try {
+      await markAllNotificationsRead();
+    } catch {
+      try {
+        const response = await loadNotificationFeed();
+        setNotificationItems(response.items || []);
+        setNotificationSummary(response.summary);
+      } catch {
+        setNotificationItems((previous) => previous.map((entry) => (
+          pendingIds.has(entry.notification_id)
+            ? { ...entry, is_read: false, read_at: null }
+            : entry
+        )));
+      }
+    }
+  }
+
+  function handleViewAllNotifications() {
+    setIsNotificationsOpen(false);
+    navigate('/notifications');
+  }
+
+  const notificationBadgeCount = notificationSummary?.badgeCount || 0;
+
   const pageTitle = getPageTitle(location.pathname);
   const fullName = [currentUser?.firstName, currentUser?.lastName]
     .filter(Boolean)
@@ -609,6 +811,41 @@ export default function Header() {
               )}
             </div>
           )}
+          </div>
+          <div className="relative">
+            <button
+              type="button"
+              className="relative flex h-10 w-10 items-center justify-center rounded-full text-gray-500 transition hover:bg-amber-50 hover:text-amber-500"
+              aria-label="Notifications"
+              aria-expanded={isNotificationsOpen}
+              onClick={() => {
+                setIsNotificationsOpen((previous) => !previous);
+                setIsOpen(false);
+                setIsProfileOpen(false);
+                setHighlightedIndex(-1);
+              }}
+            >
+              <Bell size={16} />
+              {notificationBadgeCount > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 inline-flex min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-4 text-white">
+                  {notificationBadgeCount > 99 ? '99+' : notificationBadgeCount}
+                </span>
+              )}
+            </button>
+
+            {isNotificationsOpen && (
+              <NotificationPanel
+                items={notificationItems}
+                summary={notificationSummary}
+                isLoading={isNotificationLoading}
+                onClose={() => setIsNotificationsOpen(false)}
+                onMarkRead={handleMarkNotificationRead}
+                onResolve={handleResolveNotification}
+                onAction={handleNotificationAction}
+                onMarkAllRead={handleMarkAllNotificationsRead}
+                onViewAll={handleViewAllNotifications}
+              />
+            )}
           </div>
           <div className="relative">
             <button

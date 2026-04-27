@@ -27,6 +27,14 @@ function daysUntil(dateValue) {
   return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 }
 
+function getExpiryStatus(expiryDate) {
+  const days = daysUntil(expiryDate);
+  if (days === null) return "N/A";
+  if (days < 0) return "Expired";
+  if (days <= 30) return "Near Expiry";
+  return "Valid";
+}
+
 function formatExpiryLabel(expiryDate) {
   const days = daysUntil(expiryDate);
   if (days === null) return "N/A";
@@ -156,6 +164,8 @@ export async function getOverviewData() {
   const totalStocks = stocks.length;
   const criticalCount = criticalAlerts.length;
   const warningCount = warningAlerts.length;
+  const expiredBatches = stocks.filter((row) => getExpiryStatus(row.expiry_date) === "Expired");
+  const nearExpiryBatches = stocks.filter((row) => getExpiryStatus(row.expiry_date) === "Near Expiry").length;
 
   const overallSystemRisk = computeInventoryRiskLevel({
     criticalCount,
@@ -172,6 +182,16 @@ export async function getOverviewData() {
   const inventoryHighlights = stocks
     .slice()
     .sort((a, b) => {
+      const expiryRank = {
+        Expired: 0,
+        "Near Expiry": 1,
+        Valid: 2,
+        "N/A": 3,
+      };
+      const leftExpiryRank = expiryRank[getExpiryStatus(a.expiry_date)] ?? 3;
+      const rightExpiryRank = expiryRank[getExpiryStatus(b.expiry_date)] ?? 3;
+      if (leftExpiryRank !== rightExpiryRank) return leftExpiryRank - rightExpiryRank;
+
       const byStock = Number(a.total_stock || 0) - Number(b.total_stock || 0);
       if (byStock !== 0) return byStock;
 
@@ -192,15 +212,23 @@ export async function getOverviewData() {
       expiry_label: formatExpiryLabel(row.expiry_date),
     }));
 
-  const nearExpiryBatches = stocks.filter((row) => {
-    const days = daysUntil(row.expiry_date);
-    return days !== null && days >= 0 && days <= 30;
-  }).length;
   const nearExpiryItems = stocks
     .filter((row) => {
-      const days = daysUntil(row.expiry_date);
-      return days !== null && days >= 0 && days <= 30;
+      return getExpiryStatus(row.expiry_date) === "Near Expiry";
     })
+    .sort((a, b) => {
+      const left = daysUntil(a.expiry_date) ?? Number.POSITIVE_INFINITY;
+      const right = daysUntil(b.expiry_date) ?? Number.POSITIVE_INFINITY;
+      return left - right;
+    })
+    .slice(0, 5)
+    .map((row) => ({
+      medication_key: `I-${String(row.medication_id).padStart(3, "0")}`,
+      medication_name: row.medication_name,
+      expiry_label: formatExpiryLabel(row.expiry_date),
+    }));
+
+  const expiredItems = expiredBatches
     .sort((a, b) => {
       const left = daysUntil(a.expiry_date) ?? Number.POSITIVE_INFINITY;
       const right = daysUntil(b.expiry_date) ?? Number.POSITIVE_INFINITY;
@@ -244,6 +272,8 @@ export async function getOverviewData() {
     },
     alerts: alertCards,
     inventory_highlights: inventoryHighlights,
+    expired_batches: expiredBatches.length,
+    expired_items: expiredItems,
     near_expiry_batches: nearExpiryBatches,
     near_expiry_items: nearExpiryItems,
     restocking_overview: {

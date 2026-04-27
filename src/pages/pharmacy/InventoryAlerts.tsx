@@ -140,6 +140,9 @@ export default function InventoryAlerts() {
   const [createdRequestIds, setCreatedRequestIds] = useState<Record<string, true>>({});
   const [isSubmittingRestock, setIsSubmittingRestock] = useState(false);
   const [isRestockSuccessOpen, setIsRestockSuccessOpen] = useState(false);
+  const [disposeTarget, setDisposeTarget] = useState<InventoryAlert | null>(null);
+  const [disposeError, setDisposeError] = useState('');
+  const [isDisposingExpired, setIsDisposingExpired] = useState(false);
 
   const loadMedicationStocks = useCallback(async () => {
     const response = await fetch(`${API_BASE_URL}/medications`);
@@ -484,6 +487,58 @@ export default function InventoryAlerts() {
     };
   }
 
+  function isExpiredDate(expiry: string) {
+    if (!expiry || expiry === 'N/A') return false;
+    const parsed = new Date(expiry);
+    if (Number.isNaN(parsed.getTime())) return false;
+    parsed.setHours(23, 59, 59, 999);
+    return parsed.getTime() < Date.now();
+  }
+
+  function openDisposeExpired(alert: InventoryAlert) {
+    setDisposeTarget(alert);
+    setDisposeError('');
+  }
+
+  function closeDisposeExpired() {
+    if (isDisposingExpired) return;
+    setDisposeTarget(null);
+    setDisposeError('');
+  }
+
+  async function confirmDisposeExpired() {
+    if (!disposeTarget || isDisposingExpired) return;
+
+    const medicationId = Number(disposeTarget.id.replace('I-', ''));
+    if (!Number.isInteger(medicationId) || medicationId <= 0) {
+      setDisposeError('Invalid medication identifier. Please refresh and try again.');
+      return;
+    }
+
+    try {
+      setIsDisposingExpired(true);
+      setDisposeError('');
+
+      const response = await fetch(`${API_BASE_URL}/medications/${medicationId}/dispose-expired`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'Disposed expired batch via inventory alerts.' }),
+      });
+
+      if (!response.ok) {
+        const json = await response.json().catch(() => ({} as { error?: string }));
+        throw new Error(json.error || 'Failed to dispose expired batch.');
+      }
+
+      setDisposeTarget(null);
+      await loadPageData();
+    } catch (error) {
+      setDisposeError(error instanceof Error ? error.message : 'Failed to dispose expired batch.');
+    } finally {
+      setIsDisposingExpired(false);
+    }
+  }
+
   return (
     <div className="space-y-5">
       <h1 className="text-3xl font-bold tracking-tight text-gray-800">Inventory | Inventory Alerts</h1>
@@ -627,6 +682,14 @@ export default function InventoryAlerts() {
                   >
                     {createdRequestIds[alert.id] ? 'Request Created' : 'Create Restock Request'}
                   </button>
+                  {isExpiredDate(alert.expiry) && (
+                    <button
+                      className="text-red-600 hover:text-red-700"
+                      onClick={() => openDisposeExpired(alert)}
+                    >
+                      Dispose Expired
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -771,6 +834,37 @@ export default function InventoryAlerts() {
             <button type="button" onClick={() => setIsRestockSuccessOpen(false)} className="mt-5 h-9 w-28 rounded-lg bg-blue-600 text-sm font-semibold text-white">
               Done
             </button>
+          </div>
+        </div>
+      )}
+
+      {disposeTarget && (
+        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={closeDisposeExpired}>
+          <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-gray-100 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-xl font-bold text-gray-800">Dispose Expired Batch</h3>
+            <p className="mt-2 text-sm text-gray-600">
+              This will dispose the latest expired batch of <span className="font-semibold text-gray-800">{disposeTarget.name}</span>.
+            </p>
+            <p className="mt-1 text-sm text-gray-600">Expiry: {disposeTarget.expiry}</p>
+            {disposeError && <p className="mt-3 text-sm text-red-600">{disposeError}</p>}
+            <div className="mt-5 flex gap-2">
+              <button
+                type="button"
+                onClick={closeDisposeExpired}
+                disabled={isDisposingExpired}
+                className="h-9 flex-1 rounded-lg border border-gray-300 bg-white text-sm font-semibold text-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDisposeExpired}
+                disabled={isDisposingExpired}
+                className="h-9 flex-1 rounded-lg bg-red-600 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isDisposingExpired ? 'Disposing...' : 'Confirm Dispose'}
+              </button>
+            </div>
           </div>
         </div>
       )}

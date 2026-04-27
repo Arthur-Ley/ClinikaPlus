@@ -1,6 +1,7 @@
 import {
   createCategory,
   createMedicationFlow,
+  disposeExpiredMedicationFlow,
   listCategories,
   listMedicationStocks,
   listSuppliers,
@@ -9,6 +10,7 @@ import {
 import {
   validateCreateCategoryInput,
   validateCreateMedicationInput,
+  validateDisposeExpiredMedicationInput,
   validateUpdateMedicationInput,
 } from "../models/medicationModel.js";
 
@@ -77,4 +79,32 @@ export async function updateMedication(req, res) {
   }
 
   return res.status(200).json({ ok: true });
+}
+
+export async function disposeExpiredMedication(req, res) {
+  const medicationId = Number(req.params.medicationId);
+  if (!Number.isInteger(medicationId) || medicationId <= 0) {
+    return res.status(400).json({ error: "'medicationId' must be a positive integer." });
+  }
+
+  const validation = validateDisposeExpiredMedicationInput(req.body);
+  if (!validation.ok) {
+    return res.status(400).json({ error: validation.message });
+  }
+
+  try {
+    const result = await disposeExpiredMedicationFlow(medicationId, validation.data);
+    return res.status(200).json({ ok: true, item: result });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to dispose expired medication.";
+    if (
+      message === "Medication not found." ||
+      message === "No batch found for this medication." ||
+      message === "Latest batch is not expired." ||
+      message === "Expired batch is already disposed."
+    ) {
+      return res.status(400).json({ error: message });
+    }
+    throw error;
+  }
 }

@@ -1,4 +1,5 @@
 import { supabase } from "../lib/supabase.js";
+import { resolveNotificationBySource } from "./notificationService.js";
 
 function buildRequestCode() {
   return `RR-${Date.now()}`;
@@ -91,10 +92,31 @@ async function createRestockRequestFlow(input) {
     .single();
 
   if (error) throw error;
+
+  await resolveNotificationBySource({
+    sourceEntityType: "medication",
+    sourceEntityId: input.medicationId,
+    actorId: null,
+    notificationTypes: ["critical_stock", "low_stock"],
+    nextType: "alert_resolved",
+    title: "Restock request created",
+    message: `Restock request ${data.request_code || data.request_id} was created for medication ${input.medicationId}.`,
+    severity: "Info",
+    domain: "inventory",
+    metadata: {
+      request_id: data.request_id,
+      medication_id: input.medicationId,
+      reason: "restock_request_created",
+      signature: `medication:${input.medicationId}:restock_request_created`,
+    },
+    actionType: "review",
+    actionRef: "/pharmacy/restock",
+  });
+
   return data;
 }
 
-async function updateRestockRequestFlow(requestId, updates) {
+async function updateRestockRequestFlow(requestId, updates, actorId = null) {
   const { data: existingRequest, error: existingRequestError } = await supabase
     .from("tbl_restock_requests")
     .select("request_id, medication_id, requested_quantity, status")
@@ -126,8 +148,11 @@ async function updateRestockRequestFlow(requestId, updates) {
   }
 
   const isCompletingNow = existingRequest.status !== "Completed" && updates.status === "Completed";
+  const isCancellingNow = existingRequest.status !== "Cancelled" && updates.status === "Cancelled";
   if (isCompletingNow) {
     const quantityToRestock = updates.requestedQuantity ?? existingRequest.requested_quantity ?? 0;
+    let nextTotalStock = 0;
+    let reorderThreshold = 0;
 
     const { data: inventoryRow, error: inventoryFetchError } = await supabase
       .from("tbl_inventory")
@@ -143,8 +168,9 @@ async function updateRestockRequestFlow(requestId, updates) {
       .single();
     if (medicationFetchError) throw medicationFetchError;
 
-    const nextTotalStock = Number(inventoryRow?.total_stock || 0) + Number(quantityToRestock || 0);
-    const nextInventoryStatus = deriveInventoryStatus(nextTotalStock, Number(medicationRow?.reorder_threshold || 0));
+    nextTotalStock = Number(inventoryRow?.total_stock || 0) + Number(quantityToRestock || 0);
+    reorderThreshold = Number(medicationRow?.reorder_threshold || 0);
+    const nextInventoryStatus = deriveInventoryStatus(nextTotalStock, reorderThreshold);
 
     if (inventoryRow?.inventory_id) {
       const { data: updatedInventory, error: inventoryUpdateError } = await supabase
@@ -177,6 +203,70 @@ async function updateRestockRequestFlow(requestId, updates) {
         throw new Error("Failed to create inventory stock for completed restock request.");
       }
     }
+
+    if (nextTotalStock >= reorderThreshold) {
+      await resolveNotificationBySource({
+        sourceEntityType: "medication",
+        sourceEntityId: existingRequest.medication_id,
+        actorId,
+        notificationTypes: ["critical_stock", "low_stock"],
+        nextType: "alert_resolved",
+        title: "Inventory stock corrected",
+        message: `Stock normalized after restock request ${requestId} completion.`,
+        severity: "Info",
+        domain: "inventory",
+        metadata: {
+          request_id: requestId,
+          medication_id: existingRequest.medication_id,
+          reason: "stock_corrected_after_restock",
+          signature: `medication:${existingRequest.medication_id}:stock_corrected`,
+        },
+        actionType: "resolve",
+        actionRef: "/pharmacy/inventory",
+      });
+    }
+  }
+
+  if (isCompletingNow) {
+    await resolveNotificationBySource({
+      sourceEntityType: "restock_request",
+      sourceEntityId: requestId,
+      actorId,
+      notificationTypes: ["restock_pending"],
+      nextType: "restock_completed",
+      title: "Restock request completed",
+      message: `Restock request ${existingRequest.request_id} was completed.`,
+      severity: "Info",
+      domain: "restock",
+      metadata: {
+        request_id: requestId,
+        medication_id: existingRequest.medication_id,
+        signature: `restock:${requestId}:completed`,
+      },
+      actionType: "resolve",
+      actionRef: "/pharmacy/restock",
+    });
+  }
+
+  if (isCancellingNow) {
+    await resolveNotificationBySource({
+      sourceEntityType: "restock_request",
+      sourceEntityId: requestId,
+      actorId,
+      notificationTypes: ["restock_pending", "restock_overdue"],
+      nextType: "restock_cancelled",
+      title: "Restock request cancelled",
+      message: `Restock request ${existingRequest.request_id} was cancelled.`,
+      severity: "Info",
+      domain: "restock",
+      metadata: {
+        request_id: requestId,
+        medication_id: existingRequest.medication_id,
+        signature: `restock:${requestId}:cancelled`,
+      },
+      actionType: "resolve",
+      actionRef: "/pharmacy/restock",
+    });
   }
 
   const { data, error } = await supabase
