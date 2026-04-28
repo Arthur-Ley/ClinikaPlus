@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, X, Pill, CheckCircle, Plus, ChevronDown, CheckCircle2, Pencil, Layers, Package, Building2, RefreshCw } from 'lucide-react';
+import { AlertTriangle, X, Pill, CheckCircle, Plus, ChevronDown, CheckCircle2, Pencil, Layers, Package, Building2, RefreshCw, Trash2, CalendarDays } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { createRestockRequest, loadRestockRequests, RESTOCK_REQUESTS_CHANGED_EVENT } from './restockRequestsStore';
 import { emitGlobalSearchRefresh } from '../../context/globalSearchEvents';
@@ -20,6 +20,9 @@ interface InventoryAlert {
   suggestedRestock: number;
   unit: string;
   severity: Severity;
+  alertType: 'Stock Risk' | 'Expiration Risk';
+  riskMode: 'Low Stock' | 'Near Expiry' | 'Out of Stock' | 'Expired';
+  message: string;
 }
 
 interface InventoryRow {
@@ -120,6 +123,9 @@ type AlertApiItem = {
   reorder_threshold: number;
   unit: string;
   severity: string;
+  alert_type?: 'Stock Risk' | 'Expiration Risk' | 'Expiry Risk' | null;
+  risk_mode?: 'Low Stock' | 'Near Expiry' | 'Out of Stock' | 'Expired' | null;
+  alert_message?: string | null;
 };
 
 type SaveMedicationPayload = {
@@ -219,6 +225,25 @@ function formatDateDisplay(value: string | null) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'N/A';
   return date.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' });
+}
+
+function normalizeAlertType(value: AlertApiItem['alert_type']): 'Stock Risk' | 'Expiration Risk' {
+  return value === 'Expiration Risk' || value === 'Expiry Risk' ? 'Expiration Risk' : 'Stock Risk';
+}
+
+function deriveRiskMode(alertType: 'Stock Risk' | 'Expiration Risk', severity: Severity): InventoryAlert['riskMode'] {
+  if (alertType === 'Stock Risk') {
+    return severity === 'critical' ? 'Out of Stock' : 'Low Stock';
+  }
+  return severity === 'critical' ? 'Expired' : 'Near Expiry';
+}
+
+function isExpiredDate(expiry: string) {
+  if (!expiry || expiry === 'N/A') return false;
+  const parsed = new Date(expiry);
+  if (Number.isNaN(parsed.getTime())) return false;
+  parsed.setHours(23, 59, 59, 999);
+  return parsed.getTime() < Date.now();
 }
 
 function matchesMonthFilter(lastUpdatedIso: string | null, filterMonth: string) {
@@ -398,6 +423,9 @@ export default function CurrentStocks() {
   const [createdRequests, setCreatedRequests] = useState<Record<string, boolean>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [disposeTarget, setDisposeTarget] = useState<InventoryAlert | null>(null);
+  const [disposeError, setDisposeError] = useState('');
+  const [isDisposingExpired, setIsDisposingExpired] = useState(false);
 
   const loadData = useCallback(async () => {
     setIsLoadingStocks(true);
@@ -430,16 +458,23 @@ export default function CurrentStocks() {
       setItems(normalizedItems);
       setSelectedItem(prev => prev ? normalizedItems.find(r => r.id === prev.id) || null : null);
 
-      setAlerts((alertRes.items || []).map((entry): InventoryAlert => ({
-        id: entry.medication_key,
-        name: entry.medication_name,
-        category: entry.category_name,
-        lowStock: entry.total_stock,
-        expiry: entry.expiry_date || 'N/A',
-        suggestedRestock: Math.max(entry.reorder_threshold - entry.total_stock, 0),
-        unit: entry.unit,
-        severity: entry.severity.toLowerCase() as Severity,
-      })));
+      setAlerts((alertRes.items || []).map((entry): InventoryAlert => {
+        const normalizedSeverity: Severity = String(entry.severity).toLowerCase() === 'critical' ? 'critical' : 'warning';
+        const normalizedAlertType = normalizeAlertType(entry.alert_type);
+        return {
+          id: entry.medication_key,
+          name: entry.medication_name,
+          category: entry.category_name,
+          lowStock: entry.total_stock,
+          expiry: entry.expiry_date || 'N/A',
+          suggestedRestock: Math.max(entry.reorder_threshold - entry.total_stock, 0),
+          unit: entry.unit,
+          severity: normalizedSeverity,
+          alertType: normalizedAlertType,
+          riskMode: entry.risk_mode || deriveRiskMode(normalizedAlertType, normalizedSeverity),
+          message: entry.alert_message || '',
+        };
+      }));
 
       const requests = await loadRestockRequests();
       const pending: Record<string, boolean> = {};
@@ -757,6 +792,7 @@ export default function CurrentStocks() {
   }, [openMedicationId, items]);
 
   const openRestock = (alert: InventoryAlert) => {
+    if (alert.alertType !== 'Stock Risk') return;
     const item = items.find(i => i.id === alert.id);
     setRestockTarget(alert);
     setRestockDetails({
@@ -808,6 +844,54 @@ export default function CurrentStocks() {
       setIsSubmitting(false);
     }
   };
+
+  function openDisposeModal(alert: InventoryAlert) {
+    if (alert.alertType !== 'Expiration Risk') return;
+    setDisposeTarget(alert);
+    setDisposeError('');
+  }
+
+  function closeDisposeModal() {
+    if (isDisposingExpired) return;
+    setDisposeTarget(null);
+    setDisposeError('');
+  }
+
+  const canDisposeSelectedTarget = useMemo(() => {
+    if (!disposeTarget) return false;
+    return disposeTarget.riskMode === 'Expired' || isExpiredDate(disposeTarget.expiry);
+  }, [disposeTarget]);
+
+  async function confirmDisposeExpired() {
+    if (!disposeTarget || !canDisposeSelectedTarget || isDisposingExpired) return;
+
+    const medicationId = Number(disposeTarget.id.replace('I-', ''));
+    if (!Number.isInteger(medicationId) || medicationId <= 0) {
+      setDisposeError('Invalid medication identifier. Please refresh and try again.');
+      return;
+    }
+
+    try {
+      setIsDisposingExpired(true);
+      setDisposeError('');
+      const response = await fetch(`${API_BASE_URL}/medications/${medicationId}/dispose-expired`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'Disposed expired batch via inventory & alerts priority cards.' }),
+      });
+      if (!response.ok) {
+        const json = await response.json().catch(() => ({} as { error?: string }));
+        throw new Error(json.error || 'Failed to dispose expired batch.');
+      }
+      setDisposeTarget(null);
+      await loadData();
+      emitGlobalSearchRefresh();
+    } catch (error) {
+      setDisposeError(error instanceof Error ? error.message : 'Failed to dispose expired batch.');
+    } finally {
+      setIsDisposingExpired(false);
+    }
+  }
 
   const selectedRestockSupplier = useMemo(
     () => restockSupplierDropdown.find((supplier) => String(supplier.supplier_id) === restockDetails.supplier) || null,
@@ -1274,7 +1358,7 @@ function buildMedicationUpdatePayload(
             <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3 min-h-[200px] content-start">
               {visibleAlerts.map(alert => (
                 <div
-                  key={alert.id}
+                  key={`${alert.id}-${alert.alertType}-${alert.riskMode}`}
                   data-search-alert-id={alert.id}
                   role="button"
                   tabIndex={0}
@@ -1292,10 +1376,18 @@ function buildMedicationUpdatePayload(
                   }}
                   className={`p-4 rounded-xl border-2 ${severityColors[alert.severity]} cursor-pointer transition hover:-translate-y-0.5 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400 ${highlightedAlertId === alert.id ? 'ring-2 ring-blue-400 shadow-md' : ''}`}
                 >
-                  <div className="flex items-start justify-between mb-3">
-                    <h3 className="font-bold text-sm line-clamp-2 flex-1 mr-2">{alert.name}</h3>
-                    <span className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold ${alert.severity === 'critical' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
-                      {alert.severity.toUpperCase()}
+                  <div className="mb-2 flex items-start gap-2">
+                    <h3 className="min-w-0 flex-1 text-sm font-bold leading-5 text-gray-900">{alert.name}</h3>
+                    <span className="shrink-0 rounded-full bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-700">
+                      {alert.alertType}
+                    </span>
+                  </div>
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${alert.severity === 'critical' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
+                      {alert.severity === 'critical' ? 'Critical' : 'Warning'}
+                    </span>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${alert.severity === 'critical' ? 'bg-red-100 text-red-800' : 'bg-amber-100 text-amber-800'}`}>
+                      {alert.riskMode}
                     </span>
                   </div>
                   <div className="space-y-1 mb-3 text-sm">
@@ -1306,7 +1398,7 @@ function buildMedicationUpdatePayload(
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      className="flex-1 py-1.5 px-3 border border-gray-200 rounded-lg hover:bg-gray-50 font-medium text-sm"
+                      className="flex-1 whitespace-nowrap py-1.5 px-2 border border-gray-200 rounded-lg hover:bg-gray-50 font-medium text-[13px]"
                       onClick={(event) => {
                         event.stopPropagation();
                         openMedicationDetails(items.find(i => i.id === alert.id) || items[0]);
@@ -1314,17 +1406,31 @@ function buildMedicationUpdatePayload(
                     >
                       View
                     </button>
-                    <button
-                      type="button"
-                      className={`flex-1 py-1.5 px-3 rounded-lg font-semibold text-sm ${createdRequests[alert.id] ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openRestock(alert);
-                      }}
-                      disabled={Boolean(createdRequests[alert.id])}
-                    >
-                      {createdRequests[alert.id] ? 'Requested' : 'Create Request'}
-                    </button>
+                    {alert.alertType === 'Stock Risk' && (
+                      <button
+                        type="button"
+                        className={`flex-1 whitespace-nowrap py-1.5 px-2 rounded-lg font-semibold text-[13px] ${createdRequests[alert.id] ? 'bg-gray-100 text-gray-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openRestock(alert);
+                        }}
+                        disabled={Boolean(createdRequests[alert.id])}
+                      >
+                        {createdRequests[alert.id] ? 'Requested' : 'Create Stock Request'}
+                      </button>
+                    )}
+                    {alert.alertType === 'Expiration Risk' && (
+                      <button
+                        type="button"
+                        className="flex-1 whitespace-nowrap py-1.5 px-2 rounded-lg font-semibold text-[13px] bg-red-600 text-white hover:bg-red-700"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openDisposeModal(alert);
+                        }}
+                      >
+                        {alert.riskMode === 'Expired' || isExpiredDate(alert.expiry) ? 'Dispose Expired' : 'Prepare Disposal'}
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -1455,6 +1561,100 @@ function buildMedicationUpdatePayload(
           </div>
 
         </section>
+      )}
+
+      {disposeTarget && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={closeDisposeModal}>
+          <div className="w-full max-w-[460px] overflow-hidden rounded-2xl border border-gray-200 bg-gray-100 shadow-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-200 bg-white px-5 py-4">
+              <div className="flex items-center gap-3">
+                <div className={`rounded-xl p-2 ${canDisposeSelectedTarget ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                  <Trash2 size={18} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-gray-800">
+                    {canDisposeSelectedTarget ? 'Dispose Expired Batch' : 'Prepare Disposal Plan'}
+                  </h3>
+                  <p className="text-xs text-gray-500">Medication safety and stock reconciliation</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={closeDisposeModal}
+                disabled={isDisposingExpired}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 disabled:opacity-60"
+                aria-label="Close dispose modal"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <div className="rounded-xl border border-gray-200 bg-white p-4">
+                <p className="text-sm font-bold text-gray-800">{disposeTarget.name}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <span className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-semibold text-gray-700">{disposeTarget.alertType}</span>
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${disposeTarget.severity === 'critical' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                    {disposeTarget.severity === 'critical' ? 'Critical' : 'Warning'}
+                  </span>
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${disposeTarget.severity === 'critical' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                    {disposeTarget.riskMode}
+                  </span>
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-2 text-sm text-gray-600">
+                  <div className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2">
+                    <span className="inline-flex items-center gap-1.5"><Package size={14} />Current Stock</span>
+                    <span className="font-semibold text-gray-800">{disposeTarget.lowStock} {disposeTarget.unit}</span>
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2">
+                    <span className="inline-flex items-center gap-1.5"><CalendarDays size={14} />Expiry Date</span>
+                    <span className="font-semibold text-gray-800">{disposeTarget.expiry}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className={`rounded-xl border px-3 py-2 text-sm ${canDisposeSelectedTarget ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+                <div className="flex items-start gap-2">
+                  <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                  <p>
+                    {canDisposeSelectedTarget
+                      ? 'This action will dispose the latest expired batch and deduct its quantity from current inventory stock.'
+                      : 'This medication is near expiry. Prepare disposal documentation and monitor until it reaches expired status before final disposal.'}
+                  </p>
+                </div>
+              </div>
+
+              {disposeError && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {disposeError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2 border-t border-gray-200 bg-white px-5 py-4">
+              <button
+                type="button"
+                onClick={closeDisposeModal}
+                disabled={isDisposingExpired}
+                className="h-9 flex-1 rounded-lg border border-gray-300 bg-white text-sm font-semibold text-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {canDisposeSelectedTarget ? 'Cancel' : 'Close'}
+              </button>
+              {canDisposeSelectedTarget && (
+                <button
+                  type="button"
+                  onClick={confirmDisposeExpired}
+                  disabled={isDisposingExpired}
+                  className="inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg bg-red-600 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Trash2 size={14} />
+                  {isDisposingExpired ? 'Disposing...' : 'Confirm Dispose'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body,
       )}
 
       {/* ── Detail / Edit Modal ── */}

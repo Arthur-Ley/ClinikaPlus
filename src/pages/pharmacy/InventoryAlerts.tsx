@@ -17,6 +17,9 @@ type InventoryAlert = {
   suggestedRestock: number;
   unit: string;
   severity: Severity;
+  alertType: 'Stock Risk' | 'Expiration Risk';
+  riskMode: 'Low Stock' | 'Near Expiry' | 'Out of Stock' | 'Expired';
+  message: string;
 };
 
 type InventoryAlertApiItem = {
@@ -30,6 +33,9 @@ type InventoryAlertApiItem = {
   unit: string;
   expiry_date: string | null;
   severity: 'Critical' | 'Warning';
+  alert_type: 'Stock Risk' | 'Expiration Risk' | 'Expiry Risk';
+  risk_mode?: 'Low Stock' | 'Near Expiry' | 'Out of Stock' | 'Expired' | null;
+  alert_message?: string | null;
 };
 
 const ALERTS_PAGE_SIZE = 6;
@@ -73,6 +79,17 @@ const severityColors = {
   critical: 'border-red-300 bg-red-50',
   warning: 'border-amber-300 bg-amber-50',
 };
+
+function normalizeAlertType(value: InventoryAlertApiItem['alert_type']): 'Stock Risk' | 'Expiration Risk' {
+  return value === 'Expiry Risk' || value === 'Expiration Risk' ? 'Expiration Risk' : 'Stock Risk';
+}
+
+function deriveRiskMode(alertType: 'Stock Risk' | 'Expiration Risk', severity: Severity): InventoryAlert['riskMode'] {
+  if (alertType === 'Stock Risk') {
+    return severity === 'critical' ? 'Out of Stock' : 'Low Stock';
+  }
+  return severity === 'critical' ? 'Expired' : 'Near Expiry';
+}
 
 function InventoryAlertsSkeleton() {
   return (
@@ -176,16 +193,23 @@ export default function InventoryAlerts() {
       throw new Error('Failed to load inventory alerts.');
     }
     const data = (await response.json()) as { items: InventoryAlertApiItem[] };
-    const normalized: InventoryAlert[] = (data.items || []).map((entry) => ({
-      id: entry.medication_key,
-      name: entry.medication_name,
-      category: entry.category_name,
-      lowStock: entry.total_stock,
-      expiry: entry.expiry_date || 'N/A',
-      suggestedRestock: Math.max(entry.reorder_threshold - entry.total_stock, entry.reorder_threshold),
-      unit: entry.unit,
-      severity: entry.severity === 'Critical' ? 'critical' : 'warning',
-    }));
+    const normalized: InventoryAlert[] = (data.items || []).map((entry) => {
+      const normalizedSeverity: Severity = entry.severity === 'Critical' ? 'critical' : 'warning';
+      const normalizedAlertType = normalizeAlertType(entry.alert_type);
+      return {
+        id: entry.medication_key,
+        name: entry.medication_name,
+        category: entry.category_name,
+        lowStock: entry.total_stock,
+        expiry: entry.expiry_date || 'N/A',
+        suggestedRestock: Math.max(entry.reorder_threshold - entry.total_stock, entry.reorder_threshold),
+        unit: entry.unit,
+        severity: normalizedSeverity,
+        alertType: normalizedAlertType,
+        riskMode: entry.risk_mode || deriveRiskMode(normalizedAlertType, normalizedSeverity),
+        message: entry.alert_message || '',
+      };
+    });
     setAlerts(normalized);
   }, []);
 
@@ -380,6 +404,7 @@ export default function InventoryAlerts() {
   }
 
   function openCreateRestockRequest(alert: InventoryAlert) {
+    if (alert.alertType !== 'Stock Risk') return;
     setRestockTarget(alert);
     setRestockDetails({
       supplier: getMedicationMetaFromAlert(alert).supplier,
@@ -496,6 +521,7 @@ export default function InventoryAlerts() {
   }
 
   function openDisposeExpired(alert: InventoryAlert) {
+    if (alert.alertType !== 'Expiration Risk') return;
     setDisposeTarget(alert);
     setDisposeError('');
   }
@@ -538,6 +564,11 @@ export default function InventoryAlerts() {
       setIsDisposingExpired(false);
     }
   }
+
+  const canDisposeSelectedTarget = useMemo(() => {
+    if (!disposeTarget) return false;
+    return disposeTarget.riskMode === 'Expired' || isExpiredDate(disposeTarget.expiry);
+  }, [disposeTarget]);
 
   return (
     <div className="space-y-5">
@@ -649,17 +680,26 @@ export default function InventoryAlerts() {
             )}
             {pagedAlerts.map((alert) => (
               <div
-                key={alert.id}
+                key={`${alert.id}-${alert.alertType}-${alert.riskMode}`}
                 data-search-alert-id={alert.id}
                 className={`rounded-xl border p-4 ${severityColors[alert.severity as keyof typeof severityColors] || 'border-gray-300 bg-gray-50'}`}
               >
                 <p className={`text-sm font-semibold ${alert.severity === 'critical' ? 'text-red-500' : 'text-amber-600'}`}>
                   {alert.name} - {alert.category}
                 </p>
+                <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full bg-gray-200 px-2 py-0.5 font-semibold text-gray-700">
+                    Alert Type: {alert.alertType}
+                  </span>
+                  <span className={`rounded-full px-2 py-0.5 font-semibold ${alert.severity === 'critical' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                    Status: {alert.severity === 'critical' ? 'Critical' : 'Warning'} + {alert.riskMode}
+                  </span>
+                </div>
                 <div className="mt-2 text-sm text-gray-800 leading-6">
                   <p>Stock: {alert.lowStock} {alert.unit}</p>
                   <p>Expiry: {alert.expiry}</p>
-                  <p>Suggested Restock: {alert.suggestedRestock} {alert.unit}</p>
+                  {alert.alertType === 'Stock Risk' && <p>Suggested Restock: {alert.suggestedRestock} {alert.unit}</p>}
+                  {alert.message && <p className="text-xs text-gray-600">{alert.message}</p>}
                 </div>
                 <div className="mt-3 flex items-center gap-4 text-sm">
                   <button
@@ -671,23 +711,25 @@ export default function InventoryAlerts() {
                   >
                     View
                   </button>
-                  <button
-                    className={`${
-                      createdRequestIds[alert.id]
-                        ? 'cursor-not-allowed text-gray-400'
-                        : 'text-blue-600 hover:text-blue-700'
-                    }`}
-                    onClick={() => openCreateRestockRequest(alert)}
-                    disabled={Boolean(createdRequestIds[alert.id])}
-                  >
-                    {createdRequestIds[alert.id] ? 'Request Created' : 'Create Restock Request'}
-                  </button>
-                  {isExpiredDate(alert.expiry) && (
+                  {alert.alertType === 'Stock Risk' && (
+                    <button
+                      className={`${
+                        createdRequestIds[alert.id]
+                          ? 'cursor-not-allowed text-gray-400'
+                          : 'text-blue-600 hover:text-blue-700'
+                      }`}
+                      onClick={() => openCreateRestockRequest(alert)}
+                      disabled={Boolean(createdRequestIds[alert.id])}
+                    >
+                      {createdRequestIds[alert.id] ? 'Request Created' : 'Create Stock Request'}
+                    </button>
+                  )}
+                  {alert.alertType === 'Expiration Risk' && (
                     <button
                       className="text-red-600 hover:text-red-700"
                       onClick={() => openDisposeExpired(alert)}
                     >
-                      Dispose Expired
+                      {alert.riskMode === 'Expired' || isExpiredDate(alert.expiry) ? 'Dispose Expired' : 'Prepare Disposal'}
                     </button>
                   )}
                 </div>
@@ -841,11 +883,14 @@ export default function InventoryAlerts() {
       {disposeTarget && (
         <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={closeDisposeExpired}>
           <div className="w-full max-w-sm rounded-2xl border border-gray-300 bg-gray-100 p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-xl font-bold text-gray-800">Dispose Expired Batch</h3>
+            <h3 className="text-xl font-bold text-gray-800">{canDisposeSelectedTarget ? 'Dispose Expired Batch' : 'Prepare Disposal Plan'}</h3>
             <p className="mt-2 text-sm text-gray-600">
-              This will dispose the latest expired batch of <span className="font-semibold text-gray-800">{disposeTarget.name}</span>.
+              {canDisposeSelectedTarget
+                ? <>This will dispose the latest expired batch of <span className="font-semibold text-gray-800">{disposeTarget.name}</span>.</>
+                : <>This medication is near expiry. Prepare disposal documentation and monitor until expiry before final disposal.</>}
             </p>
             <p className="mt-1 text-sm text-gray-600">Expiry: {disposeTarget.expiry}</p>
+            <p className="mt-1 text-sm text-gray-600">Status: {disposeTarget.severity === 'critical' ? 'Critical' : 'Warning'} + {disposeTarget.riskMode}</p>
             {disposeError && <p className="mt-3 text-sm text-red-600">{disposeError}</p>}
             <div className="mt-5 flex gap-2">
               <button
@@ -854,16 +899,18 @@ export default function InventoryAlerts() {
                 disabled={isDisposingExpired}
                 className="h-9 flex-1 rounded-lg border border-gray-300 bg-white text-sm font-semibold text-gray-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Cancel
+                {canDisposeSelectedTarget ? 'Cancel' : 'Close'}
               </button>
-              <button
-                type="button"
-                onClick={confirmDisposeExpired}
-                disabled={isDisposingExpired}
-                className="h-9 flex-1 rounded-lg bg-red-600 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isDisposingExpired ? 'Disposing...' : 'Confirm Dispose'}
-              </button>
+              {canDisposeSelectedTarget && (
+                <button
+                  type="button"
+                  onClick={confirmDisposeExpired}
+                  disabled={isDisposingExpired}
+                  className="h-9 flex-1 rounded-lg bg-red-600 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isDisposingExpired ? 'Disposing...' : 'Confirm Dispose'}
+                </button>
+              )}
             </div>
           </div>
         </div>
