@@ -3,14 +3,14 @@ import { listMedicationStocks } from "./medicationService.js";
 import { resolveNotificationBySource } from "./notificationService.js";
 
 const STOCK_ALERT_TYPE = "Stock Risk";
-const EXPIRY_ALERT_TYPE = "Expiry Risk";
+const EXPIRATION_ALERT_TYPE = "Expiration Risk";
+const LEGACY_EXPIRY_ALERT_TYPE = "Expiry Risk";
+const SUPPORTED_ALERT_TYPES = [STOCK_ALERT_TYPE, EXPIRATION_ALERT_TYPE, LEGACY_EXPIRY_ALERT_TYPE];
 
-function computeStockSeverity(stock, status) {
-  return stock <= 0 || status === "Critical" ? "Critical" : "Warning";
-}
-
-function computeExpirySeverity(expiryStatus) {
-  return expiryStatus === "Expired" ? "Critical" : "Warning";
+function normalizeAlertType(alertType) {
+  const value = String(alertType || "").trim().toLowerCase();
+  if (value === "expiry risk" || value === "expiration risk") return EXPIRATION_ALERT_TYPE;
+  return STOCK_ALERT_TYPE;
 }
 
 function toKey(sourceType, sourceId, alertType) {
@@ -18,10 +18,11 @@ function toKey(sourceType, sourceId, alertType) {
 }
 
 function getPersistedAlertKey(row) {
+  const normalizedType = normalizeAlertType(row.alert_type);
   if (row.batch_id) {
-    return toKey("batch", row.batch_id, row.alert_type);
+    return toKey("batch", row.batch_id, normalizedType);
   }
-  return toKey("medication", row.medication_id, row.alert_type);
+  return toKey("medication", row.medication_id, normalizedType);
 }
 
 function getActiveAlertKey(batchId, medicationId, alertType) {
@@ -45,8 +46,17 @@ function formatExpiryAlertMessage(stock) {
   return `${medicationName} batch ${batchLabel} expires in ${days} day(s). Affected quantity: ${stock.total_stock || 0} ${stock.unit || "pcs"}.`;
 }
 
-function toUiAlert(stock, persistedAlert) {
-  const severity = persistedAlert?.severity || computeStockSeverity(stock.total_stock, stock.status);
+function getRiskModeLabel(alertType, severity) {
+  const normalizedType = normalizeAlertType(alertType);
+  if (normalizedType === STOCK_ALERT_TYPE) {
+    return severity === "Critical" ? "Out of Stock" : "Low Stock";
+  }
+  return severity === "Critical" ? "Expired" : "Near Expiry";
+}
+
+function toUiAlert(stock, persistedAlert, fallbackAlertType, fallbackSeverity, fallbackMessage) {
+  const alertType = normalizeAlertType(persistedAlert?.alert_type || fallbackAlertType);
+  const severity = persistedAlert?.severity || fallbackSeverity;
   return {
     alert_id: persistedAlert?.alert_id || null,
     medication_id: stock.medication_id,
@@ -59,44 +69,11 @@ function toUiAlert(stock, persistedAlert) {
     reorder_threshold: stock.reorder_threshold,
     unit: stock.unit,
     severity,
-    alert_type: persistedAlert?.alert_type || STOCK_ALERT_TYPE,
-    alert_message: persistedAlert?.alert_message || formatStockAlertMessage(stock.medication_name, stock.total_stock, stock.reorder_threshold, stock.unit),
+    alert_type: alertType,
+    risk_mode: getRiskModeLabel(alertType, severity),
+    alert_message: persistedAlert?.alert_message || fallbackMessage,
     triggered_at: persistedAlert?.triggered_at || new Date().toISOString(),
     is_resolved: false,
-  };
-}
-
-function severityScore(severity) {
-  return severity === "Critical" ? 0 : 1;
-}
-
-function preferAlert(left, right) {
-  if (!left) return right;
-  if (!right) return left;
-
-  const leftScore = severityScore(left.severity);
-  const rightScore = severityScore(right.severity);
-  if (leftScore !== rightScore) return leftScore < rightScore ? left : right;
-
-  const leftIsExpiry = left.alert_type === EXPIRY_ALERT_TYPE;
-  const rightIsExpiry = right.alert_type === EXPIRY_ALERT_TYPE;
-  if (leftIsExpiry !== rightIsExpiry) return leftIsExpiry ? left : right;
-
-  return left;
-}
-
-function mergeAlertEntries(alertEntries) {
-  if (alertEntries.length === 0) return null;
-  if (alertEntries.length === 1) return alertEntries[0];
-
-  const preferred = alertEntries.reduce(preferAlert);
-  const severity = alertEntries.some((entry) => entry.severity === "Critical") ? "Critical" : "Warning";
-  const alertMessage = Array.from(new Set(alertEntries.map((entry) => entry.alert_message).filter(Boolean))).join(" | ");
-
-  return {
-    ...preferred,
-    severity,
-    alert_message: alertMessage || preferred.alert_message,
   };
 }
 
@@ -153,7 +130,7 @@ function buildExpiryAlertCandidate(stock) {
     action_type: "review",
     action_ref: `/pharmacy/inventory?focusMedicationId=${encodeURIComponent(`I-${String(stock.medication_id).padStart(3, "0")}`)}`,
     signature: `${stock.batch_id}:${isExpired ? "expired" : "near_expiry"}`,
-    alert_type: EXPIRY_ALERT_TYPE,
+    alert_type: EXPIRATION_ALERT_TYPE,
     batch_id: stock.batch_id,
   };
 }
@@ -170,7 +147,7 @@ async function syncAndListInventoryAlerts() {
     .from("tbl_inventory_alerts")
     .select("alert_id, medication_id, batch_id, alert_type, severity, alert_message, triggered_at")
     .eq("is_resolved", false)
-    .in("alert_type", [STOCK_ALERT_TYPE, EXPIRY_ALERT_TYPE]);
+    .in("alert_type", SUPPORTED_ALERT_TYPES);
   if (unresolvedError) throw unresolvedError;
 
   const unresolvedByKey = new Map((unresolvedRows || []).map((row) => [getPersistedAlertKey(row), row]));
@@ -255,46 +232,54 @@ async function syncAndListInventoryAlerts() {
     .from("tbl_inventory_alerts")
     .select("alert_id, medication_id, batch_id, alert_type, severity, alert_message, triggered_at, is_resolved")
     .eq("is_resolved", false)
-    .in("alert_type", [STOCK_ALERT_TYPE, EXPIRY_ALERT_TYPE]);
+    .in("alert_type", SUPPORTED_ALERT_TYPES);
   if (finalError) throw finalError;
 
   const finalByKey = new Map((finalRows || []).map((row) => [getPersistedAlertKey(row), row]));
 
   return activeStocks
-    .map((stock) => {
+    .flatMap((stock) => {
       const stockCandidate = buildStockAlertCandidate(stock);
       const expiryCandidate = buildExpiryAlertCandidate(stock);
       const alerts = [];
 
       if (stockCandidate) {
-        alerts.push(toUiAlert(stock, finalByKey.get(getActiveAlertKey(stock.batch_id, stock.medication_id, stockCandidate.alert_type))));
+        const stockPersisted =
+          finalByKey.get(getActiveAlertKey(stock.batch_id, stock.medication_id, stockCandidate.alert_type)) ||
+          finalByKey.get(getActiveAlertKey(stock.batch_id, stock.medication_id, STOCK_ALERT_TYPE));
+        alerts.push(
+          toUiAlert(
+            stock,
+            stockPersisted,
+            stockCandidate.alert_type,
+            stockCandidate.severity,
+            stockCandidate.message,
+          ),
+        );
       }
 
       if (expiryCandidate) {
-        alerts.push({
-          alert_id: finalByKey.get(toKey("batch", stock.batch_id, expiryCandidate.alert_type))?.alert_id || null,
-          medication_id: stock.medication_id,
-          medication_key: `I-${String(stock.medication_id).padStart(3, "0")}`,
-          medication_name: stock.medication_name,
-          category_name: stock.category_name,
-          batch_id: stock.batch_id,
-          expiry_date: stock.expiry_date,
-          total_stock: stock.total_stock,
-          reorder_threshold: stock.reorder_threshold,
-          unit: stock.unit,
-          severity: expiryCandidate.severity,
-          alert_type: expiryCandidate.alert_type,
-          alert_message: expiryCandidate.message,
-          triggered_at: finalByKey.get(toKey("batch", stock.batch_id, expiryCandidate.alert_type))?.triggered_at || new Date().toISOString(),
-          is_resolved: false,
-        });
+        const expiryPersisted =
+          finalByKey.get(toKey("batch", stock.batch_id, EXPIRATION_ALERT_TYPE)) ||
+          finalByKey.get(toKey("batch", stock.batch_id, LEGACY_EXPIRY_ALERT_TYPE));
+        alerts.push(
+          toUiAlert(
+            stock,
+            expiryPersisted,
+            expiryCandidate.alert_type,
+            expiryCandidate.severity,
+            expiryCandidate.message,
+          ),
+        );
       }
 
-      return mergeAlertEntries(alerts);
+      return alerts;
     })
-    .filter(Boolean)
     .sort((a, b) => {
       if (a.severity !== b.severity) return a.severity === "Critical" ? -1 : 1;
+      if (normalizeAlertType(a.alert_type) !== normalizeAlertType(b.alert_type)) {
+        return normalizeAlertType(a.alert_type) === STOCK_ALERT_TYPE ? -1 : 1;
+      }
       return a.total_stock - b.total_stock;
     });
 }
@@ -317,7 +302,7 @@ async function resolveInventoryAlert(alertId, actorId = null) {
   if (error) throw error;
 
   if (alertRow?.medication_id) {
-    const isExpiryAlert = String(alertRow.alert_type || "").toLowerCase() === "expiry risk" || alertRow.batch_id != null;
+    const isExpiryAlert = normalizeAlertType(alertRow.alert_type) === EXPIRATION_ALERT_TYPE || alertRow.batch_id != null;
     await resolveNotificationBySource({
       sourceEntityType: isExpiryAlert ? "batch" : "medication",
       sourceEntityId: isExpiryAlert ? (alertRow.batch_id || alertRow.medication_id) : alertRow.medication_id,
