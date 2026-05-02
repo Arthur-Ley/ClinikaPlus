@@ -89,34 +89,11 @@ function toNotificationItem(row, readRow) {
   };
 }
 
-function severityRank(severity) {
-  if (severity === "Critical") return 0;
-  if (severity === "Warning") return 1;
-  return 2;
-}
-
 function sortPriority(left, right) {
-  const leftActive = ACTIVE_STATUSES.has(left.status);
-  const rightActive = ACTIVE_STATUSES.has(right.status);
-  const leftUnread = leftActive && !left.is_read;
-  const rightUnread = rightActive && !right.is_read;
-
-  const leftRank = left.status === "Resolved"
-    ? 6
-    : leftUnread
-      ? severityRank(left.severity)
-      : severityRank(left.severity) + 3;
-  const rightRank = right.status === "Resolved"
-    ? 6
-    : rightUnread
-      ? severityRank(right.severity)
-      : severityRank(right.severity) + 3;
-
-  if (leftRank !== rightRank) return leftRank - rightRank;
-
-  const leftDate = new Date(left.resolved_at || left.created_at || 0).getTime();
-  const rightDate = new Date(right.resolved_at || right.created_at || 0).getTime();
-  return rightDate - leftDate;
+  const leftDate = new Date(left.created_at || 0).getTime();
+  const rightDate = new Date(right.created_at || 0).getTime();
+  if (rightDate !== leftDate) return rightDate - leftDate;
+  return Number(right.notification_id || 0) - Number(left.notification_id || 0);
 }
 
 function buildInventoryCandidates(stocks) {

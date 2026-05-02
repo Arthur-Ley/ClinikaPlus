@@ -1,5 +1,5 @@
-import type { RefObject } from 'react';
-import { CheckCircle2, CircleGauge, PlusCircle, Search, User, X } from 'lucide-react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
+import { CheckCircle2, CircleGauge, PlusCircle, Search, User, X, Pill, Clock, Calendar, DollarSign, History } from 'lucide-react';
 
 type Props = {
   isCreatingBill: boolean;
@@ -70,12 +70,56 @@ type Props = {
   setCalculator: (field: 'unitsPerIntake' | 'frequencyPerDay' | 'numberOfDays' | 'pricePerUnit' | 'alreadyTaken', value: string) => void;
   calculatorPreview: { isValid: boolean; warning: string; totalQuantity: number; remainingQuantity: number; totalCost: number };
   applyCalculator: () => void;
+  calculatorReferenceMedication: { medication_id: number; medication_name: string; form?: string; strength?: string; unit?: string } | null;
+  calculatorReferenceSearch: string;
+  setCalculatorReferenceSearch: (value: string) => void;
+  calculatorReferenceOptions: Array<{ medication_id: number; medication_name: string; form?: string; strength?: string; unit?: string }>;
+  selectCalculatorReferenceMedication: (medication: { medication_id: number; medication_name: string; form?: string; strength?: string; unit?: string }) => void;
   toPeso: (value: number) => string;
   formatDateMed: (value: string) => string;
 };
 
 export default function MedicineOnlyBillModal(props: Props) {
   const p = props;
+  const patientSearchWrapRef = useRef<HTMLDivElement | null>(null);
+  const medicationSearchWrapRef = useRef<HTMLDivElement | null>(null);
+  const calculatorReferenceWrapRef = useRef<HTMLDivElement | null>(null);
+  const [showCalculatorReferenceResults, setShowCalculatorReferenceResults] = useState(true);
+
+  useEffect(() => {
+    function handleDocumentClick(event: MouseEvent) {
+      const target = event.target as Node;
+      if (patientSearchWrapRef.current && !patientSearchWrapRef.current.contains(target)) {
+        p.setShowPatientDropdown(false);
+      }
+      if (medicationSearchWrapRef.current && !medicationSearchWrapRef.current.contains(target)) {
+        p.setShowMedicationDropdown(false);
+      }
+      if (calculatorReferenceWrapRef.current && !calculatorReferenceWrapRef.current.contains(target)) {
+        setShowCalculatorReferenceResults(false);
+      }
+    }
+
+    function handleEscapeKey(event: KeyboardEvent) {
+      if (event.key !== 'Escape') return;
+      p.setShowPatientDropdown(false);
+      p.setShowMedicationDropdown(false);
+      setShowCalculatorReferenceResults(false);
+    }
+
+    document.addEventListener('mousedown', handleDocumentClick);
+    document.addEventListener('keydown', handleEscapeKey);
+    return () => {
+      document.removeEventListener('mousedown', handleDocumentClick);
+      document.removeEventListener('keydown', handleEscapeKey);
+    };
+  }, [p]);
+
+  useEffect(() => {
+    if (!p.showCalculator) return;
+    setShowCalculatorReferenceResults(true);
+  }, [p.showCalculator]);
+
   return (
     <div className="relative flex max-h-[92vh] w-full max-w-[980px] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
       <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
@@ -91,8 +135,8 @@ export default function MedicineOnlyBillModal(props: Props) {
           <div className="border-r border-gray-200 bg-gray-50 p-5" ref={p.patientPickerRef}>
             <h4 className="flex items-center gap-2 text-sm font-bold text-gray-700"><User size={15} className="text-gray-400" />Patient</h4>
             <p className="mt-1 text-xs text-gray-500">This quick sale still creates a normal backend bill record.</p>
-            <div className="relative mt-4">
-              <input value={p.patientSearchInput} onChange={(e) => { p.setPatientSearchInput(e.target.value); p.resetPatientDraft(); p.setShowPatientDropdown(true); }} onFocus={() => p.setShowPatientDropdown(true)} placeholder="Search patient..." className="h-10 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm" />
+            <div className="relative mt-4" ref={patientSearchWrapRef}>
+              <input value={p.patientSearchInput} onChange={(e) => { p.setPatientSearchInput(e.target.value); p.resetPatientDraft(); p.setShowPatientDropdown(true); }} onFocus={() => p.setShowPatientDropdown(true)} placeholder="Search patient..." className="h-10 w-full rounded-xl border border-gray-200 bg-white px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
               {p.showPatientDropdown && (
                 <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg">
                   <button type="button" onClick={() => { p.setShowAddPatientForm(true); p.setShowPatientDropdown(false); }} className="block w-full border-b border-gray-100 px-3 py-2 text-left text-sm font-semibold text-blue-700 hover:bg-blue-50">Add New Patient</button>
@@ -117,12 +161,12 @@ export default function MedicineOnlyBillModal(props: Props) {
                   <h4 className="text-sm font-bold text-gray-800">Add Medication</h4>
                   <p className="mt-1 text-xs text-gray-500">Search a medication, set quantity and price, then add it to this bill.</p>
                 </div>
-                <button type="button" onClick={p.openCalculatorForDraft} disabled={!p.selectedMedication} className="inline-flex h-10 items-center gap-2 rounded-xl border border-green-200 bg-green-50 px-3 text-sm font-semibold text-green-700 hover:bg-green-100 disabled:opacity-50"><CircleGauge size={15} />Need help calculating?</button>
+                <button type="button" onClick={p.openCalculatorForDraft} className="inline-flex h-10 items-center gap-2 rounded-xl border border-green-200 bg-green-50 px-3 text-sm font-semibold text-green-700 hover:bg-green-100"><CircleGauge size={15} />Need help calculating?</button>
               </div>
               <div className="mt-4 grid gap-3 lg:grid-cols-[1.7fr_0.7fr_0.7fr_auto]">
-                <div className="relative">
+                <div className="relative" ref={medicationSearchWrapRef}>
                   <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input value={p.medicationSearch} onChange={(e) => { p.setMedicationSearch(e.target.value); p.setSelectedMedication(null); p.setUnitPrice(0); p.setQuantity(1); p.setShowMedicationDropdown(true); }} onFocus={() => p.setShowMedicationDropdown(true)} placeholder="Search medication" className="h-11 w-full rounded-xl border border-gray-200 bg-gray-50 pl-9 pr-3 text-sm" />
+                  <input value={p.medicationSearch} onChange={(e) => { p.setMedicationSearch(e.target.value); p.setSelectedMedication(null); p.setUnitPrice(0); p.setQuantity(1); p.setShowMedicationDropdown(true); }} onFocus={() => p.setShowMedicationDropdown(true)} placeholder="Search medication" className="h-11 w-full rounded-xl border border-gray-200 bg-gray-50 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400" />
                   {p.showMedicationDropdown && p.filteredMedicationOptions.length > 0 && (
                     <div className="absolute left-0 top-12 z-20 w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
                       <div className="max-h-48 overflow-auto">
@@ -136,8 +180,8 @@ export default function MedicineOnlyBillModal(props: Props) {
                     </div>
                   )}
                 </div>
-                <input type="number" min={1} value={p.quantity} onChange={(e) => p.setQuantity(Math.max(1, Number(e.target.value) || 1))} className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-3 text-center text-sm" />
-                <input type="number" min={0} value={p.unitPrice} onChange={(e) => p.setUnitPrice(Math.max(0, Number(e.target.value) || 0))} className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm" />
+                <input type="number" min={1} value={p.quantity} onChange={(e) => p.setQuantity(Math.max(1, Number(e.target.value) || 1))} className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-3 text-center text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+                <input type="number" min={0} value={p.unitPrice} onChange={(e) => p.setUnitPrice(Math.max(0, Number(e.target.value) || 0))} className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400" />
                 <button type="button" onClick={p.addItem} disabled={!p.selectedMedication} className="h-11 rounded-xl bg-green-600 px-4 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50">Add</button>
               </div>
               {p.selectedMedication && <p className="mt-3 text-xs text-gray-500">Available: {p.selectedMedication.total_stock} {p.selectedMedication.unit || 'pcs'} · Expiry: {p.selectedMedication.expiry_date ? p.formatDateMed(p.selectedMedication.expiry_date) : 'N/A'} · Draft subtotal: <span className="font-semibold text-gray-800">{p.toPeso(p.subtotal)}</span></p>}
@@ -191,33 +235,13 @@ export default function MedicineOnlyBillModal(props: Props) {
       )}
 
       {p.step === 'payment' && p.createdBill && (
-        <div className="space-y-5 overflow-y-auto p-6">
-          <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4">
-            <h4 className="text-xl font-bold text-gray-900">Complete Payment</h4>
-            <p className="mt-1 text-sm text-gray-600">The bill has already been created in the backend. You can complete payment here or leave it pending.</p>
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="rounded-2xl border border-gray-200 bg-white p-4 text-sm">
-              <div className="flex justify-between"><span>Bill Code</span><span className="font-semibold">{p.createdBill.id}</span></div>
-              <div className="mt-2 flex justify-between"><span>Patient</span><span className="font-semibold">{p.createdBill.patient}</span></div>
-              <div className="mt-2 flex justify-between"><span>Amount Due</span><span className="font-semibold text-blue-700">{p.toPeso(p.total)}</span></div>
+        <div className="flex flex-1 items-center justify-center p-6">
+          <div className="w-full max-w-lg rounded-3xl border border-gray-200 bg-gray-50 p-8 text-center">
+            <div className="h-14 w-14 mx-auto rounded-full bg-blue-100 flex items-center justify-center">
+              <div className="h-6 w-6 border-2 border-blue-400 border-t-blue-600 rounded-full animate-spin" />
             </div>
-            <div className="rounded-2xl border border-gray-200 bg-white p-4 space-y-3">
-              <select value={p.selectedMethod} onChange={(e) => p.setSelectedMethod(e.target.value as 'Cash' | 'GCash' | 'Maya')} className="h-11 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm"><option value="Cash">Cash</option><option value="GCash">GCash</option><option value="Maya">Maya</option></select>
-              {p.paymentErrors.payment_method && <p className="text-xs text-red-500">{p.paymentErrors.payment_method}</p>}
-              <input value={p.paymentAmount} onChange={(e) => p.setPaymentAmount(e.target.value)} placeholder="Amount paid" className="h-11 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm" />
-              {p.paymentErrors.amount_paid && <p className="text-xs text-red-500">{p.paymentErrors.amount_paid}</p>}
-              {(p.selectedMethod === 'GCash' || p.selectedMethod === 'Maya') && <>
-                <input value={p.paymentReferenceInput} onChange={(e) => p.setPaymentReferenceInput(e.target.value)} placeholder="Reference number" className="h-11 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm" />
-                {p.paymentErrors.reference_number && <p className="text-xs text-red-500">{p.paymentErrors.reference_number}</p>}
-              </>}
-              <textarea value={p.paymentNotes} onChange={(e) => p.setPaymentNotes(e.target.value)} rows={3} placeholder="Notes" className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm" />
-            </div>
-          </div>
-          {p.feedback && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{p.feedback}</div>}
-          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-            <button type="button" onClick={() => p.setStep('success')} className="h-11 rounded-xl border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700">Skip Payment</button>
-            <button type="button" onClick={p.confirmPayment} disabled={p.isSubmitting} className="h-11 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white disabled:opacity-50">{p.isSubmitting ? 'Processing Payment...' : 'Confirm Payment'}</button>
+            <h4 className="mt-4 text-xl font-bold text-gray-900">Preparing Payment</h4>
+            <p className="mt-2 text-sm text-gray-600">Your bill is being prepared for payment processing. Redirecting to payment gateway...</p>
           </div>
         </div>
       )}
@@ -238,16 +262,16 @@ export default function MedicineOnlyBillModal(props: Props) {
       )}
 
       {p.showAddPatientForm && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/35 p-4" onClick={() => p.setShowAddPatientForm(false)}>
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/35 backdrop-blur-md p-4" onClick={() => p.setShowAddPatientForm(false)}>
           <div className="w-full max-w-lg rounded-xl border border-gray-200 bg-white p-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <p className="mb-3 text-sm font-bold text-gray-700">Add New Patient</p>
             <div className="grid grid-cols-2 gap-2">
-              <input value={p.patientForm.first} onChange={(e) => p.setPatientForm('first', e.target.value)} placeholder="First Name" className="h-9 rounded-lg border border-gray-200 px-2 text-sm" />
-              <input value={p.patientForm.last} onChange={(e) => p.setPatientForm('last', e.target.value)} placeholder="Last Name" className="h-9 rounded-lg border border-gray-200 px-2 text-sm" />
-              <input type="date" value={p.patientForm.dob} onChange={(e) => p.setPatientForm('dob', e.target.value)} className="h-9 rounded-lg border border-gray-200 px-2 text-sm" />
-              <select value={p.patientForm.gender} onChange={(e) => p.setPatientForm('gender', e.target.value)} className="h-9 rounded-lg border border-gray-200 px-2 text-sm"><option value="">Gender</option><option value="Male">Male</option><option value="Female">Female</option></select>
-              <input value={p.patientForm.contact} onChange={(e) => p.setPatientForm('contact', e.target.value)} placeholder="Contact Number" className="h-9 rounded-lg border border-gray-200 px-2 text-sm" />
-              <input value={p.patientForm.email} onChange={(e) => p.setPatientForm('email', e.target.value)} placeholder="Email Address" className="h-9 rounded-lg border border-gray-200 px-2 text-sm" />
+              <input value={p.patientForm.first} onChange={(e) => p.setPatientForm('first', e.target.value)} placeholder="First Name" className="h-9 rounded-lg border border-gray-200 px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+              <input value={p.patientForm.last} onChange={(e) => p.setPatientForm('last', e.target.value)} placeholder="Last Name" className="h-9 rounded-lg border border-gray-200 px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+              <input type="date" value={p.patientForm.dob} onChange={(e) => p.setPatientForm('dob', e.target.value)} className="h-9 rounded-lg border border-gray-200 px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+              <select value={p.patientForm.gender} onChange={(e) => p.setPatientForm('gender', e.target.value)} className="h-9 rounded-lg border border-gray-200 px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"><option value="">Gender</option><option value="Male">Male</option><option value="Female">Female</option></select>
+              <input value={p.patientForm.contact} onChange={(e) => p.setPatientForm('contact', e.target.value)} placeholder="Contact Number" className="h-9 rounded-lg border border-gray-200 px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+              <input value={p.patientForm.email} onChange={(e) => p.setPatientForm('email', e.target.value)} placeholder="Email Address" className="h-9 rounded-lg border border-gray-200 px-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
             </div>
             <div className="mt-3 flex justify-end gap-2">
               <button type="button" onClick={() => p.setShowAddPatientForm(false)} className="h-9 rounded-lg border border-gray-300 bg-white px-3 text-xs font-semibold text-gray-700">Cancel</button>
@@ -258,8 +282,8 @@ export default function MedicineOnlyBillModal(props: Props) {
       )}
 
       {p.showCalculator && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/35 p-4" onClick={() => p.setShowCalculator(false)}>
-          <div className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/35 backdrop-blur-md p-4" onClick={() => p.setShowCalculator(false)}>
+          <div className="w-full max-w-2xl rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-semibold uppercase tracking-[0.18em] text-green-600">Calculator</p>
@@ -268,12 +292,101 @@ export default function MedicineOnlyBillModal(props: Props) {
               </div>
               <button type="button" onClick={() => p.setShowCalculator(false)} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200"><X size={15} /></button>
             </div>
-            <div className="mt-5 grid gap-3 sm:grid-cols-2">
-              <input type="number" min={1} value={p.calculator.unitsPerIntake} onChange={(e) => p.setCalculator('unitsPerIntake', e.target.value)} placeholder="Units per intake" className="h-10 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm" />
-              <input type="number" min={1} value={p.calculator.frequencyPerDay} onChange={(e) => p.setCalculator('frequencyPerDay', e.target.value)} placeholder="Frequency per day" className="h-10 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm" />
-              <input type="number" min={1} value={p.calculator.numberOfDays} onChange={(e) => p.setCalculator('numberOfDays', e.target.value)} placeholder="Number of days" className="h-10 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm" />
-              <input type="number" min={0} value={p.calculator.pricePerUnit} onChange={(e) => p.setCalculator('pricePerUnit', e.target.value)} placeholder="Price per unit" className="h-10 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm" />
-              <input type="number" min={0} value={p.calculator.alreadyTaken} onChange={(e) => p.setCalculator('alreadyTaken', e.target.value)} placeholder="Quantity already taken" className="sm:col-span-2 h-10 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm" />
+            <div className="mt-4 grid gap-4 md:grid-cols-[1.05fr_1.2fr] md:items-start">
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">Medication Reference</p>
+                {p.calculatorReferenceMedication ? (
+                  <div className="mt-2">
+                    <p className="text-sm font-semibold text-gray-900">{p.calculatorReferenceMedication.medication_name}</p>
+                    <p className="mt-1 text-xs text-gray-500">
+                      {[p.calculatorReferenceMedication.form, p.calculatorReferenceMedication.strength, p.calculatorReferenceMedication.unit].filter(Boolean).join(' · ') || 'No additional details'}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-2">
+                  <div className="relative" ref={calculatorReferenceWrapRef}>
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                    <input
+                      value={p.calculatorReferenceSearch}
+                      onChange={(e) => {
+                        p.setCalculatorReferenceSearch(e.target.value);
+                        setShowCalculatorReferenceResults(true);
+                      }}
+                      onFocus={() => setShowCalculatorReferenceResults(true)}
+                      placeholder="Search medication reference"
+                      className="h-10 w-full rounded-xl border border-gray-200 bg-white pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
+                    />
+                  </div>
+                  {showCalculatorReferenceResults && (
+                    <div className="mt-2 max-h-44 overflow-auto rounded-xl border border-gray-200 bg-white">
+                    {p.calculatorReferenceOptions.map((med) => (
+                      <button
+                        key={med.medication_id}
+                        type="button"
+                        onClick={() => {
+                          p.selectCalculatorReferenceMedication(med);
+                          setShowCalculatorReferenceResults(false);
+                        }}
+                        className="block w-full border-b border-gray-100 px-3 py-2 text-left text-sm last:border-b-0 hover:bg-green-50"
+                      >
+                          <p className="font-semibold text-gray-900">{med.medication_name}</p>
+                          <p className="text-xs text-gray-500">{[med.form, med.strength, med.unit].filter(Boolean).join(' · ') || 'No additional details'}</p>
+                        </button>
+                      ))}
+                    {p.calculatorReferenceOptions.length === 0 && (
+                      <p className="px-3 py-2 text-xs text-gray-500">No medications found.</p>
+                    )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+              {/* Units per intake */}
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                  <Pill size={16} className="text-blue-600" />
+                  Units per intake
+                </label>
+                <input type="number" min={1} value={p.calculator.unitsPerIntake} onChange={(e) => p.setCalculator('unitsPerIntake', e.target.value)} placeholder="e.g., 1 or 2" className="h-10 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
+              </div>
+              
+              {/* Frequency per day */}
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                  <Clock size={16} className="text-orange-600" />
+                  Frequency per day
+                </label>
+                <input type="number" min={1} value={p.calculator.frequencyPerDay} onChange={(e) => p.setCalculator('frequencyPerDay', e.target.value)} placeholder="e.g., 3 times" className="h-10 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-orange-400" />
+              </div>
+              
+              {/* Number of days */}
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                  <Calendar size={16} className="text-purple-600" />
+                  Number of days
+                </label>
+                <input type="number" min={1} value={p.calculator.numberOfDays} onChange={(e) => p.setCalculator('numberOfDays', e.target.value)} placeholder="e.g., 7 days" className="h-10 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-purple-400" />
+              </div>
+              
+              {/* Price per unit */}
+              <div className="flex flex-col gap-2">
+                <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                  <DollarSign size={16} className="text-green-600" />
+                  Price per unit
+                </label>
+                <input type="number" min={0} value={p.calculator.pricePerUnit} onChange={(e) => p.setCalculator('pricePerUnit', e.target.value)} placeholder="e.g., 10.50" className="h-10 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400" />
+              </div>
+              
+              {/* Quantity already taken */}
+              <div className="flex flex-col gap-2 sm:col-span-2">
+                <label className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+                  <History size={16} className="text-red-600" />
+                  Quantity already taken
+                </label>
+                <input type="number" min={0} value={p.calculator.alreadyTaken} onChange={(e) => p.setCalculator('alreadyTaken', e.target.value)} placeholder="e.g., 5 units" className="h-10 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-red-400" />
+              </div>
+              </div>
             </div>
             <div className="mt-5 rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm">
               <div className="flex justify-between"><span>Total quantity required</span><span className="font-semibold">{p.calculatorPreview.totalQuantity}</span></div>
@@ -283,7 +396,7 @@ export default function MedicineOnlyBillModal(props: Props) {
             </div>
             <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:justify-end">
               <button type="button" onClick={() => p.setShowCalculator(false)} className="h-10 rounded-xl border border-gray-300 bg-white px-4 text-sm font-semibold text-gray-700">Cancel</button>
-              <button type="button" onClick={p.applyCalculator} disabled={!p.calculatorPreview.isValid} className="h-10 rounded-xl bg-green-600 px-4 text-sm font-semibold text-white disabled:opacity-50">Use this result</button>
+              <button type="button" onClick={p.applyCalculator} disabled={!p.calculatorPreview.isValid || p.calculatorPreview.remainingQuantity === 0} className="h-10 rounded-xl bg-green-600 px-4 text-sm font-semibold text-white disabled:opacity-50">Use this result</button>
             </div>
           </div>
         </div>

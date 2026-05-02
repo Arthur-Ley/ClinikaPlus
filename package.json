@@ -12,6 +12,7 @@
         "start:backend": "npm --prefix backend run start"
     },
     "dependencies": {
+        "@supabase/supabase-js": "^2.105.1",
         "@tanstack/react-table": "^8.21.3",
         "lucide-react": "^0.564.0",
         "pg": "^8.20.0",
