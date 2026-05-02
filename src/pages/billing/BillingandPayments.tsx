@@ -9,6 +9,7 @@ import {
 import { useLocation } from 'react-router-dom';
 import Pagination from '../../components/ui/Pagination';
 import SectionToolbar from '../../components/ui/SectionToolbar';
+import MedicineOnlyBillModal from './MedicineOnlyBillModal';
 import {
   BillingPaginationSkeleton,
   BillingTableSkeleton,
@@ -91,7 +92,7 @@ type ServiceCatalogOption = {
 type BillingFilter = 'all' | 'pending' | 'paid' | 'cancelled';
 type BillingSort = 'date' | 'status' | 'amount';
 type ActiveModal =
-  | 'none' | 'createBill' | 'viewBill' | 'billSuccess'
+  | 'none' | 'createBillChoice' | 'createBill' | 'medicineOnlyBill' | 'viewBill' | 'billSuccess'
   | 'payBill' | 'cancelBill' | 'receipt'
   | 'payMethod' | 'payCash' | 'payGcash' | 'payConfirm' | 'paySuccess' | 'payCancelConfirm' | 'payCancelled'
   | 'addService' | 'addMedication' | 'viewBillServicesFull';
@@ -119,6 +120,15 @@ type BillUiMeta = {
   amountPaid?: number;
   cancelledBy?: string;
   cancelledReason?: string;
+};
+type MedicineOnlyStep = 'build' | 'payment' | 'success';
+type MedicineOnlyCheckoutMode = 'pending' | 'payNow';
+type MedicationCalculatorDraft = {
+  unitsPerIntake: string;
+  frequencyPerDay: string;
+  numberOfDays: string;
+  pricePerUnit: string;
+  alreadyTaken: string;
 };
 type PendingReprintState = {
   backendBillId: number;
@@ -208,7 +218,6 @@ function formatRoleLabel(value: string | null | undefined) {
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
     .join(' ');
 }
-function toSortRank(status: BillStatus) { if (status === 'Pending') return 0; if (status === 'Paid') return 1; return 2; }
 function normalizeBreakdownType(service: ServiceItem) {
   if (service.type === 'medication') return 'Medications';
   const raw = (service.serviceType || '').trim().toLowerCase();
@@ -374,6 +383,25 @@ export default function BillingAndPayments() {
   const [medicationUnitPrice, setMedicationUnitPrice] = useState(0);
   const [showMedicationDropdown, setShowMedicationDropdown] = useState(false);
   const [addItemFeedback, setAddItemFeedback] = useState('');
+  const [medicineOnlyStep, setMedicineOnlyStep] = useState<MedicineOnlyStep>('build');
+  const [medicineOnlyItems, setMedicineOnlyItems] = useState<ServiceItem[]>([]);
+  const [medicineOnlySearch, setMedicineOnlySearch] = useState('');
+  const [medicineOnlySelectedMedication, setMedicineOnlySelectedMedication] = useState<MedicationCatalogItem | null>(null);
+  const [medicineOnlyQty, setMedicineOnlyQty] = useState(1);
+  const [medicineOnlyUnitPrice, setMedicineOnlyUnitPrice] = useState(0);
+  const [showMedicineOnlyDropdown, setShowMedicineOnlyDropdown] = useState(false);
+  const [medicineOnlyFeedback, setMedicineOnlyFeedback] = useState('');
+  const [medicineOnlyCheckoutMode, setMedicineOnlyCheckoutMode] = useState<MedicineOnlyCheckoutMode>('pending');
+  const [showMedicationCalculator, setShowMedicationCalculator] = useState(false);
+  const [calculatorTargetIndex, setCalculatorTargetIndex] = useState<number | null>(null);
+  const [medicineOnlyCreatedBill, setMedicineOnlyCreatedBill] = useState<BillRow | null>(null);
+  const [medicationCalculator, setMedicationCalculator] = useState<MedicationCalculatorDraft>({
+    unitsPerIntake: '1',
+    frequencyPerDay: '3',
+    numberOfDays: '1',
+    pricePerUnit: '0',
+    alreadyTaken: '0',
+  });
 
   const [selectedPayRow, setSelectedPayRow] = useState<BillRow>(EMPTY_BILL_ROW);
   const [paymentBillDetails, setPaymentBillDetails] = useState<PaymentBillDetailsResponse | null>(null);
@@ -432,7 +460,7 @@ export default function BillingAndPayments() {
   }, []);
 
   useEffect(() => {
-    if (modal !== 'createBill') return;
+    if (modal !== 'createBill' && modal !== 'medicineOnlyBill') return;
     let active = true;
     const timer = window.setTimeout(async () => {
       try {
@@ -743,8 +771,69 @@ export default function BillingAndPayments() {
     const q = medicationSearch.trim().toLowerCase();
     return q ? medicationCatalog.filter(m => m.medication_name.toLowerCase().includes(q)) : medicationCatalog;
   }, [medicationSearch, medicationCatalog]);
+  const filteredMedicineOnlyOptions = useMemo(() => {
+    const q = medicineOnlySearch.trim().toLowerCase();
+    return q ? medicationCatalog.filter(m => m.medication_name.toLowerCase().includes(q)) : medicationCatalog;
+  }, [medicineOnlySearch, medicationCatalog]);
 
   const medicationSubtotal = medicationQty * medicationUnitPrice;
+  const medicineOnlySubtotal = medicineOnlyQty * medicineOnlyUnitPrice;
+  const medicineOnlyTotal = useMemo(
+    () => medicineOnlyItems.reduce((sum, item) => sum + (item.quantity * item.unitPrice), 0),
+    [medicineOnlyItems],
+  );
+  const calculatorUnitsPerIntake = Number(medicationCalculator.unitsPerIntake);
+  const calculatorFrequencyPerDay = Number(medicationCalculator.frequencyPerDay);
+  const calculatorNumberOfDays = Number(medicationCalculator.numberOfDays);
+  const calculatorPricePerUnit = Number(medicationCalculator.pricePerUnit);
+  const calculatorAlreadyTaken = Number(medicationCalculator.alreadyTaken);
+  const activeCalculatorMedication = calculatorTargetIndex == null
+    ? medicineOnlySelectedMedication
+    : medicationCatalog.find((item) => item.medication_id === medicineOnlyItems[calculatorTargetIndex]?.logId) ?? null;
+  const medicationCalculatorPreview = useMemo(() => {
+    const invalid =
+      !Number.isFinite(calculatorUnitsPerIntake) || calculatorUnitsPerIntake <= 0
+      || !Number.isFinite(calculatorFrequencyPerDay) || calculatorFrequencyPerDay <= 0
+      || !Number.isFinite(calculatorNumberOfDays) || calculatorNumberOfDays <= 0
+      || !Number.isFinite(calculatorPricePerUnit) || calculatorPricePerUnit < 0
+      || !Number.isFinite(calculatorAlreadyTaken) || calculatorAlreadyTaken < 0;
+
+    if (invalid) {
+      return {
+        isValid: false,
+        warning: 'Enter valid positive values to compute the required quantity.',
+        totalDoses: 0,
+        totalQuantity: 0,
+        remainingQuantity: 0,
+        totalCost: 0,
+      };
+    }
+
+    const totalDoses = calculatorFrequencyPerDay * calculatorNumberOfDays;
+    const totalQuantity = totalDoses * calculatorUnitsPerIntake;
+    const remainingQuantity = Math.max(0, totalQuantity - calculatorAlreadyTaken);
+    const totalCost = remainingQuantity * calculatorPricePerUnit;
+    const stock = activeCalculatorMedication?.total_stock ?? null;
+    const warning = stock != null && remainingQuantity > stock
+      ? `Calculated quantity exceeds stock. Available: ${stock} ${activeCalculatorMedication?.unit || 'pcs'}.`
+      : '';
+
+    return {
+      isValid: true,
+      warning,
+      totalDoses,
+      totalQuantity,
+      remainingQuantity,
+      totalCost,
+    };
+  }, [
+    activeCalculatorMedication,
+    calculatorAlreadyTaken,
+    calculatorFrequencyPerDay,
+    calculatorNumberOfDays,
+    calculatorPricePerUnit,
+    calculatorUnitsPerIntake,
+  ]);
 
   function openAddServiceModal() {
     setSelectedServiceType(null); setSelectedService(null);
@@ -806,6 +895,139 @@ export default function BillingAndPayments() {
     setAddItemFeedback('');
     setServices(prev => [...prev, { type: 'medication', name: selectedMedication.medication_name, quantity: medicationQty, unitPrice: medicationUnitPrice || resolveMedicationUnitPrice(selectedMedication.medication_name), serviceId: null, logId: selectedMedication.medication_id }]);
     setModal(prevModal);
+  }
+
+  function resetMedicineOnlyDraft() {
+    setMedicineOnlySelectedMedication(null);
+    setMedicineOnlySearch('');
+    setMedicineOnlyQty(1);
+    setMedicineOnlyUnitPrice(0);
+    setShowMedicineOnlyDropdown(false);
+  }
+
+  function addMedicineOnlyItem() {
+    if (!medicineOnlySelectedMedication) return;
+    if (medicineOnlySelectedMedication.total_stock < medicineOnlyQty) {
+      setMedicineOnlyFeedback(`Insufficient stock. Available: ${medicineOnlySelectedMedication.total_stock} ${medicineOnlySelectedMedication.unit || 'pcs'}.`);
+      return;
+    }
+
+    setMedicineOnlyItems((prev) => {
+      const existingIndex = prev.findIndex((item) => item.logId === medicineOnlySelectedMedication.medication_id);
+      if (existingIndex >= 0) {
+        const next = [...prev];
+        const current = next[existingIndex];
+        const mergedQuantity = current.quantity + medicineOnlyQty;
+        if (mergedQuantity > medicineOnlySelectedMedication.total_stock) {
+          setMedicineOnlyFeedback(`Cannot exceed stock. Available: ${medicineOnlySelectedMedication.total_stock} ${medicineOnlySelectedMedication.unit || 'pcs'}.`);
+          return prev;
+        }
+        next[existingIndex] = {
+          ...current,
+          quantity: mergedQuantity,
+          unitPrice: medicineOnlyUnitPrice || current.unitPrice,
+        };
+        return next;
+      }
+
+      return [
+        ...prev,
+        {
+          type: 'medication',
+          name: medicineOnlySelectedMedication.medication_name,
+          quantity: medicineOnlyQty,
+          unitPrice: medicineOnlyUnitPrice || resolveMedicationUnitPrice(medicineOnlySelectedMedication.medication_name),
+          serviceId: null,
+          logId: medicineOnlySelectedMedication.medication_id,
+        },
+      ];
+    });
+    setMedicineOnlyFeedback('');
+    resetMedicineOnlyDraft();
+  }
+
+  function updateMedicineOnlyItemQuantity(index: number, rawValue: string) {
+    setMedicineOnlyItems((prev) => {
+      const next = [...prev];
+      const target = next[index];
+      if (!target) return prev;
+      const catalogItem = medicationCatalog.find((item) => item.medication_id === target.logId);
+      const available = catalogItem?.total_stock ?? target.quantity;
+      const quantity = Math.max(1, Math.min(toSafeQuantity(rawValue), Math.max(1, available)));
+      next[index] = { ...target, quantity };
+      return next;
+    });
+  }
+
+  function changeMedicineOnlyItemQuantity(index: number, delta: number) {
+    setMedicineOnlyItems((prev) => {
+      const next = [...prev];
+      const target = next[index];
+      if (!target) return prev;
+      const catalogItem = medicationCatalog.find((item) => item.medication_id === target.logId);
+      const available = catalogItem?.total_stock ?? target.quantity;
+      const quantity = Math.max(1, Math.min(target.quantity + delta, Math.max(1, available)));
+      next[index] = { ...target, quantity };
+      return next;
+    });
+  }
+
+  function updateMedicineOnlyItemPrice(index: number, rawValue: string) {
+    const parsed = Number(rawValue);
+    setMedicineOnlyItems((prev) => prev.map((item, itemIndex) => (
+      itemIndex === index ? { ...item, unitPrice: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0 } : item
+    )));
+  }
+
+  function removeMedicineOnlyItem(index: number) {
+    setMedicineOnlyItems((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+  }
+
+  function openMedicationCalculatorForDraft() {
+    if (!medicineOnlySelectedMedication) {
+      setMedicineOnlyFeedback('Select a medication first before using the calculator.');
+      return;
+    }
+    setCalculatorTargetIndex(null);
+    setMedicationCalculator({
+      unitsPerIntake: '1',
+      frequencyPerDay: '3',
+      numberOfDays: '1',
+      pricePerUnit: String(medicineOnlyUnitPrice || resolveMedicationUnitPrice(medicineOnlySelectedMedication.medication_name)),
+      alreadyTaken: '0',
+    });
+    setShowMedicationCalculator(true);
+  }
+
+  function openMedicationCalculatorForRow(index: number) {
+    const row = medicineOnlyItems[index];
+    if (!row) return;
+    setCalculatorTargetIndex(index);
+    setMedicationCalculator({
+      unitsPerIntake: '1',
+      frequencyPerDay: '3',
+      numberOfDays: '1',
+      pricePerUnit: String(row.unitPrice),
+      alreadyTaken: '0',
+    });
+    setShowMedicationCalculator(true);
+  }
+
+  function applyMedicationCalculatorResult() {
+    if (!medicationCalculatorPreview.isValid) return;
+    const nextQuantity = Math.max(1, Math.round(medicationCalculatorPreview.remainingQuantity));
+    const nextUnitPrice = Math.max(0, Number(medicationCalculator.pricePerUnit) || 0);
+
+    if (calculatorTargetIndex == null) {
+      setMedicineOnlyQty(nextQuantity);
+      setMedicineOnlyUnitPrice(nextUnitPrice);
+    } else {
+      setMedicineOnlyItems((prev) => prev.map((item, index) => (
+        index === calculatorTargetIndex ? { ...item, quantity: nextQuantity, unitPrice: nextUnitPrice } : item
+      )));
+    }
+
+    setShowMedicationCalculator(false);
   }
 
   function selectPatientOption(patient: PatientLookup) {
@@ -870,7 +1092,72 @@ export default function BillingAndPayments() {
     setServices([]); setIsSeniorCitizen(false); setIsPwd(false);
   }
 
-  function openCreateModal() { resetCreateForm(); setSelectedBill(null); setModal('createBill'); }
+  function resetMedicineOnlyFlow() {
+    setMedicineOnlyStep('build');
+    setMedicineOnlyItems([]);
+    setMedicineOnlySearch('');
+    setMedicineOnlySelectedMedication(null);
+    setMedicineOnlyQty(1);
+    setMedicineOnlyUnitPrice(0);
+    setShowMedicineOnlyDropdown(false);
+    setMedicineOnlyFeedback('');
+    setMedicineOnlyCheckoutMode('pending');
+    setShowMedicationCalculator(false);
+    setCalculatorTargetIndex(null);
+    setMedicineOnlyCreatedBill(null);
+    setMedicationCalculator({
+      unitsPerIntake: '1',
+      frequencyPerDay: '3',
+      numberOfDays: '1',
+      pricePerUnit: '0',
+      alreadyTaken: '0',
+    });
+    setSelectedMethod('Cash');
+    setPaymentAmount('');
+    setPaymentReferenceInput('');
+    setPaymentNotes('');
+    setPaymentErrors({});
+  }
+
+  function resetPatientDraft() {
+    setPatientIdInput('');
+    setPatientNameInput('');
+    setPatientAgeInput('');
+    setPatientGenderInput('');
+  }
+
+  function setPatientFormField(field: 'first' | 'last' | 'dob' | 'gender' | 'contact' | 'email', value: string) {
+    if (field === 'first') setNewPatientFirstName(value);
+    else if (field === 'last') setNewPatientLastName(value);
+    else if (field === 'dob') setNewPatientDob(value);
+    else if (field === 'gender') setNewPatientGender(value);
+    else if (field === 'contact') setNewPatientContactNumber(value);
+    else setNewPatientEmailAddress(value);
+  }
+
+  function setCalculatorField(field: 'unitsPerIntake' | 'frequencyPerDay' | 'numberOfDays' | 'pricePerUnit' | 'alreadyTaken', value: string) {
+    setMedicationCalculator((prev) => ({ ...prev, [field]: value }));
+  }
+
+  function openCreateModal() {
+    resetCreateForm();
+    resetMedicineOnlyFlow();
+    setSelectedBill(null);
+    setModal('createBillChoice');
+  }
+
+  function openFullBillModal() {
+    resetCreateForm();
+    setSelectedBill(null);
+    setModal('createBill');
+  }
+
+  function openMedicineOnlyModal() {
+    resetCreateForm();
+    resetMedicineOnlyFlow();
+    setSelectedBill(null);
+    setModal('medicineOnlyBill');
+  }
 
   function loadBillDetails(bill: BillRow) {
     const meta = billMetaById[bill.id] ?? buildDefaultBillMeta(bill);
@@ -1090,12 +1377,6 @@ export default function BillingAndPayments() {
     setModal('cancelBill');
   }
 
-  function openReceiptModal(bill: BillRow) {
-    loadBillDetails(bill);
-    setSelectedPayRow(bill);
-    setModal('receipt');
-  }
-
   function updateServiceQuantity(index: number, rawValue: string) {
     setServices(prev => {
       const next = [...prev]; const target = next[index]; if (!target) return prev;
@@ -1164,6 +1445,84 @@ export default function BillingAndPayments() {
       setModal('billSuccess');
     } catch (error) {
       window.alert(error instanceof Error ? error.message : 'Unable to create bill.');
+    } finally {
+      setIsCreatingBill(false);
+    }
+  }
+
+  function validateMedicineOnlyBuild() {
+    if (!parsePositiveInt(patientIdInput)) {
+      setMedicineOnlyFeedback('Select a patient before creating a medicine-only bill.');
+      return false;
+    }
+    if (medicineOnlyItems.length === 0) {
+      setMedicineOnlyFeedback('Add at least one medication to continue.');
+      return false;
+    }
+    setMedicineOnlyFeedback('');
+    return true;
+  }
+
+  async function submitMedicineOnlyBill(mode: MedicineOnlyCheckoutMode) {
+    if (isCreatingBill || !validateMedicineOnlyBuild()) return;
+
+    setIsCreatingBill(true);
+    try {
+      const patientId = parsePositiveInt(patientIdInput) ?? undefined;
+      const createdBill = await addBill({
+        id: toAutoIds('Pending', billingRecords).billId,
+        patient: patientNameInput.trim() || (patientId ? `Patient #${patientId}` : 'Unknown Patient'),
+        date: new Date().toISOString().slice(0, 10),
+        total: `P${Math.round(medicineOnlyTotal).toLocaleString()}`,
+        status: 'Pending',
+        patientId,
+        age: patientAgeInput,
+        gender: patientGenderInput,
+        subtotalMedications: Number(medicineOnlyTotal.toFixed(2)),
+        subtotalLaboratory: 0,
+        subtotalMiscellaneous: 0,
+        lessAmount: 0,
+        subtotalRoomCharge: 0,
+        subtotalProfessionalFee: 0,
+        group1Total: Number(medicineOnlyTotal.toFixed(2)),
+        group2Total: 0,
+        netAmount: Number(medicineOnlyTotal.toFixed(2)),
+        items: medicineOnlyItems.map((item) => ({
+          name: item.name,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          serviceId: null,
+          logId: item.logId ?? null,
+        })),
+      });
+
+      const nextBill: BillRow = {
+        id: createdBill.id,
+        patient: createdBill.patient,
+        date: createdBill.date,
+        total: createdBill.total,
+        status: createdBill.status,
+        backendBillId: createdBill.backendBillId,
+        patientId: createdBill.patientId,
+      };
+      setMedicineOnlyCreatedBill(nextBill);
+      setSelectedPayRow(nextBill);
+
+      if (mode === 'pending') {
+        setMedicineOnlyStep('success');
+        setMedicineOnlyCheckoutMode('pending');
+        setPaymentAmount('');
+      } else {
+        setMedicineOnlyCheckoutMode('payNow');
+        setMedicineOnlyStep('payment');
+        setSelectedMethod('Cash');
+        setPaymentAmount(String(medicineOnlyTotal.toFixed(2)));
+        setPaymentReferenceInput('');
+        setPaymentNotes('');
+        setPaymentErrors({});
+      }
+    } catch (error) {
+      setMedicineOnlyFeedback(error instanceof Error ? error.message : 'Unable to create medicine-only bill.');
     } finally {
       setIsCreatingBill(false);
     }
@@ -1428,6 +1787,41 @@ export default function BillingAndPayments() {
     }
   }
 
+  async function handleConfirmMedicineOnlyPayment() {
+    if (!medicineOnlyCreatedBill?.id || isSubmitting) return;
+    if (!validatePaymentInput()) return;
+
+    try {
+      setIsSubmitting(true);
+      const amountPaid = Number(paymentAmount || 0);
+      const paidDate = new Date().toISOString();
+      await markPaymentPaid({
+        id: medicineOnlyCreatedBill.id,
+        method: selectedMethod,
+        amountPaid,
+        reference: paymentReferenceInput.trim() || undefined,
+        notes: paymentNotes.trim() || undefined,
+        paidDate,
+      });
+
+      const remainingBalance = Math.max(0, toAmount(medicineOnlyCreatedBill.total) - amountPaid);
+      const updatedBill: BillRow = {
+        ...medicineOnlyCreatedBill,
+        status: remainingBalance <= 0 ? 'Paid' : 'Pending',
+        date: paidDate,
+      };
+
+      setMedicineOnlyCreatedBill(updatedBill);
+      setSelectedPayRow(updatedBill);
+      setMedicineOnlyStep('success');
+      setMedicineOnlyFeedback('');
+    } catch (error) {
+      setMedicineOnlyFeedback(error instanceof Error ? error.message : 'Failed to record payment.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   async function handleCancelBill() {
     if (!selectedBill) return;
     if (!cancelReason.trim()) {
@@ -1626,7 +2020,7 @@ export default function BillingAndPayments() {
               : 'bg-black/40 backdrop-blur-md'
           }`}
           onClick={() => {
-            if (isCreatingBill && modal === 'createBill') return;
+            if (isCreatingBill && (modal === 'createBill' || modal === 'medicineOnlyBill')) return;
             if (['payBill', 'payMethod', 'payCash', 'payGcash', 'payConfirm', 'paySuccess', 'payCancelConfirm', 'payCancelled', 'cancelBill', 'receipt'].includes(modal)) closeAuxiliaryModals();
             else if (modal === 'viewBillServicesFull') setModal('viewBill');
             else if (modal === 'addService' || modal === 'addMedication') setModal(prevModal);
@@ -1634,6 +2028,37 @@ export default function BillingAndPayments() {
           }}
         >
           {/* ── Create / View Bill Modal ── */}
+          {modal === 'createBillChoice' && (
+            <div className="w-full max-w-xl rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-blue-600">Billing</p>
+                  <h3 className="mt-1 text-2xl font-bold text-gray-900">Choose Billing Flow</h3>
+                  <p className="mt-2 text-sm text-gray-600">Use the full bill form for complete hospital charges, or the lighter medicine-only path for pharmacy sales.</p>
+                </div>
+                <button type="button" onClick={() => setModal('none')} className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200">
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="mt-6 grid gap-3 md:grid-cols-2">
+                <button type="button" onClick={openFullBillModal} className="rounded-2xl border border-gray-200 bg-white p-5 text-left transition hover:border-blue-300 hover:bg-blue-50">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-100 text-blue-700">
+                    <ReceiptText size={18} />
+                  </div>
+                  <p className="mt-4 text-lg font-bold text-gray-900">Full Bill</p>
+                  <p className="mt-1 text-sm text-gray-600">For consultations, services, medications, and full billing breakdown.</p>
+                </button>
+                <button type="button" onClick={openMedicineOnlyModal} className="rounded-2xl border border-gray-200 bg-white p-5 text-left transition hover:border-green-300 hover:bg-green-50">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-green-100 text-green-700">
+                    <PlusCircle size={18} />
+                  </div>
+                  <p className="mt-4 text-lg font-bold text-gray-900">Medicine Only</p>
+                  <p className="mt-1 text-sm text-gray-600">For pharmacy sales that still create a backend bill without the full clinical form.</p>
+                </button>
+              </div>
+            </div>
+          )}
+
           {modal === 'createBill' && (
             <div className="relative flex max-h-[92vh] w-full max-w-[960px] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
               <div className="sticky top-0 z-20 flex items-center justify-between border-b border-gray-200 bg-white px-6 py-4">
@@ -1932,6 +2357,81 @@ export default function BillingAndPayments() {
           )}
 
           {/* ── Add Service Modal ── */}
+          {modal === 'medicineOnlyBill' && (
+            <MedicineOnlyBillModal
+              isCreatingBill={isCreatingBill}
+              isSubmitting={isSubmitting}
+              step={medicineOnlyStep}
+              setStep={setMedicineOnlyStep}
+              close={() => setModal('none')}
+              patientPickerRef={patientPickerRef}
+              patientSearchInput={patientSearchInput}
+              setPatientSearchInput={setPatientSearchInput}
+              resetPatientDraft={resetPatientDraft}
+              showPatientDropdown={showPatientDropdown}
+              setShowPatientDropdown={setShowPatientDropdown}
+              setShowAddPatientForm={setShowAddPatientForm}
+              isPatientLoading={isPatientLoading}
+              patientOptions={patientOptions}
+              selectPatientOption={selectPatientOption}
+              patientNameInput={patientNameInput}
+              patientAgeInput={patientAgeInput}
+              patientGenderInput={patientGenderInput}
+              medicationSearch={medicineOnlySearch}
+              setMedicationSearch={setMedicineOnlySearch}
+              selectedMedication={medicineOnlySelectedMedication}
+              setSelectedMedication={setMedicineOnlySelectedMedication}
+              showMedicationDropdown={showMedicineOnlyDropdown}
+              setShowMedicationDropdown={setShowMedicineOnlyDropdown}
+              filteredMedicationOptions={filteredMedicineOnlyOptions}
+              resolveMedicationUnitPrice={resolveMedicationUnitPrice}
+              quantity={medicineOnlyQty}
+              setQuantity={setMedicineOnlyQty}
+              unitPrice={medicineOnlyUnitPrice}
+              setUnitPrice={setMedicineOnlyUnitPrice}
+              subtotal={medicineOnlySubtotal}
+              addItem={addMedicineOnlyItem}
+              items={medicineOnlyItems}
+              total={medicineOnlyTotal}
+              feedback={medicineOnlyFeedback}
+              updateItemQuantity={updateMedicineOnlyItemQuantity}
+              changeItemQuantity={changeMedicineOnlyItemQuantity}
+              updateItemPrice={updateMedicineOnlyItemPrice}
+              removeItem={removeMedicineOnlyItem}
+              openCalculatorForDraft={openMedicationCalculatorForDraft}
+              openCalculatorForRow={openMedicationCalculatorForRow}
+              checkoutMode={medicineOnlyCheckoutMode}
+              setCheckoutMode={setMedicineOnlyCheckoutMode}
+              submit={submitMedicineOnlyBill}
+              createdBill={medicineOnlyCreatedBill}
+              selectedMethod={selectedMethod}
+              setSelectedMethod={setSelectedMethod}
+              paymentAmount={paymentAmount}
+              setPaymentAmount={setPaymentAmount}
+              paymentReferenceInput={paymentReferenceInput}
+              setPaymentReferenceInput={setPaymentReferenceInput}
+              paymentNotes={paymentNotes}
+              setPaymentNotes={setPaymentNotes}
+              paymentErrors={paymentErrors}
+              confirmPayment={handleConfirmMedicineOnlyPayment}
+              resetCreateForm={resetCreateForm}
+              resetMedicineOnlyFlow={resetMedicineOnlyFlow}
+              showAddPatientForm={showAddPatientForm}
+              patientForm={{ first: newPatientFirstName, last: newPatientLastName, dob: newPatientDob, gender: newPatientGender, contact: newPatientContactNumber, email: newPatientEmailAddress }}
+              setPatientForm={setPatientFormField}
+              handleCreatePatientOption={handleCreatePatientOption}
+              isCreatingPatient={isCreatingPatient}
+              showCalculator={showMedicationCalculator}
+              setShowCalculator={setShowMedicationCalculator}
+              calculator={medicationCalculator}
+              setCalculator={setCalculatorField}
+              calculatorPreview={medicationCalculatorPreview}
+              applyCalculator={applyMedicationCalculatorResult}
+              toPeso={toPeso}
+              formatDateMed={formatDateMed}
+            />
+          )}
+
           {modal === 'viewBill' && selectedBill && selectedBillMeta && (
             <div className="my-4 flex max-h-[92vh] w-full max-w-[1080px] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
               <div className="sticky top-0 z-20 border-b border-gray-200 bg-white px-6 py-5">

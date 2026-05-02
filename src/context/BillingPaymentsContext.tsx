@@ -15,6 +15,8 @@ export type BillRecord = {
   patientId?: number;
 };
 
+export type CreatedBillResult = BillRecord;
+
 export type PaymentQueueRecord = {
   id: string;
   patient: string;
@@ -82,7 +84,7 @@ export type BillingPaymentsContextValue = {
   billingRecords: BillRecord[];
   paymentQueue: PaymentQueueRecord[];
   isLoading: boolean;
-  addBill: (bill: NewBillInput) => Promise<void>;
+  addBill: (bill: NewBillInput) => Promise<CreatedBillResult>;
   updateBill: (id: string, updates: UpdateBillInput) => void;
   markPaymentPaid: (input: MarkPaymentPaidInput) => Promise<void>;
   setPaymentProcessing: (input: SetPaymentProcessingInput) => Promise<void>;
@@ -113,6 +115,18 @@ type BillsResponse = {
   pagination?: {
     total_pages?: number;
   };
+};
+
+type CreateBillResponse = {
+  bill?: {
+    bill_id?: number | null;
+    bill_code?: string | null;
+    patient_id?: number | null;
+    total_amount?: number | null;
+    net_amount?: number | null;
+    status?: string | null;
+    created_at?: string | null;
+  } | null;
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
@@ -317,7 +331,14 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
 
   const addBill = useCallback(async (bill: NewBillInput) => {
     if (isFrancoJallorina(bill.patient)) {
-      return;
+      return {
+        id: bill.id,
+        patient: bill.patient,
+        date: bill.date,
+        total: bill.total,
+        status: bill.status,
+        patientId: bill.patientId,
+      } satisfies CreatedBillResult;
     }
 
     const patientId = toPositiveInteger(bill.patientId);
@@ -369,7 +390,20 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
       throw new Error(await parseErrorMessage(response));
     }
 
+    const payload = (await response.json()) as CreateBillResponse;
+    const createdBill = payload.bill;
+    const createdRecord: CreatedBillResult = {
+      id: createdBill?.bill_code?.trim() || bill.id,
+      patient: bill.patient,
+      date: toDateOnly(createdBill?.created_at) || bill.date,
+      total: toMoneyTag(Number(createdBill?.net_amount ?? createdBill?.total_amount ?? parseAmount(bill.total))),
+      status: normalizeBillStatus(createdBill?.status || bill.status),
+      backendBillId: createdBill?.bill_id ?? undefined,
+      patientId: bill.patientId,
+    };
+
     await refreshBillingData();
+    return createdRecord;
   }, [refreshBillingData]);
 
   const updateBill = useCallback((id: string, updates: UpdateBillInput) => {
