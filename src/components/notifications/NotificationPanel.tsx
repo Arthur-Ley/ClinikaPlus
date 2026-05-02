@@ -25,23 +25,12 @@ function isPharmacyDomain(domain: string | null | undefined) {
   return value === 'inventory' || value === 'expiry' || value === 'restock';
 }
 
-function severityRank(severity: NotificationSeverity) {
-  if (severity === 'Critical') return 0;
-  if (severity === 'Warning') return 1;
-  return 2;
-}
-
 function sortByPriority(items: NotificationItem[]) {
   return [...items].sort((left, right) => {
-    const leftRank = severityRank(left.severity);
-    const rightRank = severityRank(right.severity);
-    if (leftRank !== rightRank) return leftRank - rightRank;
-
-    if (left.is_read !== right.is_read) return left.is_read ? 1 : -1;
-
-    const leftTime = new Date(left.updated_at || left.created_at || 0).getTime();
-    const rightTime = new Date(right.updated_at || right.created_at || 0).getTime();
-    return rightTime - leftTime;
+    const leftTime = new Date(left.created_at || 0).getTime();
+    const rightTime = new Date(right.created_at || 0).getTime();
+    if (rightTime !== leftTime) return rightTime - leftTime;
+    return right.notification_id - left.notification_id;
   });
 }
 
@@ -321,13 +310,10 @@ export default function NotificationPanel({
     filteredUnresolved.filter((item) => item.severity === 'Critical'),
   );
   const warningUnresolvedItems = sortByPriority(
-    filteredUnresolved.filter((item) => item.severity === 'Warning' && !item.is_read),
+    filteredUnresolved.filter((item) => item.severity === 'Warning'),
   );
   const infoUnresolvedItems = sortByPriority(
-    filteredUnresolved.filter((item) => item.severity === 'Info' && !item.is_read),
-  );
-  const readUnresolvedItems = sortByPriority(
-    filteredUnresolved.filter((item) => item.is_read && item.severity !== 'Critical'),
+    filteredUnresolved.filter((item) => item.severity === 'Info'),
   );
 
   return (
@@ -419,23 +405,6 @@ export default function NotificationPanel({
                 <p className="px-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Info</p>
                 <div className="space-y-2">
                   {infoUnresolvedItems.map((item) => (
-                    <NotificationCard
-                      key={item.notification_id}
-                      item={item}
-                      onMarkRead={onMarkRead}
-                      onResolve={onResolve}
-                      onAction={onAction}
-                    />
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {readUnresolvedItems.length > 0 && (
-              <section className="space-y-2">
-                <p className="px-1 text-xs font-semibold uppercase tracking-wide text-gray-500">Read Unresolved</p>
-                <div className="space-y-2">
-                  {readUnresolvedItems.map((item) => (
                     <NotificationCard
                       key={item.notification_id}
                       item={item}

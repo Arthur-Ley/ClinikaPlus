@@ -34,22 +34,17 @@ function severityRank(severity: NotificationItem['severity']) {
 
 function sortByPriority(items: NotificationItem[]) {
   return [...items].sort((left, right) => {
-    const leftRank = severityRank(left.severity);
-    const rightRank = severityRank(right.severity);
-    if (leftRank !== rightRank) return leftRank - rightRank;
-
-    if (left.is_read !== right.is_read) return left.is_read ? 1 : -1;
-
-    const leftTime = new Date(left.updated_at || left.created_at || 0).getTime();
-    const rightTime = new Date(right.updated_at || right.created_at || 0).getTime();
-    return rightTime - leftTime;
+    const leftTime = new Date(left.created_at || 0).getTime();
+    const rightTime = new Date(right.created_at || 0).getTime();
+    if (rightTime !== leftTime) return rightTime - leftTime;
+    return right.notification_id - left.notification_id;
   });
 }
 
 function sortByTime(items: NotificationItem[], newestFirst = true) {
   return [...items].sort((left, right) => {
-    const leftTime = new Date(left.resolved_at || left.updated_at || left.created_at || 0).getTime();
-    const rightTime = new Date(right.resolved_at || right.updated_at || right.created_at || 0).getTime();
+    const leftTime = new Date(left.created_at || 0).getTime();
+    const rightTime = new Date(right.created_at || 0).getTime();
     return newestFirst ? rightTime - leftTime : leftTime - rightTime;
   });
 }
@@ -58,8 +53,8 @@ function sortBySeverityOnly(items: NotificationItem[]) {
   return [...items].sort((left, right) => {
     const rankDiff = severityRank(left.severity) - severityRank(right.severity);
     if (rankDiff !== 0) return rankDiff;
-    const leftTime = new Date(left.updated_at || left.created_at || 0).getTime();
-    const rightTime = new Date(right.updated_at || right.created_at || 0).getTime();
+    const leftTime = new Date(left.created_at || 0).getTime();
+    const rightTime = new Date(right.created_at || 0).getTime();
     return rightTime - leftTime;
   });
 }
