@@ -29,8 +29,8 @@ type BillRow = {
   patientId?: number;
 };
 type ServiceItem = { type: 'service' | 'medication'; name: string; quantity: number; unitPrice: number; serviceId?: number | null; logId?: number | null; serviceType?: string | null; };
-type MedicationCatalogItem = { medication_id: number; medication_name: string; total_stock: number; batch_number?: string; expiry_date?: string; unit?: string; form?: string; strength?: string; };
-type MedicationStockApiItem = { medication_id: number; medication_name: string; total_stock: number; batch_number?: string; expiry_date?: string; unit?: string; form?: string; strength?: string; };
+type MedicationCatalogItem = { medication_id: number; medication_name: string; total_stock: number; batch_number?: string; expiry_date?: string; unit?: string; form?: string; strength?: string; unit_price?: number | null; };
+type MedicationStockApiItem = { medication_id: number; medication_name: string; total_stock: number; batch_number?: string; expiry_date?: string; unit?: string; form?: string; strength?: string; unit_price?: number | null; };
 type PaymentBillDetail = {
   bill_id: number;
   bill_code: string;
@@ -185,7 +185,20 @@ function toAgeFromBirthDate(value: string) {
   if (monthDiff < 0 || (monthDiff === 0 && dayDiff < 0)) age -= 1;
   return age >= 0 ? String(age) : '';
 }
-function resolveMedicationUnitPrice(name: string) { return medicationPriceByName[name] ?? 20; }
+function resolveMedicationUnitPrice(name: string, catalog?: MedicationCatalogItem[]) {
+  const normalizedName = name.trim().toLowerCase();
+  const match = catalog?.find((item) => item.medication_name.trim().toLowerCase() === normalizedName);
+  const batchUnitPrice = Number(match?.unit_price ?? NaN);
+  if (Number.isFinite(batchUnitPrice) && batchUnitPrice >= 0) return batchUnitPrice;
+  return medicationPriceByName[name] ?? 20;
+}
+
+function resolveMedicationUnitPriceFromItem(item: MedicationCatalogItem | null | undefined, catalog?: MedicationCatalogItem[]) {
+  const directBatchPrice = Number(item?.unit_price ?? NaN);
+  if (Number.isFinite(directBatchPrice) && directBatchPrice >= 0) return directBatchPrice;
+  if (!item) return 0;
+  return resolveMedicationUnitPrice(item.medication_name, catalog);
+}
 function toSafeQuantity(value: string) { const p = Number(value); if (!Number.isInteger(p) || p <= 0) return 1; return p; }
 function normalizeBillStatus(value: string): BillStatus { const n = value.trim().toLowerCase(); if (n === 'paid') return 'Paid'; if (n === 'cancelled' || n === 'canceled') return 'Cancelled'; return 'Pending'; }
 function statusCode(status: BillStatus) { if (status === 'Paid') return 'PD'; if (status === 'Cancelled') return 'CN'; return 'PN'; }
@@ -438,7 +451,7 @@ export default function BillingAndPayments() {
         if (!response.ok) return;
         const payload = (await response.json()) as { items?: MedicationStockApiItem[] };
         if (!active || !Array.isArray(payload.items) || !payload.items.length) return;
-        setMedicationCatalog(payload.items.map(item => ({ medication_id: item.medication_id, medication_name: item.medication_name, total_stock: item.total_stock ?? 0, batch_number: item.batch_number, expiry_date: item.expiry_date, unit: item.unit, form: item.form, strength: item.strength })));
+        setMedicationCatalog(payload.items.map(item => ({ medication_id: item.medication_id, medication_name: item.medication_name, total_stock: item.total_stock ?? 0, batch_number: item.batch_number, expiry_date: item.expiry_date, unit: item.unit, form: item.form, strength: item.strength, unit_price: item.unit_price })));
       } catch { /* keep fallback */ }
     })();
     return () => { active = false; };
@@ -796,7 +809,7 @@ export default function BillingAndPayments() {
     () => medicationCatalog.find((item) => item.medication_id === calculatorReferenceMedicationId) ?? null,
     [calculatorReferenceMedicationId, medicationCatalog],
   );
-  const calculatorReferenceMedication = activeCalculatorMedication ?? selectedCalculatorReferenceMedication;
+  const calculatorReferenceMedication = selectedCalculatorReferenceMedication ?? activeCalculatorMedication;
   const calculatorReferenceOptions = useMemo(() => {
     const query = calculatorReferenceSearch.trim().toLowerCase();
     if (!query) return medicationCatalog;
@@ -825,13 +838,13 @@ export default function BillingAndPayments() {
     const totalQuantity = totalDoses * calculatorUnitsPerIntake;
     const remainingQuantity = Math.max(0, totalQuantity - calculatorAlreadyTaken);
     const totalCost = remainingQuantity * calculatorPricePerUnit;
-    const stock = activeCalculatorMedication?.total_stock ?? null;
+    const stock = calculatorReferenceMedication?.total_stock ?? null;
     
     let warning = '';
     if (calculatorAlreadyTaken >= totalQuantity) {
       warning = `Patient has already taken ${calculatorAlreadyTaken} units, which meets or exceeds the total requirement of ${totalQuantity} units. No additional quantity is needed.`;
     } else if (stock != null && remainingQuantity > stock) {
-      warning = `Calculated quantity exceeds stock. Available: ${stock} ${activeCalculatorMedication?.unit || 'pcs'}.`;
+      warning = `Calculated quantity exceeds stock. Available: ${stock} ${calculatorReferenceMedication?.unit || 'pcs'}.`;
     }
 
     return {
@@ -843,11 +856,11 @@ export default function BillingAndPayments() {
       totalCost,
     };
   }, [
-    activeCalculatorMedication,
     calculatorAlreadyTaken,
     calculatorFrequencyPerDay,
     calculatorNumberOfDays,
     calculatorPricePerUnit,
+    calculatorReferenceMedication,
     calculatorUnitsPerIntake,
   ]);
 
@@ -909,7 +922,7 @@ export default function BillingAndPayments() {
       return;
     }
     setAddItemFeedback('');
-    setServices(prev => [...prev, { type: 'medication', name: selectedMedication.medication_name, quantity: medicationQty, unitPrice: medicationUnitPrice || resolveMedicationUnitPrice(selectedMedication.medication_name), serviceId: null, logId: selectedMedication.medication_id }]);
+    setServices(prev => [...prev, { type: 'medication', name: selectedMedication.medication_name, quantity: medicationQty, unitPrice: medicationUnitPrice || resolveMedicationUnitPrice(selectedMedication.medication_name, medicationCatalog), serviceId: null, logId: selectedMedication.medication_id }]);
     setModal(prevModal);
   }
 
@@ -952,7 +965,7 @@ export default function BillingAndPayments() {
           type: 'medication',
           name: medicineOnlySelectedMedication.medication_name,
           quantity: medicineOnlyQty,
-          unitPrice: medicineOnlyUnitPrice || resolveMedicationUnitPrice(medicineOnlySelectedMedication.medication_name),
+          unitPrice: medicineOnlyUnitPrice || resolveMedicationUnitPrice(medicineOnlySelectedMedication.medication_name, medicationCatalog),
           serviceId: null,
           logId: medicineOnlySelectedMedication.medication_id,
         },
@@ -1004,7 +1017,7 @@ export default function BillingAndPayments() {
     setCalculatorReferenceSearch('');
     setCalculatorReferenceMedicationId(medicineOnlySelectedMedication?.medication_id ?? null);
     const draftPricePerUnit = medicineOnlyUnitPrice
-      || (medicineOnlySelectedMedication ? resolveMedicationUnitPrice(medicineOnlySelectedMedication.medication_name) : 0);
+      || resolveMedicationUnitPriceFromItem(medicineOnlySelectedMedication, medicationCatalog);
     setMedicationCalculator({
       unitsPerIntake: '1',
       frequencyPerDay: '3',
@@ -2409,7 +2422,7 @@ export default function BillingAndPayments() {
               showMedicationDropdown={showMedicineOnlyDropdown}
               setShowMedicationDropdown={setShowMedicineOnlyDropdown}
               filteredMedicationOptions={filteredMedicineOnlyOptions}
-              resolveMedicationUnitPrice={resolveMedicationUnitPrice}
+              resolveMedicationUnitPrice={(name) => resolveMedicationUnitPrice(name, medicationCatalog)}
               quantity={medicineOnlyQty}
               setQuantity={setMedicineOnlyQty}
               unitPrice={medicineOnlyUnitPrice}
@@ -2456,7 +2469,17 @@ export default function BillingAndPayments() {
               calculatorReferenceSearch={calculatorReferenceSearch}
               setCalculatorReferenceSearch={setCalculatorReferenceSearch}
               calculatorReferenceOptions={calculatorReferenceOptions}
-              selectCalculatorReferenceMedication={(medication) => setCalculatorReferenceMedicationId(medication.medication_id)}
+              selectCalculatorReferenceMedication={(medication) => {
+                setCalculatorReferenceMedicationId(medication.medication_id);
+                setCalculatorReferenceSearch(medication.medication_name);
+                const selectedCatalogItem = medicationCatalog.find((item) => item.medication_id === medication.medication_id) ?? null;
+                setCalculatorField('pricePerUnit', resolveMedicationUnitPriceFromItem(selectedCatalogItem, medicationCatalog).toFixed(2));
+              }}
+              clearCalculatorReferenceMedication={() => {
+                setCalculatorReferenceMedicationId(null);
+                setCalculatorReferenceSearch('');
+                setCalculatorField('pricePerUnit', '0.00');
+              }}
               toPeso={toPeso}
               formatDateMed={formatDateMed}
             />
@@ -2909,7 +2932,7 @@ export default function BillingAndPayments() {
                     <div className="absolute left-0 top-11 z-20 w-full rounded-xl border border-gray-200 bg-white shadow-lg overflow-hidden">
                       <div className="max-h-44 overflow-auto">
                         {filteredMedicationOptions.map(med => (
-                          <button key={med.medication_id} type="button" className={`block w-full px-3 py-2.5 text-left text-sm hover:bg-blue-600 hover:text-white transition-colors ${selectedMedication?.medication_id === med.medication_id ? 'bg-blue-600 text-white' : ''}`} onClick={() => { setSelectedMedication(med); setMedicationSearch(med.medication_name); setMedicationUnitPrice(resolveMedicationUnitPrice(med.medication_name)); setMedicationQty(1); setShowMedicationDropdown(false); }}>
+                          <button key={med.medication_id} type="button" className={`block w-full px-3 py-2.5 text-left text-sm hover:bg-blue-600 hover:text-white transition-colors ${selectedMedication?.medication_id === med.medication_id ? 'bg-blue-600 text-white' : ''}`} onClick={() => { setSelectedMedication(med); setMedicationSearch(med.medication_name); setMedicationUnitPrice(resolveMedicationUnitPriceFromItem(med, medicationCatalog)); setMedicationQty(1); setShowMedicationDropdown(false); }}>
                             <p className="font-semibold">{med.medication_name}</p>
                             <p className={`text-xs ${selectedMedication?.medication_id === med.medication_id ? 'text-blue-100' : 'text-gray-400'}`}>Stock: {med.total_stock} {med.unit || 'pcs'} &nbsp;·&nbsp; Batch: {med.batch_number || 'N/A'}</p>
                           </button>
@@ -2921,6 +2944,7 @@ export default function BillingAndPayments() {
               </div>
               {selectedMedication && (
                 <div className="mb-4 rounded-xl border border-gray-200 bg-gray-50 p-3 text-sm space-y-1.5">
+                  <p className="font-semibold text-gray-900">Selected medication: {selectedMedication.medication_name}</p>
                   <div className="grid grid-cols-2 gap-2">
                     <div><p className="text-xs text-gray-400">Batch</p><p className="font-bold text-gray-800">{selectedMedication.batch_number || 'N/A'}</p></div>
                     <div><p className="text-xs text-gray-400">Available</p><p className="font-bold text-gray-800">{selectedMedication.total_stock} {selectedMedication.unit || 'pcs'}</p></div>

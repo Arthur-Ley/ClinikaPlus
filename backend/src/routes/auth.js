@@ -194,6 +194,51 @@ authRouter.post(
 );
 
 authRouter.post(
+  "/refresh",
+  asyncHandler(async (req, res) => {
+    const { refreshToken } = req.body ?? {};
+    const trimmedRefreshToken = typeof refreshToken === "string" ? refreshToken.trim() : "";
+
+    if (!trimmedRefreshToken) {
+      return res.status(400).json({ error: "Refresh token is required." });
+    }
+
+    let refreshResult;
+    try {
+      refreshResult = await supabaseAuth.auth.refreshSession({
+        refresh_token: trimmedRefreshToken,
+      });
+    } catch (error) {
+      if (isAuthConnectivityError(error)) {
+        return sendAuthServiceUnavailable(res);
+      }
+
+      throw error;
+    }
+
+    const { data, error } = refreshResult;
+    if (error || !data.session || !data.user) {
+      return res.status(401).json({ error: error?.message || "Invalid refresh token." });
+    }
+
+    const profile = await loadAppUserProfile(data.user.id);
+    const metadata = getUserMetadata(data.user);
+
+    return res.status(200).json({
+      accessToken: data.session.access_token,
+      refreshToken: data.session.refresh_token,
+      user: {
+        id: data.user.id,
+        email: profile?.email || data.user.email,
+        firstName: profile?.first_name || (typeof metadata.first_name === "string" ? metadata.first_name.trim() : ""),
+        lastName: profile?.last_name || (typeof metadata.last_name === "string" ? metadata.last_name.trim() : ""),
+        role: profile?.role || DEFAULT_ROLE,
+      },
+    });
+  })
+);
+
+authRouter.post(
   "/forgot-password",
   asyncHandler(async (req, res) => {
     const { email, redirectTo } = req.body ?? {};

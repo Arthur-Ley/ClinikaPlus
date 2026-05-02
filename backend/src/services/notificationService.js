@@ -409,6 +409,35 @@ async function syncNotificationSources() {
   }
 }
 
+const NOTIFICATION_SYNC_INTERVAL_MINUTES = 5;
+
+function startNotificationSyncScheduler(intervalMinutes = NOTIFICATION_SYNC_INTERVAL_MINUTES) {
+  const intervalMs = intervalMinutes * 60 * 1000;
+  let isSyncRunning = false;
+
+  async function runSync() {
+    if (isSyncRunning) return;
+    isSyncRunning = true;
+    try {
+      await syncNotificationSources();
+    } catch (error) {
+      // Keep the scheduler alive even if a sync cycle fails.
+      console.error("Notification sync scheduler error:", error);
+    } finally {
+      isSyncRunning = false;
+    }
+  }
+
+  runSync().catch((error) => {
+    console.error("Initial notification sync failed:", error);
+  });
+  setInterval(runSync, intervalMs);
+}
+
+if (process.env.NODE_ENV !== 'test') {
+  startNotificationSyncScheduler();
+}
+
 async function readNotificationRows(userId) {
   const [notificationsResult, readsResult] = await Promise.all([
     notificationDb
@@ -702,7 +731,6 @@ async function resolveNotificationBySource({
 }
 
 async function listNotificationsForUser(userId, filters) {
-  await syncNotificationSources();
   const items = await readNotificationRows(userId);
   return {
     items: applyNotificationFilters(items, filters),
@@ -711,7 +739,6 @@ async function listNotificationsForUser(userId, filters) {
 }
 
 async function getNotificationSummaryForUser(userId) {
-  await syncNotificationSources();
   const items = await readNotificationRows(userId);
   return { summary: buildSummary(items) };
 }

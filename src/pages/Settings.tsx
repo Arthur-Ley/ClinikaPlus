@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BadgeCheck, Loader2, LockKeyhole, Mail, MonitorCog, Save, Send, ShieldCheck, User, UserCog } from 'lucide-react';
 import { getAuthSession, validateAuthSession, type LoginResponse } from '../services/authApi';
+import { supabase } from '../lib/supabaseClient';
 
 type SettingsTab = 'user' | 'system';
 type SystemMode = 'integrated' | 'standalone';
@@ -39,12 +40,14 @@ export default function Settings() {
   const [emailAuthPassword, setEmailAuthPassword] = useState('');
   const [emailUpdateError, setEmailUpdateError] = useState('');
   const [emailUpdateNotice, setEmailUpdateNotice] = useState('');
+  const [isSendingEmailVerification, setIsSendingEmailVerification] = useState(false);
   const [showPasswordUpdateForm, setShowPasswordUpdateForm] = useState(false);
   const [currentPasswordForChange, setCurrentPasswordForChange] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [passwordUpdateError, setPasswordUpdateError] = useState('');
   const [passwordUpdateNotice, setPasswordUpdateNotice] = useState('');
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [tabLoading, setTabLoading] = useState(true);
   const [isTabContentVisible, setIsTabContentVisible] = useState(true);
   const [systemMode, setSystemMode] = useState<SystemMode>('standalone');
@@ -64,7 +67,7 @@ export default function Settings() {
     setSavedAt(new Date().toLocaleString('en-US'));
   }
 
-  function handleSendEmailVerificationLink() {
+  async function handleSendEmailVerificationLink() {
     const nextEmail = newEmail.trim().toLowerCase();
     const currentEmail = email.trim().toLowerCase();
 
@@ -86,11 +89,53 @@ export default function Settings() {
       return;
     }
 
-    // Frontend-only feedback until backend endpoint is wired.
-    setEmailUpdateNotice(`Verification link sent to ${nextEmail}. Complete verification to finalize your email change.`);
+    if (!supabase) {
+      setEmailUpdateError('Supabase client is not configured. Please contact support.');
+      return;
+    }
+
+    setIsSendingEmailVerification(true);
+    try {
+      const validatedSession = await validateAuthSession();
+      const authEmail = validatedSession?.user?.email?.trim().toLowerCase() || currentEmail;
+      if (!authEmail) {
+        setEmailUpdateError('Unable to verify your current account email. Please sign in again.');
+        return;
+      }
+
+      const { error: reauthError } = await supabase.auth.signInWithPassword({
+        email: authEmail,
+        password: emailAuthPassword,
+      });
+
+      if (reauthError) {
+        setEmailUpdateError('Password verification failed. Please check your password and try again.');
+        return;
+      }
+
+      const emailRedirectTo = `${window.location.origin}/settings`;
+      const { error: updateEmailError } = await supabase.auth.updateUser(
+        { email: nextEmail },
+        { emailRedirectTo },
+      );
+
+      if (updateEmailError) {
+        setEmailUpdateError(updateEmailError.message || 'Failed to send verification link. Please try again.');
+        return;
+      }
+
+      setEmailAuthPassword('');
+      setNewEmail('');
+      setEmailUpdateNotice(`Verification link sent to ${nextEmail}. Complete verification to finalize your email change.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to send verification link. Please try again.';
+      setEmailUpdateError(message);
+    } finally {
+      setIsSendingEmailVerification(false);
+    }
   }
 
-  function handleChangePassword() {
+  async function handleChangePassword() {
     setPasswordUpdateError('');
     setPasswordUpdateNotice('');
 
@@ -119,12 +164,50 @@ export default function Settings() {
       return;
     }
 
-    // Frontend-only feedback until backend endpoint is wired.
-    setPassword(newPassword);
-    setCurrentPasswordForChange('');
-    setNewPassword('');
-    setConfirmNewPassword('');
-    setPasswordUpdateNotice('Password updated successfully. A security notification will be sent to your email.');
+    if (!supabase) {
+      setPasswordUpdateError('Supabase client is not configured. Please contact support.');
+      return;
+    }
+
+    setIsChangingPassword(true);
+    try {
+      const validatedSession = await validateAuthSession();
+      const authEmail = validatedSession?.user?.email?.trim().toLowerCase() || email.trim().toLowerCase();
+      if (!authEmail) {
+        setPasswordUpdateError('Unable to verify your account email. Please sign in again.');
+        return;
+      }
+
+      const { error: reauthError } = await supabase.auth.signInWithPassword({
+        email: authEmail,
+        password: currentPasswordForChange,
+      });
+
+      if (reauthError) {
+        setPasswordUpdateError('Current password is incorrect. Please try again.');
+        return;
+      }
+
+      const { error: updatePasswordError } = await supabase.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (updatePasswordError) {
+        setPasswordUpdateError(updatePasswordError.message || 'Failed to update password. Please try again.');
+        return;
+      }
+
+      setPassword(newPassword);
+      setCurrentPasswordForChange('');
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setPasswordUpdateNotice('Password changed successfully. A security email notification has been sent.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update password. Please try again.';
+      setPasswordUpdateError(message);
+    } finally {
+      setIsChangingPassword(false);
+    }
   }
 
   function handleSystemModeChange(nextMode: SystemMode) {
@@ -352,10 +435,11 @@ export default function Settings() {
                             <button
                               type="button"
                               onClick={handleSendEmailVerificationLink}
-                              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white transition hover:bg-blue-700"
+                              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                              disabled={isSendingEmailVerification}
                             >
-                              <Send className="h-4 w-4" />
-                              Send Verification Link
+                              {isSendingEmailVerification ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                              {isSendingEmailVerification ? 'Sending...' : 'Send Verification Link'}
                             </button>
                           </div>
 
@@ -458,10 +542,11 @@ export default function Settings() {
                             <button
                               type="button"
                               onClick={handleChangePassword}
-                              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white transition hover:bg-blue-700"
+                              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                              disabled={isChangingPassword}
                             >
-                              <Send className="h-4 w-4" />
-                              Update Password
+                              {isChangingPassword ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                              {isChangingPassword ? 'Updating...' : 'Update Password'}
                             </button>
                           </div>
 

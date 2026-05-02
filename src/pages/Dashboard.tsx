@@ -410,7 +410,7 @@ export default function Dashboard() {
                 </button>
               </div>
               <div>
-                <div className="inline-block rounded-full bg-blue-600 px-3 py-1 text-white text-xs mb-2">Suggested Orders</div>
+                <div className="mb-2 inline-flex min-h-10 items-center rounded-full bg-blue-600 px-3 py-1 text-xs text-white">Suggested Orders</div>
                 <div className="space-y-1 text-sm">
                   {visibleSuggestedOrders.length === 0 && <p>No suggested orders</p>}
                   {visibleSuggestedOrders.map((order) => (
@@ -419,7 +419,7 @@ export default function Dashboard() {
                 </div>
               </div>
               <div>
-                <div className="inline-block rounded-full bg-blue-600 px-3 py-1 text-white text-xs mb-2">Next Supply Delivery</div>
+                <div className="mb-2 inline-flex min-h-10 items-center rounded-full bg-blue-600 px-3 py-1 text-xs text-white">Next Supply Delivery</div>
                 <div className="space-y-1 text-sm">
                   {visibleNextSupply.length > 0 ? (
                     visibleNextSupply.map((supply) => (

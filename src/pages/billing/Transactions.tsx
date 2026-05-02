@@ -1,12 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Eye, X } from 'lucide-react';
 import Pagination from '../../components/ui/Pagination';
 import SectionToolbar from '../../components/ui/SectionToolbar';
 import {
   BillingPaginationSkeleton,
-  BillingTableSkeleton,
-  BillingToolbarSkeleton,
   SkeletonBlock,
 } from './BillingSkeletonParts';
 
@@ -80,7 +78,12 @@ type ReceiptBillDetails = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
-const TRANSACTIONS_PAGE_SIZE = 9;
+const DEFAULT_TRANSACTIONS_PAGE_SIZE = 9;
+const MIN_TRANSACTIONS_PAGE_SIZE = 5;
+const MAX_TRANSACTIONS_PAGE_SIZE = 12;
+const TRANSACTIONS_TABLE_HEADER_HEIGHT = 40;
+const TRANSACTIONS_TABLE_ROW_HEIGHT = 60;
+const TRANSACTIONS_TABLE_SAFETY_BUFFER = 6;
 
 function formatPeso(value: number) {
   return `PHP ${value.toLocaleString('en-PH', {
@@ -135,7 +138,47 @@ function formatRoleLabel(value: string | null | undefined) {
     .join(' ');
 }
 
+function TransactionsTableSkeleton({ rowCount }: { rowCount: number }) {
+  return (
+    <div className="min-h-0 flex-1 overflow-hidden rounded-xl">
+      <table className="w-full table-fixed text-xs lg:text-sm">
+        <thead className="bg-gray-200/90">
+          <tr>
+            <th className="w-[12%] px-2 py-2 text-left lg:px-3"><SkeletonBlock className="h-4 w-20" /></th>
+            <th className="w-[10%] px-2 py-2 text-left lg:px-3"><SkeletonBlock className="h-4 w-16" /></th>
+            <th className="w-[16%] px-2 py-2 text-left lg:px-3"><SkeletonBlock className="h-4 w-24" /></th>
+            <th className="w-[7%] px-2 py-2 text-left lg:px-3"><SkeletonBlock className="h-4 w-14" /></th>
+            <th className="w-[11%] px-2 py-2 text-left lg:px-3"><SkeletonBlock className="h-4 w-20" /></th>
+            <th className="w-[13%] px-2 py-2 text-right lg:px-3"><SkeletonBlock className="ml-auto h-4 w-20" /></th>
+            <th className="w-[10%] px-2 py-2 text-center lg:px-3"><SkeletonBlock className="mx-auto h-4 w-14" /></th>
+            <th className="w-[9%] px-2 py-2 text-left lg:px-3"><SkeletonBlock className="h-4 w-20" /></th>
+            <th className="w-[13%] px-2 py-2 text-center lg:px-3"><SkeletonBlock className="mx-auto h-4 w-20" /></th>
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: rowCount }).map((_, rowIndex) => (
+            <tr key={`transactions-skeleton-row-${rowIndex}`} className="border-t border-gray-200">
+              <td className="px-2 py-2 lg:px-3"><SkeletonBlock className="h-4 w-24" /></td>
+              <td className="px-2 py-2 lg:px-3"><SkeletonBlock className="h-4 w-24" /></td>
+              <td className="px-2 py-2 lg:px-3"><SkeletonBlock className="h-4 w-32" /></td>
+              <td className="px-2 py-2 lg:px-3"><SkeletonBlock className="h-4 w-12" /></td>
+              <td className="px-2 py-2 lg:px-3"><SkeletonBlock className="h-4 w-24" /></td>
+              <td className="px-2 py-2 lg:px-3"><SkeletonBlock className="ml-auto h-4 w-24" /></td>
+              <td className="px-2 py-2 lg:px-3"><SkeletonBlock className="mx-auto h-8 w-[84px] rounded-full" /></td>
+              <td className="px-2 py-2 lg:px-4"><SkeletonBlock className="h-4 w-12" /></td>
+              <td className="px-2 py-2 lg:px-3"><SkeletonBlock className="mx-auto h-4 w-24" /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function Transactions() {
+  const tableCardRef = useRef<HTMLDivElement | null>(null);
+  const tableViewportRef = useRef<HTMLDivElement | null>(null);
+  const [forceSkeletonVisible, setForceSkeletonVisible] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [methodFilter, setMethodFilter] = useState<TransactionMethodFilter>('all');
   const [currentPage, setCurrentPage] = useState(1);
@@ -146,7 +189,14 @@ export default function Transactions() {
   const [receiptLoadError, setReceiptLoadError] = useState('');
   const [loadError, setLoadError] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  const effectivePageSize = TRANSACTIONS_PAGE_SIZE;
+  const [pageSize, setPageSize] = useState(DEFAULT_TRANSACTIONS_PAGE_SIZE);
+  const effectivePageSize = pageSize;
+  const shouldShowLoading = isLoading || forceSkeletonVisible;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setForceSkeletonVisible(false), 550);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -238,6 +288,41 @@ export default function Transactions() {
       setCurrentPage(totalPages);
     }
   }, [currentPage, totalPages]);
+
+  useEffect(() => {
+    const tableCard = tableCardRef.current;
+    const viewport = tableViewportRef.current;
+    if (!tableCard || !viewport) return;
+
+    const recomputePageSize = () => {
+      const availableHeight = tableCard.clientHeight;
+      const tableHeader = viewport.querySelector('thead');
+      const firstBodyRow = viewport.querySelector('tbody tr');
+      const measuredHeaderHeight = tableHeader instanceof HTMLElement
+        ? tableHeader.getBoundingClientRect().height
+        : TRANSACTIONS_TABLE_HEADER_HEIGHT;
+      const measuredRowHeight = firstBodyRow instanceof HTMLElement
+        ? firstBodyRow.getBoundingClientRect().height
+        : TRANSACTIONS_TABLE_ROW_HEIGHT;
+
+      if (availableHeight <= measuredHeaderHeight || measuredRowHeight <= 0) return;
+
+      const rows = Math.floor((availableHeight - measuredHeaderHeight - TRANSACTIONS_TABLE_SAFETY_BUFFER) / measuredRowHeight);
+      const nextPageSize = Math.max(MIN_TRANSACTIONS_PAGE_SIZE, Math.min(MAX_TRANSACTIONS_PAGE_SIZE, rows));
+      setPageSize((prev) => (prev === nextPageSize ? prev : nextPageSize));
+    };
+
+    recomputePageSize();
+
+    const observer = new ResizeObserver(recomputePageSize);
+    observer.observe(tableCard);
+    window.addEventListener('resize', recomputePageSize);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', recomputePageSize);
+    };
+  }, [filteredTransactions.length]);
 
   useEffect(() => {
     let active = true;
@@ -400,12 +485,12 @@ export default function Transactions() {
         <section className="flex flex-1 min-h-0 flex-col rounded-2xl bg-gray-300/80 p-5">
           <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-gray-200 bg-gray-100 px-3 py-4 md:px-4 md:py-5">
             <div>
-              {isLoading ? (
+              {shouldShowLoading ? (
                 <>
                   <SkeletonBlock className="h-8 w-40" />
-                  <SkeletonBlock className="mt-1 h-4 w-80" />
-                  <div className="mt-3">
-                    <BillingToolbarSkeleton showPrimaryAction={false} trailingControlCount={1} />
+                  <div className="mt-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <SkeletonBlock className="h-10 w-full lg:max-w-[540px]" />
+                    <SkeletonBlock className="h-10 w-[168px]" />
                   </div>
                 </>
               ) : (
@@ -432,78 +517,68 @@ export default function Transactions() {
               )}
             </div>
 
-            <div className="mt-4 min-h-0 flex-1 rounded-2xl border border-gray-200 bg-white">
-              {isLoading ? (
-                <BillingTableSkeleton
-                  columns={[
-                    { headerWidthClass: 'w-14', cellWidthClass: 'w-24' },
-                    { headerWidthClass: 'w-20', cellWidthClass: 'w-24' },
-                    { headerWidthClass: 'w-20', cellWidthClass: 'w-36' },
-                    { headerWidthClass: 'w-16', cellWidthClass: 'w-20' },
-                    { headerWidthClass: 'w-14', cellWidthClass: 'w-20' },
-                    { headerWidthClass: 'w-16', cellWidthClass: 'w-20', align: 'right' },
-                    { headerWidthClass: 'w-16', cellWidthClass: 'w-16', align: 'center' },
-                    { headerWidthClass: 'w-16', cellWidthClass: 'w-24', align: 'right' },
-                  ]}
-                  rowCount={effectivePageSize}
-                />
+            <div ref={tableCardRef} className="mt-4 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white">
+              {shouldShowLoading ? (
+                <TransactionsTableSkeleton rowCount={Math.max(5, Math.min(effectivePageSize, 10))} />
               ) : (
-                <table className="min-w-full text-sm">
-                  <thead className="bg-gray-200/90 text-gray-700">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-semibold">Payment Code</th>
-                      <th className="px-3 py-2 text-left font-semibold">Bill Code</th>
-                      <th className="px-3 py-2 text-left font-semibold">Patient</th>
-                      <th className="px-3 py-2 text-left font-semibold">Method</th>
-                      <th className="px-3 py-2 text-left font-semibold">Payment Date</th>
-                      <th className="px-3 py-2 text-right font-semibold">Amount Paid</th>
-                      <th className="px-3 py-2 text-center font-semibold">Status</th>
-                      <th className="px-3 py-2 text-left font-semibold">Reference No.</th>
-                      <th className="px-3 py-2 text-center font-semibold">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {pagedTransactions.length > 0 ? (
-                      pagedTransactions.map((row) => (
-                        <tr key={row.payment_id} className="border-t border-gray-200 text-gray-800 hover:bg-gray-200/40">
-                          <td className="px-3 py-2 font-semibold">{row.payment_code || `PAY-${row.payment_id}`}</td>
-                          <td className="px-3 py-2">{row.bill_code || `BILL-${row.bill_id}`}</td>
-                          <td className="px-3 py-2">{row.patient_name}</td>
-                          <td className="px-3 py-2">{row.method || '-'}</td>
-                          <td className="px-3 py-2">{formatDate(row.date)}</td>
-                          <td className="px-3 py-2 text-right font-semibold">{formatPeso(row.amount)}</td>
-                          <td className="px-3 py-2 text-center">
-                            <span className={`inline-flex min-w-[90px] items-center justify-center rounded-full px-2 py-1 text-xs font-semibold ${statusBadgeClass(row.bill_status || row.status || 'Paid')}`}>
-                              {row.bill_status || row.status || 'Paid'}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2">{paymentReferenceFor(row)}</td>
-                          <td className="px-3 py-2 text-center">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedReceipt(row)}
-                              className="font-semibold text-blue-600 hover:text-blue-700"
-                            >
-                              View Receipt
-                            </button>
+                <div ref={tableViewportRef} className="min-h-0 flex-1 overflow-hidden">
+                  <table className="w-full table-fixed text-xs lg:text-sm">
+                    <thead className="bg-gray-200/90 text-gray-700">
+                      <tr>
+                        <th className="w-[12%] px-2 py-2 text-left font-semibold whitespace-nowrap lg:px-3">Payment Code</th>
+                        <th className="w-[10%] px-2 py-2 text-left font-semibold whitespace-nowrap lg:px-3">Bill Code</th>
+                        <th className="w-[16%] px-2 py-2 text-left font-semibold whitespace-nowrap lg:px-3">Patient</th>
+                        <th className="w-[7%] px-2 py-2 text-left font-semibold whitespace-nowrap lg:px-3">Method</th>
+                        <th className="w-[11%] px-2 py-2 text-left font-semibold whitespace-nowrap lg:px-3">Payment Date</th>
+                        <th className="w-[13%] px-2 py-2 text-right font-semibold whitespace-nowrap lg:px-3">Amount Paid</th>
+                        <th className="w-[10%] px-2 py-2 text-center font-semibold whitespace-nowrap lg:px-3">Status</th>
+                        <th className="w-[9%] px-2 py-2 text-left font-semibold whitespace-nowrap lg:px-3">Reference No.</th>
+                        <th className="w-[13%] px-2 py-2 text-center font-semibold whitespace-nowrap lg:px-3">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pagedTransactions.length > 0 ? (
+                        pagedTransactions.map((row) => (
+                          <tr key={row.payment_id} className="border-t border-gray-200 text-gray-800 hover:bg-gray-200/40">
+                            <td className="px-2 py-2 font-semibold whitespace-nowrap lg:px-3">{row.payment_code || `PAY-${row.payment_id}`}</td>
+                            <td className="px-2 py-2 whitespace-nowrap truncate lg:px-3" title={row.bill_code || `BILL-${row.bill_id}`}>{row.bill_code || `BILL-${row.bill_id}`}</td>
+                            <td className="px-2 py-2 whitespace-nowrap truncate lg:px-3" title={row.patient_name}>{row.patient_name}</td>
+                            <td className="px-2 py-2 whitespace-nowrap lg:px-3">{row.method || '-'}</td>
+                            <td className="px-2 py-2 whitespace-nowrap lg:px-3">{formatDate(row.date)}</td>
+                            <td className="px-2 py-2 text-right font-semibold whitespace-nowrap lg:px-3">{formatPeso(row.amount)}</td>
+                            <td className="px-2 py-2 text-center whitespace-nowrap lg:px-3">
+                              <span className={`inline-flex min-w-[76px] items-center justify-center rounded-full px-2 py-1 text-[11px] font-semibold lg:min-w-[84px] lg:text-xs ${statusBadgeClass(row.bill_status || row.status || 'Paid')}`}>
+                                {row.bill_status || row.status || 'Paid'}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 whitespace-nowrap truncate lg:px-4" title={paymentReferenceFor(row)}>{paymentReferenceFor(row)}</td>
+                            <td className="px-2 py-2 text-center whitespace-nowrap lg:px-3">
+                              <button
+                                type="button"
+                                onClick={() => setSelectedReceipt(row)}
+                                className="inline-flex items-center justify-center font-semibold text-blue-600 hover:text-blue-700 whitespace-nowrap"
+                              >
+                                View Receipt
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td colSpan={9} className="px-3 py-10 text-center text-sm text-gray-500">
+                            {loadError || 'No transactions match your current filters.'}
                           </td>
                         </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={9} className="px-3 py-10 text-center text-sm text-gray-500">
-                          {loadError || 'No transactions match your current filters.'}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
 
             <div className="mt-4 flex flex-col gap-2.5 text-sm text-gray-600 md:flex-row md:items-center md:justify-between">
-              {isLoading ? <SkeletonBlock className="h-4 w-52" /> : <p>Showing <span className="rounded-md bg-gray-300 px-2">{pagedTransactions.length}</span> out of {filteredTransactions.length}</p>}
-              {isLoading ? (
+              {shouldShowLoading ? <SkeletonBlock className="h-4 w-52" /> : <p>Showing <span className="rounded-md bg-gray-300 px-2">{pagedTransactions.length}</span> out of {filteredTransactions.length}</p>}
+              {shouldShowLoading ? (
                 <BillingPaginationSkeleton />
               ) : (
                 usePagination ? <Pagination currentPage={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} /> : null

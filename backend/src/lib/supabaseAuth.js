@@ -30,6 +30,12 @@ function createMissingConfigClient() {
       async resetPasswordForEmail() {
         throwConfigError();
       },
+      async refreshSession() {
+        throwConfigError();
+      },
+      async getUser() {
+        throwConfigError();
+      },
     },
   };
 }

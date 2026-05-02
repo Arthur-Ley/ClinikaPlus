@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, X, Pill, CheckCircle, Plus, ChevronDown, CheckCircle2, Pencil, Layers, Package, Building2, RefreshCw, Trash2, CalendarDays } from 'lucide-react';
+import { AlertTriangle, X, Pill, CheckCircle, Plus, ChevronDown, CheckCircle2, Pencil, Layers, Package, Building2, RefreshCw, Trash2, CalendarDays, Search } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { createRestockRequest, loadRestockRequests, RESTOCK_REQUESTS_CHANGED_EVENT } from './restockRequestsStore';
 import { emitGlobalSearchRefresh } from '../../context/globalSearchEvents';
@@ -1461,15 +1461,23 @@ function buildMedicationUpdatePayload(
 
           {/* ── STOCKS TABLE ── */}
           <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-            <SectionToolbar
-              className="mb-5"
-              icon={Pill}
-              title="Medication Stocks"
-              searchValue={searchTerm}
-              onSearchChange={setSearchTerm}
-              searchPlaceholder="Search Medication"
-              rightControls={(
-                <>
+            <div className="mb-4">
+              <div className="mb-3 flex items-center gap-2">
+                <Pill className="h-5 w-5 text-gray-500" />
+                <h2 className="text-xl font-semibold text-gray-700">Medication Stocks</h2>
+              </div>
+              <div className="flex w-full flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <label className="relative block w-full xl:w-[320px] xl:flex-none">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                    placeholder="Search Medication"
+                    className="h-10 w-full rounded-lg border border-gray-300 bg-gray-100 pl-9 pr-3 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-400"
+                  />
+                </label>
+                <div className="flex flex-wrap items-center gap-2 xl:ml-auto xl:justify-end">
                   <Button
                     className="inline-flex h-10 items-center gap-2 whitespace-nowrap bg-green-600 pl-3 pr-4 py-1.5 text-sm text-white hover:bg-green-700"
                     onClick={openAddChoiceModal}
@@ -1502,22 +1510,22 @@ function buildMedicationUpdatePayload(
                     </select>
                     <ChevronDown className="w-4 h-4 text-gray-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
                   </div>
-                </>
-              )}
-            />
+                </div>
+              </div>
+            </div>
             <div ref={stocksTableViewportRef} className="overflow-x-auto rounded-xl min-h-[360px]">
               <table className="w-full table-fixed text-xs md:text-sm">
                 <thead className="bg-gray-200/90 text-gray-700">
                   <tr>
-                    <th className="w-[7%] px-2 py-1.5 text-left font-semibold">#</th>
-                    <th className="w-[18%] px-2 py-1.5 text-left font-semibold">Medication Name</th>
-                    <th className="w-[14%] px-2 py-1.5 text-left font-semibold">Category</th>
-                    <th className="w-[13%] px-2 py-1.5 text-left font-semibold">Batch</th>
-                    <th className="w-[12%] px-2 py-1.5 text-left font-semibold">Stock</th>
-                    <th className="w-[12%] px-2 py-1.5 text-left font-semibold">Threshold</th>
-                    <th className="w-[12%] px-2 py-1.5 text-left font-semibold">Expiry Date</th>
-                    <th className="w-[7%] px-2 py-1.5 text-left font-semibold">Status</th>
-                    <th className="w-[5%] px-2 py-1.5 text-left font-semibold">Action</th>
+                    <th className="w-[7%] px-3 py-1.5 text-left font-semibold">#</th>
+                    <th className="w-[18%] px-3 py-1.5 text-left font-semibold">Medication Name</th>
+                    <th className="w-[13%] px-3 py-1.5 text-left font-semibold">Category</th>
+                    <th className="w-[12%] px-3 py-1.5 text-left font-semibold">Batch</th>
+                    <th className="w-[11%] px-3 py-1.5 text-left font-semibold">Stock</th>
+                    <th className="w-[12%] px-3 py-1.5 text-left font-semibold">Threshold</th>
+                    <th className="w-[12%] px-3 py-1.5 text-left font-semibold">Expiry Date</th>
+                    <th className="w-[9%] px-3 py-1.5 text-center font-semibold">Status</th>
+                    <th className="w-[6%] px-3 py-1.5 text-center font-semibold">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1534,19 +1542,19 @@ function buildMedicationUpdatePayload(
                   )}
                   {!isLoadingStocks && !stocksError && pagedItems.map((item, idx) => (
                     <tr key={item.id} data-search-medication-id={item.id} className="border-t border-gray-200 hover:bg-gray-200/40">
-                      <td className="px-2 py-1.5 font-semibold text-gray-800">#{String(startIndex + idx + 1).padStart(3, '0')}</td>
-                      <td className="px-2 py-1.5 text-gray-800 truncate" title={item.name}>{item.name}</td>
-                      <td className="px-2 py-1.5 text-gray-700 truncate">{item.category}</td>
-                      <td className="px-2 py-1.5 text-gray-700 truncate">{item.batch}</td>
-                      <td className="px-2 py-1.5 font-semibold text-gray-800">{item.stock} {item.unit}</td>
-                      <td className="px-2 py-1.5 text-gray-700">{item.reorder} {item.unit}</td>
-                      <td className="px-2 py-1.5 text-gray-800">{item.expiry}</td>
-                      <td className="px-2 py-1.5">
+                      <td className="px-3 py-1.5 font-semibold text-gray-800">#{String(startIndex + idx + 1).padStart(3, '0')}</td>
+                      <td className="px-3 py-1.5 text-gray-800 truncate" title={item.name}>{item.name}</td>
+                      <td className="px-3 py-1.5 text-gray-700 truncate">{item.category}</td>
+                      <td className="px-3 py-1.5 text-gray-700 truncate">{item.batch}</td>
+                      <td className="px-3 py-1.5 font-semibold text-gray-800">{item.stock} {item.unit}</td>
+                      <td className="px-3 py-1.5 text-gray-700">{item.reorder} {item.unit}</td>
+                      <td className="px-3 py-1.5 text-gray-800">{item.expiry}</td>
+                      <td className="px-3 py-1.5 text-center">
                         <span className={`px-2 py-1 rounded-full text-xs font-semibold ${item.status === 'Critical' ? 'bg-red-100 text-red-700' : item.status === 'Low' ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
                           {item.status}
                         </span>
                       </td>
-                      <td className="px-2 py-1.5">
+                      <td className="px-3 py-1.5 text-center whitespace-nowrap">
                         <button type="button" onClick={() => openMedicationDetails(item)} className="text-blue-600 hover:text-blue-700 font-semibold">View</button>
                       </td>
                     </tr>
@@ -1871,16 +1879,17 @@ function buildMedicationUpdatePayload(
 
       {/* ── Restock Modal ── */}
       {restockTarget && typeof document !== 'undefined' && createPortal(
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-md" onClick={() => setRestockTarget(null)}>
-          <div className="w-full max-w-[640px] rounded-2xl border border-gray-200 bg-gray-100 shadow-2xl overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-white">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 p-4 backdrop-blur-md" onClick={() => setRestockTarget(null)}>
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[640px] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-gray-100 shadow-2xl" onClick={e => e.stopPropagation()}>
+            <div className="sticky top-0 z-20 flex items-center justify-between border-b border-gray-200 bg-white px-6 py-4">
               <div className="flex items-center gap-3">
                 <div className="p-2 rounded-xl bg-gray-100"><RefreshCw size={20} className="text-gray-500" /></div>
                 <h2 className="text-lg font-bold text-gray-800">Create Restock Request</h2>
               </div>
               <button type="button" onClick={() => setRestockTarget(null)} className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-gray-100 text-gray-500 hover:bg-gray-200 transition-colors"><X size={14} /></button>
             </div>
-            <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="grid grid-cols-1 gap-4 p-5 md:grid-cols-2">
               <div className="rounded-xl bg-white border border-gray-200 p-4">
                 <div className="flex items-center gap-2 mb-3">
                   <Pill size={15} className="text-gray-400" />
@@ -1971,8 +1980,8 @@ function buildMedicationUpdatePayload(
                   </div>
                 </div>
               </div>
-            </div>
-            <div className="px-5 pb-5 space-y-2">
+              </div>
+              <div className="px-5 pb-5 space-y-2">
               <button
                 type="button"
                 onClick={validateAndSubmitRestock}
@@ -1988,6 +1997,7 @@ function buildMedicationUpdatePayload(
               >
                 Cancel
               </button>
+              </div>
             </div>
           </div>
         </div>,

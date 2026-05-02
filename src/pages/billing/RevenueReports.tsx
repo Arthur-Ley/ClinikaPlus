@@ -1,95 +1,81 @@
-import { useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react';
-import {
-  ArrowLeftRight,
-  BarChart3,
-  BarChartHorizontal,
-  CalendarRange,
-  CircleDollarSign,
-  Coins,
-  HandCoins,
-  LoaderCircle,
-  PieChart,
-  TrendingDown,
-  TrendingUp,
-} from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { CalendarRange, LoaderCircle, TrendingUp } from 'lucide-react';
 
 type FilterPreset = 'today' | 'this_week' | 'this_month' | 'custom';
+type ScopeFilter = 'all' | 'single' | 'top5';
+type BucketFilter = 'day' | 'week' | 'month';
+type ReportType = 'all' | 'medication' | 'billing' | 'payment';
 
-type RevenueCard = {
-  title: string;
-  value: string;
-  detail: string;
-  chipClass: string;
-  chipIconClass: string;
-  valueClass: string;
-  icon: ComponentType<{ size?: number; className?: string }>;
-  trend: number;
+type MedicationOption = {
+  medication_id: number;
+  medication_name: string;
 };
 
-type ChartPoint = {
-  label: string;
-  value: number;
-  raw_label?: string;
+type SummaryResponse = {
+  insights?: {
+    stockout_alerts_next_7_days?: number;
+    demand_spikes_wow?: number;
+    expiry_value_at_risk?: number;
+    top_medication_by_revenue?: { medication_id: number; medication_name: string; revenue: number } | null;
+  };
 };
 
-type BillingAnalytics = {
-  total_pending_bills: number;
-  total_paid_bills: number;
-  total_transactions?: number;
-  total_revenue: number;
-  total_outstanding_balance: number;
-  average_bill_amount: number;
+type DemandTrendResponse = {
+  series?: Array<{
+    medication_id: number;
+    medication_name: string;
+    points: Array<{ key: string; label: string; value: number }>;
+    moving_average?: number[];
+  }>;
 };
 
-type BillingReportsOverviewResponse = {
-  analytics?: BillingAnalytics;
-  comparison_analytics?: BillingAnalytics;
-  trends?: {
-    total_revenue_pct?: number;
-    total_transactions_pct?: number;
-    total_outstanding_balance_pct?: number;
-    average_bill_amount_pct?: number;
+type TopMoversResponse = {
+  rising?: Array<{ medication_id: number; medication_name: string; current_quantity: number; previous_quantity: number; growth_pct: number }>;
+  falling?: Array<{ medication_id: number; medication_name: string; current_quantity: number; previous_quantity: number; growth_pct: number }>;
+};
+
+type RunwayResponse = {
+  items?: Array<{
+    medication_id: number;
+    medication_name: string;
+    current_stock: number;
+    avg_daily_usage: number;
+    days_left: number | null;
+    risk: string;
+    unit: string;
+  }>;
+};
+
+type ExpiryRiskResponse = {
+  metrics?: {
+    near_expiry_quantity?: number;
+    disposed_quantity?: number;
+    at_risk_value?: number;
   };
-  date_range?: {
-    preset?: string;
-    start_date?: string;
-    end_date?: string;
-    previous_start_date?: string;
-    previous_end_date?: string;
-    label?: string;
-    granularity?: string;
-  };
-  charts?: {
-    revenue_by_period?: ChartPoint[];
-    revenue_by_date?: ChartPoint[];
-    revenue_by_method?: ChartPoint[];
-    revenue_by_service?: ChartPoint[];
-  };
+  trend?: Array<{
+    key: string;
+    label: string;
+    near_expiry_quantity: number;
+    disposed_quantity: number;
+  }>;
+};
+
+type RevenueMixResponse = {
+  items?: Array<{
+    medication_id: number;
+    medication_name: string;
+    revenue: number;
+    share_pct: number;
+    cumulative_pct: number;
+  }>;
+};
+
+type UnitPriceTrendResponse = {
+  medication?: { medication_id: number; medication_name: string } | null;
+  points?: Array<{ key: string; label: string; average_unit_price: number }>;
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
-
-function formatMoney(value: number) {
-  return `PHP ${Math.round(value).toLocaleString()}`;
-}
-
-function formatCompactMoney(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: value >= 100000 ? 0 : 1,
-  }).format(value);
-}
-
-function formatPercentDelta(value: number) {
-  const rounded = Math.abs(value).toFixed(Math.abs(value) >= 10 ? 0 : 1);
-  return `${value >= 0 ? '+' : '-'}${rounded}%`;
-}
-
-function formatDateLabel(value: string) {
-  const parsed = new Date(`${value}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
 
 function toDateInputValue(date: Date) {
   const year = date.getFullYear();
@@ -121,465 +107,54 @@ function buildRangeForPreset(preset: FilterPreset, customStart: string, customEn
     const today = getTodayInputValue();
     return { startDate: today, endDate: today };
   }
-
   if (preset === 'this_week') {
     return { startDate: getStartOfWeekInputValue(), endDate: getTodayInputValue() };
   }
-
   if (preset === 'custom') {
     return { startDate: customStart, endDate: customEnd };
   }
-
   return { startDate: getStartOfMonthInputValue(), endDate: getTodayInputValue() };
 }
 
-function getTrendTone(value: number) {
-  if (value > 0) return 'text-emerald-700 bg-emerald-50 border-emerald-200';
-  if (value < 0) return 'text-rose-700 bg-rose-50 border-rose-200';
-  return 'text-slate-600 bg-slate-100 border-slate-200';
+function formatMoney(value: number) {
+  return `PHP ${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function getTrendIcon(value: number) {
-  return value < 0 ? TrendingDown : TrendingUp;
+function formatNumber(value: number) {
+  return Number(value || 0).toLocaleString('en-US');
 }
 
-function truncateLabel(value: string, max = 18) {
-  if (value.length <= max) return value;
-  return `${value.slice(0, Math.max(0, max - 3))}...`;
+function formatPct(value: number) {
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}${value.toFixed(1)}%`;
 }
 
-function EmptyChartState({ message }: { message: string }) {
-  return (
-    <div className="flex h-[240px] items-center justify-center rounded-3xl border border-dashed border-slate-300 bg-slate-50/70 px-6 text-center text-sm text-slate-500">
-      {message}
-    </div>
-  );
-}
-
-function ChartStat({
-  label,
-  value,
-  tone = 'slate',
-}: {
-  label: string;
-  value: string;
-  tone?: 'slate' | 'sky' | 'amber' | 'emerald' | 'violet';
-}) {
-  const toneClass =
-    tone === 'sky'
-      ? 'border-sky-100 bg-sky-50 text-sky-900'
-      : tone === 'amber'
-        ? 'border-amber-100 bg-amber-50 text-amber-900'
-        : tone === 'emerald'
-          ? 'border-emerald-100 bg-emerald-50 text-emerald-900'
-          : tone === 'violet'
-            ? 'border-violet-100 bg-violet-50 text-violet-900'
-            : 'border-slate-200 bg-slate-50 text-slate-900';
-
-  return (
-    <div className={`rounded-2xl border px-3 py-3 ${toneClass}`}>
-      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{label}</p>
-      <p className="mt-2 text-lg font-semibold">{value}</p>
-    </div>
-  );
-}
-
-function DateFilterBar({
-  preset,
-  onPresetChange,
-  customStart,
-  customEnd,
-  onCustomStartChange,
-  onCustomEndChange,
-  isRefreshing,
-  rangeLabel,
-  validationMessage,
-}: {
-  preset: FilterPreset;
-  onPresetChange: (preset: FilterPreset) => void;
-  customStart: string;
-  customEnd: string;
-  onCustomStartChange: (value: string) => void;
-  onCustomEndChange: (value: string) => void;
-  isRefreshing: boolean;
-  rangeLabel: string;
-  validationMessage: string;
-}) {
-  const presets: Array<{ key: FilterPreset; label: string }> = [
-    { key: 'today', label: 'Today' },
-    { key: 'this_week', label: 'This Week' },
-    { key: 'this_month', label: 'This Month' },
-    { key: 'custom', label: 'Custom Date Range' },
-  ];
-
-  return (
-    <section className="rounded-[28px] border border-slate-200 bg-white/90 p-4 shadow-[0_18px_45px_rgba(15,23,42,0.08)] backdrop-blur">
-      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-        <div>
-          <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">
-            <CalendarRange className="h-4 w-4" />
-            Global Date Filter
-          </div>
-          <p className="mt-2 text-2xl font-semibold text-slate-900">Reports Overview</p>
-          <p className="mt-1 text-sm text-slate-500">{rangeLabel}</p>
-        </div>
-
-        <div className="flex flex-col gap-3 xl:items-end">
-          <div className="flex flex-wrap gap-2">
-            {presets.map((option) => (
-              <button
-                key={option.key}
-                type="button"
-                onClick={() => onPresetChange(option.key)}
-                className={`rounded-full border px-4 py-2 text-sm font-semibold transition-all duration-200 ${
-                  preset === option.key
-                    ? 'border-sky-500 bg-sky-500 text-white shadow-[0_12px_24px_rgba(14,165,233,0.28)]'
-                    : 'border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-white'
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-
-          {preset === 'custom' && (
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-              <label className="flex flex-col gap-1 text-sm text-slate-600">
-                Start date
-                <input
-                  type="date"
-                  value={customStart}
-                  onChange={(event) => onCustomStartChange(event.target.value)}
-                  className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-slate-800 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm text-slate-600">
-                End date
-                <input
-                  type="date"
-                  value={customEnd}
-                  onChange={(event) => onCustomEndChange(event.target.value)}
-                  className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-slate-800 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
-                />
-              </label>
-            </div>
-          )}
-
-          <div className="flex flex-wrap items-center gap-3 text-sm">
-            {isRefreshing && (
-              <span className="inline-flex items-center gap-2 rounded-full border border-sky-100 bg-sky-50 px-3 py-1 text-sky-700">
-                <LoaderCircle className="h-4 w-4 animate-spin" />
-                Updating data
-              </span>
-            )}
-            {validationMessage && <span className="text-rose-600">{validationMessage}</span>}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function SummaryCard({ card, isRefreshing }: { card: RevenueCard; isRefreshing: boolean }) {
-  const Icon = card.icon;
-  const TrendIcon = getTrendIcon(card.trend);
-
-  return (
-    <article
-      className={`rounded-[28px] border border-slate-200 bg-white p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)] transition duration-300 ${isRefreshing ? 'opacity-70' : 'opacity-100'}`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">{card.title}</p>
-          <p className={`mt-4 text-3xl font-bold ${card.valueClass}`}>{card.value}</p>
-          <p className="mt-2 text-sm text-slate-500">{card.detail}</p>
-        </div>
-        <span className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl ${card.chipClass}`}>
-          <Icon size={18} className={card.chipIconClass} />
-        </span>
-      </div>
-
-      <div className="mt-5 flex items-center justify-between gap-3">
-        <span className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-sm font-semibold ${getTrendTone(card.trend)}`}>
-          <TrendIcon className="h-4 w-4" />
-          {formatPercentDelta(card.trend)}
-        </span>
-        <span className="text-xs uppercase tracking-[0.2em] text-slate-400">vs previous period</span>
-      </div>
-    </article>
-  );
-}
-
-function ChartShell({
-  icon: Icon,
-  title,
-  subtitle,
-  headerContent,
-  children,
-}: {
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  subtitle: string;
-  headerContent?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <section className="rounded-[30px] border border-slate-200 bg-white p-5 shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
-      <div className="mb-5 flex items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2 text-slate-900">
-            <span className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-100 text-slate-700">
-              <Icon className="h-5 w-5" />
-            </span>
-            <h3 className="text-lg font-semibold">{title}</h3>
-          </div>
-          <p className="mt-2 text-sm text-slate-500">{subtitle}</p>
-        </div>
-      </div>
-      {headerContent ? <div className="mb-5 grid grid-cols-1 gap-3 md:grid-cols-3">{headerContent}</div> : null}
-      {children}
-    </section>
-  );
-}
-
-function RevenueOverTimeChart({ data, granularity }: { data: ChartPoint[]; granularity: string }) {
-  const max = Math.max(...data.map((item) => item.value), 1);
-  const title = granularity === 'month' ? 'Revenue by Month' : granularity === 'week' ? 'Revenue by Week' : 'Revenue by Day';
-  const total = data.reduce((sum, item) => sum + item.value, 0);
-  const peak = data.reduce<ChartPoint | null>((best, item) => (!best || item.value > best.value ? item : best), null);
-  const average = data.length ? total / data.length : 0;
-
-  return (
-    <ChartShell
-      icon={BarChart3}
-      title={title}
-      subtitle="The selected date range drives every bar, so this view stays aligned with the cards above."
-      headerContent={
-        <>
-          <ChartStat label="Periods" value={String(data.length)} />
-          <ChartStat label="Peak" value={peak ? formatCompactMoney(peak.value) : 'PHP 0'} tone="sky" />
-          <ChartStat label="Average" value={formatCompactMoney(average)} tone="emerald" />
-        </>
-      }
-    >
-      {data.length === 0 ? (
-        <EmptyChartState message="No revenue points were found for this date range." />
-      ) : (
-        <div className="overflow-x-auto pb-1">
-          <div className="min-w-[560px] rounded-[26px] bg-[linear-gradient(180deg,rgba(14,165,233,0.08),rgba(255,255,255,0.94))] p-4">
-            <div className="relative flex items-end gap-3">
-              <div
-                className="pointer-events-none absolute left-0 right-0 border-t border-dashed border-slate-300"
-                style={{ bottom: `${Math.max(24, (average / max) * 220) + 16}px` }}
-              />
-              <div className="pointer-events-none absolute right-0 top-0 rounded-full bg-white/80 px-2 py-1 text-[11px] font-semibold text-slate-500 shadow-sm">
-                Avg {formatCompactMoney(average)}
-              </div>
-              {data.map((item) => {
-                const height = Math.max(24, (item.value / max) * 220);
-                const isPeak = peak?.label === item.label && peak?.value === item.value;
-                return (
-                  <div key={`${item.raw_label || item.label}-${item.value}`} className="group flex min-w-[64px] flex-1 flex-col items-center gap-2">
-                    <div className="relative flex h-[240px] w-full items-end justify-center overflow-visible">
-                      <div className="pointer-events-none absolute bottom-[calc(100%+12px)] z-20 w-48 rounded-2xl border border-slate-200 bg-slate-950 px-3 py-2 text-left text-xs text-white opacity-0 shadow-2xl transition duration-200 group-hover:opacity-100">
-                        <div className="font-semibold">{item.raw_label || item.label}</div>
-                        <div className="mt-1 text-slate-300">Revenue: {formatMoney(item.value)}</div>
-                        <div className="mt-1 text-slate-400">{average > 0 ? `${((item.value / average) * 100).toFixed(0)}% of average` : 'No average yet'}</div>
-                      </div>
-                      <div
-                        className={`w-full rounded-t-[22px] ${
-                          isPeak
-                            ? 'bg-[linear-gradient(180deg,#0ea5e9_0%,#1d4ed8_100%)] shadow-[0_18px_30px_rgba(14,165,233,0.35)]'
-                            : 'bg-[linear-gradient(180deg,#38bdf8_0%,#0f766e_100%)] shadow-[0_18px_30px_rgba(14,165,233,0.25)]'
-                        } transition-[height,transform] duration-500 group-hover:-translate-y-1`}
-                        style={{ height: `${height}px` }}
-                      />
-                    </div>
-                    <p className="text-center text-xs font-semibold text-slate-700">{item.label}</p>
-                    <p className="text-xs text-slate-400">{formatCompactMoney(item.value)}</p>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-    </ChartShell>
-  );
-}
-
-function PaymentMethodChart({ data }: { data: ChartPoint[] }) {
-  const total = data.reduce((sum, item) => sum + item.value, 0);
-  const palette = ['from-sky-400 to-sky-600', 'from-emerald-400 to-emerald-600', 'from-amber-400 to-orange-500', 'from-fuchsia-400 to-violet-600', 'from-slate-400 to-slate-600'];
-  const topMethod = data[0];
-  const visibleData = data.filter((item) => item.value > 0);
-
-  if (visibleData.length <= 1) return null;
-
-  return (
-    <ChartShell
-      icon={PieChart}
-      title="Payment Method Distribution"
-      subtitle="Hover over each segment or legend row for a clearer breakdown of the selected range."
-      headerContent={
-        <>
-          <ChartStat label="Methods" value={String(data.length)} />
-          <ChartStat
-            label="Top Method"
-            value={topMethod ? truncateLabel(topMethod.label, 14) : 'N/A'}
-            tone="emerald"
-          />
-          <ChartStat label="Revenue Covered" value={formatMoney(total)} tone="sky" />
-        </>
-      }
-    >
-      {visibleData.length === 0 ? (
-        <EmptyChartState message="No payment methods are available because there are no transactions in this range." />
-      ) : (
-        <div className="space-y-5 rounded-[26px] bg-[linear-gradient(180deg,rgba(236,253,245,0.96),rgba(255,255,255,0.98))] p-4">
-          <div className="space-y-3">
-            {visibleData.map((item, index) => {
-              const width = total > 0 ? (item.value / total) * 100 : 0;
-              return (
-                <div
-                  key={`${item.label}-legend`}
-                  className="group rounded-2xl border border-transparent bg-white/80 px-3 py-3 transition hover:border-slate-200 hover:bg-white"
-                >
-                  <div className="mb-2 flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <span className={`h-3.5 w-3.5 rounded-full bg-gradient-to-r ${palette[index % palette.length]}`} />
-                      <div>
-                        <p className="font-semibold text-slate-800">{item.label}</p>
-                        <p className="text-xs text-slate-500">{total > 0 ? ((item.value / total) * 100).toFixed(1) : '0.0'}% of filtered revenue</p>
-                      </div>
-                    </div>
-                    <p className="text-sm font-semibold text-slate-700">{formatMoney(item.value)}</p>
-                  </div>
-                  <div className="relative h-3 overflow-visible rounded-full bg-slate-100">
-                    <div className="pointer-events-none absolute bottom-[calc(100%+10px)] right-0 z-20 w-44 rounded-2xl border border-slate-200 bg-slate-950 px-3 py-2 text-xs text-white opacity-0 shadow-2xl transition duration-200 group-hover:opacity-100">
-                      <div className="font-semibold">{item.label}</div>
-                      <div className="mt-1 text-slate-300">{formatMoney(item.value)}</div>
-                      <div className="mt-1 text-slate-400">{total > 0 ? `${((item.value / total) * 100).toFixed(1)}% share` : '0.0% share'}</div>
-                    </div>
-                    <div
-                      className={`h-full rounded-full bg-gradient-to-r ${palette[index % palette.length]} transition-transform duration-200 group-hover:scale-y-110`}
-                      style={{ width: `${Math.max(width, width > 0 ? 10 : 0)}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </ChartShell>
-  );
-}
-
-function RevenueByServiceChart({ data }: { data: ChartPoint[] }) {
-  const max = Math.max(...data.map((item) => item.value), 1);
-  const total = data.reduce((sum, item) => sum + item.value, 0);
-  const topService = data[0];
-
-  return (
-    <ChartShell
-      icon={BarChartHorizontal}
-      title="Revenue by Service"
-      subtitle="This list focuses on the highest-contributing services tied to the current filtered activity."
-      headerContent={
-        <>
-          <ChartStat label="Services" value={String(data.length)} />
-          <ChartStat label="Top Service" value={topService ? truncateLabel(topService.label, 14) : 'N/A'} tone="violet" />
-          <ChartStat label="Service Revenue" value={formatMoney(total)} tone="sky" />
-        </>
-      }
-    >
-      {data.length === 0 ? (
-        <EmptyChartState message="No service-level revenue was found for the current date range." />
-      ) : (
-        <div className="space-y-3 rounded-[26px] bg-[linear-gradient(180deg,rgba(238,242,255,0.92),rgba(255,255,255,0.98))] p-4">
-          <div className="rounded-2xl border border-indigo-100 bg-white/80 px-4 py-3 text-sm text-slate-600">
-            {data.length < 3
-              ? 'There are only a few billable service entries in this range, so the service breakdown is still forming.'
-              : `${topService?.label || 'Top service'} currently leads with ${topService && total > 0 ? ((topService.value / total) * 100).toFixed(1) : '0.0'}% of service revenue.`}
-          </div>
-          {data.map((item, index) => (
-            <div key={item.label} className="group rounded-2xl bg-white/80 p-3 transition hover:bg-white">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600">
-                      {index + 1}
-                    </span>
-                    <p className="truncate font-semibold text-slate-800">{item.label}</p>
-                  </div>
-                  <p className="text-xs text-slate-500">{((item.value / max) * 100).toFixed(0)}% of top service value</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-sm font-semibold text-slate-700">{formatMoney(item.value)}</p>
-                  <p className="text-xs text-slate-400">{total > 0 ? `${((item.value / total) * 100).toFixed(1)}% share` : '0.0% share'}</p>
-                </div>
-              </div>
-              <div className="relative h-3 overflow-visible rounded-full bg-slate-100">
-                <div
-                  className={`h-full rounded-full bg-gradient-to-r ${
-                    index % 2 === 0 ? 'from-indigo-400 to-sky-500' : 'from-cyan-400 to-emerald-500'
-                  } shadow-[0_12px_20px_rgba(59,130,246,0.18)] transition-[width] duration-500`}
-                  style={{ width: `${Math.max(10, (item.value / max) * 100)}%` }}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </ChartShell>
-  );
-}
-
-function RevenueReportsSkeleton() {
-  return (
-    <section className="space-y-5 rounded-2xl bg-gray-300/80 p-5 font-sans animate-pulse">
-      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-        <div className="h-36 rounded-[28px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]" />
-      </div>
-      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {[1, 2, 3, 4].map((item) => (
-            <div key={item} className="h-48 rounded-[28px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]" />
-          ))}
-        </div>
-      </div>
-      <div className="rounded-2xl bg-gray-100 p-4 md:p-5">
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-          {[1, 2].map((item) => (
-            <div key={item} className="h-[360px] rounded-[30px] border border-slate-200 bg-white shadow-[0_18px_45px_rgba(15,23,42,0.08)]" />
-          ))}
-        </div>
-      </div>
-    </section>
-  );
+function riskPillClass(risk: string) {
+  if (risk === 'High') return 'bg-rose-100 text-rose-700';
+  if (risk === 'Medium') return 'bg-amber-100 text-amber-700';
+  if (risk === 'Low') return 'bg-emerald-100 text-emerald-700';
+  return 'bg-slate-100 text-slate-700';
 }
 
 export default function RevenueReports() {
   const [preset, setPreset] = useState<FilterPreset>('this_month');
   const [customStart, setCustomStart] = useState(getStartOfMonthInputValue());
   const [customEnd, setCustomEnd] = useState(getTodayInputValue());
-  const [analytics, setAnalytics] = useState<BillingAnalytics | null>(null);
-  const [comparisonAnalytics, setComparisonAnalytics] = useState<BillingAnalytics | null>(null);
-  const [trends, setTrends] = useState({
-    total_revenue_pct: 0,
-    total_transactions_pct: 0,
-    total_outstanding_balance_pct: 0,
-    average_bill_amount_pct: 0,
-  });
-  const [rangeLabel, setRangeLabel] = useState('This month');
-  const [granularity, setGranularity] = useState('day');
-  const [charts, setCharts] = useState({
-    revenue_by_period: [] as ChartPoint[],
-    revenue_by_date: [] as ChartPoint[],
-    revenue_by_method: [] as ChartPoint[],
-    revenue_by_service: [] as ChartPoint[],
-  });
+  const [compareEnabled, setCompareEnabled] = useState(true);
+  const [scope, setScope] = useState<ScopeFilter>('all');
+  const [bucket, setBucket] = useState<BucketFilter>('day');
+  const [selectedMedicationId, setSelectedMedicationId] = useState<number | ''>('');
+  const [reportType, setReportType] = useState<ReportType>('all');
+
+  const [medications, setMedications] = useState<MedicationOption[]>([]);
+  const [summary, setSummary] = useState<SummaryResponse | null>(null);
+  const [demandTrend, setDemandTrend] = useState<DemandTrendResponse | null>(null);
+  const [topMovers, setTopMovers] = useState<TopMoversResponse | null>(null);
+  const [runway, setRunway] = useState<RunwayResponse | null>(null);
+  const [expiryRisk, setExpiryRisk] = useState<ExpiryRiskResponse | null>(null);
+  const [revenueMix, setRevenueMix] = useState<RevenueMixResponse | null>(null);
+  const [unitPriceTrend, setUnitPriceTrend] = useState<UnitPriceTrendResponse | null>(null);
+
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadError, setLoadError] = useState('');
@@ -588,178 +163,434 @@ export default function RevenueReports() {
 
   const validationMessage = useMemo(() => {
     if (preset !== 'custom') return '';
-    if (!customStart || !customEnd) return 'Select both dates to load a custom range.';
-    if (customStart > customEnd) return 'Start date must be on or before the end date.';
+    if (!customStart || !customEnd) return 'Select both dates for custom range.';
+    if (customStart > customEnd) return 'Start date must be on or before end date.';
     return '';
-  }, [preset, customEnd, customStart]);
+  }, [preset, customStart, customEnd]);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/medications`, { cache: 'no-store' });
+        if (!response.ok) return;
+        const payload = (await response.json()) as { items?: Array<{ medication_id: number; medication_name: string }> };
+        if (!active || !Array.isArray(payload.items)) return;
+        setMedications(payload.items.map((row) => ({ medication_id: row.medication_id, medication_name: row.medication_name })));
+      } catch {
+        // Best effort only.
+      }
+    })();
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     if (validationMessage) return;
-
+    let active = true;
     const controller = new AbortController();
-    const hasExistingData = analytics !== null;
+    const hasData = Boolean(summary || demandTrend);
 
     async function loadReports() {
       setLoadError('');
-      if (hasExistingData) {
-        setIsRefreshing(true);
-      } else {
-        setIsLoading(true);
-      }
+      if (hasData) setIsRefreshing(true);
+      else setIsLoading(true);
 
       try {
+        const scopeValue = scope === 'single' && selectedMedicationId ? 'single' : scope;
         const params = new URLSearchParams({
           preset,
           start_date: selectedRange.startDate,
           end_date: selectedRange.endDate,
+          scope: scopeValue,
+          bucket,
+          topN: '5',
+          limit: '10',
         });
-
-        const response = await fetch(`${API_BASE_URL}/billing/reports/overview?${params.toString()}`, {
-          signal: controller.signal,
-          cache: 'no-store',
-        });
-        if (!response.ok) throw new Error('Failed to load billing reports.');
-
-        const payload = (await response.json()) as BillingReportsOverviewResponse;
-        setAnalytics(payload.analytics || null);
-        setComparisonAnalytics(payload.comparison_analytics || null);
-        setTrends({
-          total_revenue_pct: payload.trends?.total_revenue_pct ?? 0,
-          total_transactions_pct: payload.trends?.total_transactions_pct ?? 0,
-          total_outstanding_balance_pct: payload.trends?.total_outstanding_balance_pct ?? 0,
-          average_bill_amount_pct: payload.trends?.average_bill_amount_pct ?? 0,
-        });
-        setRangeLabel(payload.date_range?.label || `${formatDateLabel(selectedRange.startDate)} - ${formatDateLabel(selectedRange.endDate)}`);
-        setGranularity(payload.date_range?.granularity || 'day');
-        setCharts({
-          revenue_by_period: payload.charts?.revenue_by_period || [],
-          revenue_by_date: payload.charts?.revenue_by_date || [],
-          revenue_by_method: payload.charts?.revenue_by_method || [],
-          revenue_by_service: payload.charts?.revenue_by_service || [],
-        });
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        setLoadError(error instanceof Error ? error.message : 'Failed to load billing reports.');
-        setAnalytics(null);
-        setComparisonAnalytics(null);
-        setCharts({
-          revenue_by_period: [],
-          revenue_by_date: [],
-          revenue_by_method: [],
-          revenue_by_service: [],
-        });
-      } finally {
-        if (!controller.signal.aborted) {
-          setIsLoading(false);
-          setIsRefreshing(false);
+        if (scopeValue === 'single' && selectedMedicationId) {
+          params.set('medicationId', String(selectedMedicationId));
         }
+
+        const [summaryRes, trendRes, moversRes, runwayRes, expiryRes, mixRes, priceRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/billing/reports/summary?${params.toString()}`, { cache: 'no-store', signal: controller.signal }),
+          fetch(`${API_BASE_URL}/billing/reports/medication-demand-trend?${params.toString()}`, { cache: 'no-store', signal: controller.signal }),
+          fetch(`${API_BASE_URL}/billing/reports/top-movers?${params.toString()}`, { cache: 'no-store', signal: controller.signal }),
+          fetch(`${API_BASE_URL}/billing/reports/inventory-runway?${params.toString()}`, { cache: 'no-store', signal: controller.signal }),
+          fetch(`${API_BASE_URL}/billing/reports/expiry-risk?${params.toString()}`, { cache: 'no-store', signal: controller.signal }),
+          fetch(`${API_BASE_URL}/billing/reports/revenue-mix?${params.toString()}`, { cache: 'no-store', signal: controller.signal }),
+          fetch(`${API_BASE_URL}/billing/reports/unit-price-trend?${params.toString()}`, { cache: 'no-store', signal: controller.signal }),
+        ]);
+
+        if (!summaryRes.ok || !trendRes.ok || !moversRes.ok || !runwayRes.ok || !expiryRes.ok || !mixRes.ok || !priceRes.ok) {
+          throw new Error('Failed to load revamped reports data.');
+        }
+
+        const [summaryPayload, trendPayload, moversPayload, runwayPayload, expiryPayload, mixPayload, pricePayload] = await Promise.all([
+          summaryRes.json(),
+          trendRes.json(),
+          moversRes.json(),
+          runwayRes.json(),
+          expiryRes.json(),
+          mixRes.json(),
+          priceRes.json(),
+        ]);
+
+        if (!active) return;
+        setSummary(summaryPayload as SummaryResponse);
+        setDemandTrend(trendPayload as DemandTrendResponse);
+        setTopMovers(moversPayload as TopMoversResponse);
+        setRunway(runwayPayload as RunwayResponse);
+        setExpiryRisk(expiryPayload as ExpiryRiskResponse);
+        setRevenueMix(mixPayload as RevenueMixResponse);
+        setUnitPriceTrend(pricePayload as UnitPriceTrendResponse);
+      } catch (error) {
+        if (!active || controller.signal.aborted) return;
+        setLoadError(error instanceof Error ? error.message : 'Failed to load reports.');
+      } finally {
+        if (!active || controller.signal.aborted) return;
+        setIsLoading(false);
+        setIsRefreshing(false);
       }
     }
 
     loadReports();
-
     return () => {
+      active = false;
       controller.abort();
     };
-  }, [preset, selectedRange.endDate, selectedRange.startDate, validationMessage]);
+  }, [preset, selectedRange.startDate, selectedRange.endDate, validationMessage, scope, selectedMedicationId, bucket]);
 
-  const cards = useMemo<RevenueCard[]>(() => {
-    const totalRevenue = analytics?.total_revenue ?? 0;
-    const outstanding = analytics?.total_outstanding_balance ?? 0;
-    const avgPayment = analytics?.average_bill_amount ?? 0;
-    const totalTransactions =
-      analytics?.total_transactions ?? (analytics?.total_paid_bills ?? 0) + (analytics?.total_pending_bills ?? 0);
-
-    return [
-      {
-        title: 'Total Revenue',
-        value: formatMoney(totalRevenue),
-        detail: `${analytics?.total_paid_bills ?? 0} paid bills in range`,
-        chipClass: 'bg-emerald-100',
-        chipIconClass: 'text-emerald-700',
-        valueClass: 'text-slate-900',
-        icon: CircleDollarSign,
-        trend: trends.total_revenue_pct,
-      },
-      {
-        title: 'Total Transactions',
-        value: String(totalTransactions),
-        detail: `${comparisonAnalytics?.total_transactions ?? 0} in the previous period`,
-        chipClass: 'bg-sky-100',
-        chipIconClass: 'text-sky-700',
-        valueClass: 'text-slate-900',
-        icon: ArrowLeftRight,
-        trend: trends.total_transactions_pct,
-      },
-      {
-        title: 'Outstanding Balance',
-        value: formatMoney(outstanding),
-        detail: `${analytics?.total_pending_bills ?? 0} pending bills in range`,
-        chipClass: 'bg-amber-100',
-        chipIconClass: 'text-amber-700',
-        valueClass: 'text-slate-900',
-        icon: HandCoins,
-        trend: trends.total_outstanding_balance_pct,
-      },
-      {
-        title: 'Average Payment',
-        value: formatMoney(avgPayment),
-        detail: 'Average transaction value for the selected range',
-        chipClass: 'bg-violet-100',
-        chipIconClass: 'text-violet-700',
-        valueClass: 'text-slate-900',
-        icon: Coins,
-        trend: trends.average_bill_amount_pct,
-      },
-    ];
-  }, [analytics, comparisonAnalytics?.total_transactions, trends]);
-
-  const hasAnyData = useMemo(() => {
-    if (analytics && (analytics.total_revenue > 0 || (analytics.total_transactions ?? 0) > 0)) return true;
-    return Object.values(charts).some((series) => series.length > 0);
-  }, [analytics, charts]);
+  const demandSeries = demandTrend?.series || [];
+  const trendLabels = demandSeries[0]?.points?.map((point) => point.label) || [];
+  const topRevenueMedication = summary?.insights?.top_medication_by_revenue;
+  const risingMovers = topMovers?.rising || [];
+  const fallingMovers = topMovers?.falling || [];
+  const runwayItems = runway?.items || [];
+  const expiryTrend = expiryRisk?.trend || [];
+  const mixItems = revenueMix?.items || [];
+  const pricePoints = unitPriceTrend?.points || [];
+  const showMedicationSections = reportType === 'all' || reportType === 'medication';
+  const showBillingSections = reportType === 'all' || reportType === 'billing';
+  const showPaymentSections = reportType === 'all' || reportType === 'payment';
 
   return (
-    <div className="space-y-5 font-sans">
-      {isLoading ? (
-        <RevenueReportsSkeleton />
-      ) : (
-        <section className="space-y-5 rounded-2xl bg-gray-300/80 p-5">
-          <DateFilterBar
-            preset={preset}
-            onPresetChange={setPreset}
-            customStart={customStart}
-            customEnd={customEnd}
-            onCustomStartChange={setCustomStart}
-            onCustomEndChange={setCustomEnd}
-            isRefreshing={isRefreshing}
-            rangeLabel={rangeLabel}
-            validationMessage={validationMessage}
-          />
-
-          {loadError && <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{loadError}</div>}
-
-          {!loadError && !hasAnyData && (
-            <div className="rounded-[28px] border border-dashed border-slate-300 bg-white/70 px-6 py-12 text-center shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
-              <p className="text-lg font-semibold text-slate-800">No report data for this date range</p>
-              <p className="mt-2 text-sm text-slate-500">Try a wider date range or switch from a custom filter to this month.</p>
+    <section className="space-y-5 rounded-2xl bg-gray-300/80 p-5 font-sans">
+      <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-[0_18px_45px_rgba(15,23,42,0.08)]">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-semibold uppercase tracking-[0.24em] text-slate-400">
+              <CalendarRange className="h-4 w-4" />
+              Reports Header
             </div>
+            <p className="mt-2 text-2xl font-semibold text-slate-900">Medication Intelligence Reports</p>
+            <p className="mt-1 text-sm text-slate-500">{selectedRange.startDate} - {selectedRange.endDate}</p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
+              {[
+                { key: 'all', label: 'All' },
+                { key: 'medication', label: 'Medication' },
+                { key: 'billing', label: 'Billing' },
+                { key: 'payment', label: 'Payment' },
+              ].map((chip) => (
+                <button
+                  key={chip.key}
+                  type="button"
+                  onClick={() => setReportType(chip.key as ReportType)}
+                  className={`rounded-full border px-4 py-1.5 text-xs font-semibold uppercase tracking-[0.14em] ${
+                    reportType === chip.key
+                      ? 'border-indigo-500 bg-indigo-500 text-white'
+                      : 'border-slate-200 bg-slate-50 text-slate-700'
+                  }`}
+                >
+                  {chip.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              {[
+                { key: 'today', label: 'Today' },
+                { key: 'this_week', label: 'This Week' },
+                { key: 'this_month', label: 'This Month' },
+                { key: 'custom', label: 'Custom Date Range' },
+              ].map((option) => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => setPreset(option.key as FilterPreset)}
+                  className={`rounded-full border px-4 py-2 text-sm font-semibold ${
+                    preset === option.key ? 'border-sky-500 bg-sky-500 text-white' : 'border-slate-200 bg-slate-50 text-slate-700'
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
+            {preset === 'custom' && (
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+                <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="rounded-xl border border-slate-200 px-3 py-2 text-sm" />
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
+              <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                <input type="checkbox" checked={compareEnabled} onChange={(e) => setCompareEnabled(e.target.checked)} />
+                vs previous period
+              </label>
+              <select value={scope} onChange={(e) => setScope(e.target.value as ScopeFilter)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                <option value="all">All meds</option>
+                <option value="single">Single med</option>
+                <option value="top5">Top 5</option>
+              </select>
+              <select value={bucket} onChange={(e) => setBucket(e.target.value as BucketFilter)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm">
+                <option value="day">Daily</option>
+                <option value="week">Weekly</option>
+                <option value="month">Monthly</option>
+              </select>
+              <select
+                value={selectedMedicationId}
+                onChange={(e) => setSelectedMedicationId(e.target.value ? Number(e.target.value) : '')}
+                disabled={scope !== 'single'}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm disabled:bg-slate-100"
+              >
+                <option value="">Select medication</option>
+                {medications.map((medication) => (
+                  <option key={medication.medication_id} value={medication.medication_id}>
+                    {medication.medication_name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+        {(isRefreshing || validationMessage) && (
+          <div className="mt-3 flex items-center gap-3 text-sm">
+            {isRefreshing && (
+              <span className="inline-flex items-center gap-2 rounded-full border border-sky-100 bg-sky-50 px-3 py-1 text-sky-700">
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+                Updating data
+              </span>
+            )}
+            {validationMessage && <span className="text-rose-600">{validationMessage}</span>}
+          </div>
+        )}
+      </div>
+
+      {loadError && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{loadError}</div>}
+
+      {isLoading ? (
+        <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-500">Loading reports...</div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+            {(showMedicationSections || showBillingSections) && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Stockout Alerts (7d)</p>
+              <p className="mt-2 text-3xl font-bold text-slate-900">{formatNumber(summary?.insights?.stockout_alerts_next_7_days || 0)}</p>
+              </div>
+            )}
+            {showMedicationSections && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Demand Spikes (WoW)</p>
+              <p className="mt-2 text-3xl font-bold text-slate-900">{formatNumber(summary?.insights?.demand_spikes_wow || 0)}</p>
+              </div>
+            )}
+            {showMedicationSections && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Expiry Value At Risk</p>
+              <p className="mt-2 text-3xl font-bold text-slate-900">{formatMoney(summary?.insights?.expiry_value_at_risk || 0)}</p>
+              </div>
+            )}
+            {(showMedicationSections || showBillingSections) && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Top Medication by Revenue</p>
+              <p className="mt-2 text-xl font-bold text-slate-900">{topRevenueMedication?.medication_name || 'N/A'}</p>
+              <p className="mt-1 text-sm text-slate-500">{topRevenueMedication ? formatMoney(topRevenueMedication.revenue) : 'No data'}</p>
+              </div>
+            )}
+          </div>
+
+          {showMedicationSections && (
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-[2fr_1fr]">
+            <section className="rounded-2xl border border-slate-200 bg-white p-5">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-slate-900">Medication Demand Trend</h3>
+                <TrendingUp className="h-5 w-5 text-sky-600" />
+              </div>
+              {demandSeries.length === 0 ? (
+                <p className="text-sm text-slate-500">No medication demand trend data in this range.</p>
+              ) : (
+                <div className="space-y-3 overflow-x-auto">
+                  <div className="min-w-[680px] text-xs text-slate-400">{trendLabels.join(' • ')}</div>
+                  {demandSeries.map((series) => {
+                    const max = Math.max(...series.points.map((point) => point.value), 1);
+                    return (
+                      <div key={series.medication_id} className="rounded-xl border border-slate-200 p-3">
+                        <p className="mb-2 text-sm font-semibold text-slate-800">{series.medication_name}</p>
+                        <div className="flex items-end gap-1">
+                          {series.points.map((point) => (
+                            <div key={point.key} className="group flex flex-1 flex-col items-center">
+                              <div
+                                className="w-full rounded-t bg-gradient-to-t from-blue-600 to-sky-400"
+                                style={{ height: `${Math.max(8, (point.value / max) * 80)}px` }}
+                                title={`${point.label}: ${point.value}`}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="mb-3 text-lg font-semibold text-slate-900">Top Movers</h3>
+              <p className="mb-2 text-xs uppercase tracking-[0.2em] text-emerald-600">Rising</p>
+              <div className="space-y-2">
+                {risingMovers.slice(0, 5).map((row) => (
+                  <div key={`rise-${row.medication_id}`} className="rounded-xl border border-emerald-100 bg-emerald-50 p-2">
+                    <p className="text-sm font-semibold text-slate-800">{row.medication_name}</p>
+                    <p className="text-xs text-slate-600">{formatPct(row.growth_pct)} • {formatNumber(row.current_quantity)} vs {formatNumber(row.previous_quantity)}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="mb-2 mt-4 text-xs uppercase tracking-[0.2em] text-rose-600">Falling</p>
+              <div className="space-y-2">
+                {fallingMovers.slice(0, 5).map((row) => (
+                  <div key={`fall-${row.medication_id}`} className="rounded-xl border border-rose-100 bg-rose-50 p-2">
+                    <p className="text-sm font-semibold text-slate-800">{row.medication_name}</p>
+                    <p className="text-xs text-slate-600">{formatPct(row.growth_pct)} • {formatNumber(row.current_quantity)} vs {formatNumber(row.previous_quantity)}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
           )}
 
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {cards.map((card) => (
-              <SummaryCard key={card.title} card={card} isRefreshing={isRefreshing} />
-            ))}
-          </div>
+          {showMedicationSections && (
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+            <section className="rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="mb-3 text-lg font-semibold text-slate-900">Inventory Runway Table</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-[0.14em] text-slate-500">
+                      <th className="py-2">Medication</th>
+                      <th className="py-2">Stock</th>
+                      <th className="py-2">Avg/Day</th>
+                      <th className="py-2">Days Left</th>
+                      <th className="py-2">Risk</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {runwayItems.slice(0, 10).map((row) => (
+                      <tr key={row.medication_id} className="border-b border-slate-100">
+                        <td className="py-2 font-semibold text-slate-800">{row.medication_name}</td>
+                        <td className="py-2 text-slate-700">{formatNumber(row.current_stock)} {row.unit}</td>
+                        <td className="py-2 text-slate-700">{row.avg_daily_usage.toFixed(2)}</td>
+                        <td className="py-2 text-slate-700">{row.days_left == null ? 'N/A' : row.days_left.toFixed(1)}</td>
+                        <td className="py-2">
+                          <span className={`rounded-full px-2 py-1 text-xs font-semibold ${riskPillClass(row.risk)}`}>{row.risk}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-            <RevenueOverTimeChart data={charts.revenue_by_period} granularity={granularity} />
-            <RevenueByServiceChart data={charts.revenue_by_service} />
+            <section className="rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="mb-3 text-lg font-semibold text-slate-900">Expiry & Wastage Trend</h3>
+              <div className="mb-3 grid grid-cols-3 gap-2">
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <p className="text-xs uppercase text-slate-500">Near-expiry Qty</p>
+                  <p className="text-lg font-semibold text-slate-900">{formatNumber(expiryRisk?.metrics?.near_expiry_quantity || 0)}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <p className="text-xs uppercase text-slate-500">Disposed Qty</p>
+                  <p className="text-lg font-semibold text-slate-900">{formatNumber(expiryRisk?.metrics?.disposed_quantity || 0)}</p>
+                </div>
+                <div className="rounded-xl bg-slate-50 p-3">
+                  <p className="text-xs uppercase text-slate-500">At-risk Value</p>
+                  <p className="text-lg font-semibold text-slate-900">{formatMoney(expiryRisk?.metrics?.at_risk_value || 0)}</p>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {expiryTrend.slice(-8).map((point) => (
+                  <div key={point.key} className="rounded-xl border border-slate-200 p-2">
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span>{point.label}</span>
+                      <span>Near-expiry {formatNumber(point.near_expiry_quantity)} • Disposed {formatNumber(point.disposed_quantity)}</span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2">
+                      <div className="h-2 rounded bg-amber-200" style={{ width: `${Math.min(100, point.near_expiry_quantity)}%` }} />
+                      <div className="h-2 rounded bg-rose-300" style={{ width: `${Math.min(100, point.disposed_quantity)}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
           </div>
+          )}
 
-          <PaymentMethodChart data={charts.revenue_by_method} />
-        </section>
+          {(showBillingSections || showPaymentSections || showMedicationSections) && (
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+            {(showBillingSections || showMedicationSections) && (
+            <section className="rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="mb-3 text-lg font-semibold text-slate-900">Medication Revenue Mix</h3>
+              <div className="space-y-2">
+                {mixItems.slice(0, 12).map((item) => (
+                  <div key={item.medication_id} className="rounded-xl border border-slate-200 p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="truncate text-sm font-semibold text-slate-800">{item.medication_name}</p>
+                      <p className="text-sm font-semibold text-slate-700">{formatMoney(item.revenue)}</p>
+                    </div>
+                    <div className="mt-1 text-xs text-slate-500">Share {item.share_pct.toFixed(1)}% • Cumulative {item.cumulative_pct.toFixed(1)}%</div>
+                    <div className="mt-2 h-2 rounded bg-slate-100">
+                      <div className="h-2 rounded bg-gradient-to-r from-cyan-500 to-blue-600" style={{ width: `${Math.min(100, item.share_pct)}%` }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+            )}
+
+            {(showMedicationSections || showBillingSections) && (
+            <section className="rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="mb-1 text-lg font-semibold text-slate-900">Unit Price Trend</h3>
+              <p className="mb-3 text-sm text-slate-500">{unitPriceTrend?.medication?.medication_name || 'No medication selected from trend data'}</p>
+              {pricePoints.length === 0 ? (
+                <p className="text-sm text-slate-500">No unit price points in this range.</p>
+              ) : (
+                <div className="space-y-2">
+                  {pricePoints.map((point) => (
+                    <div key={point.key} className="rounded-xl border border-slate-200 p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm text-slate-700">{point.label}</p>
+                        <p className="text-sm font-semibold text-slate-800">{formatMoney(point.average_unit_price)}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+            )}
+          </div>
+          )}
+
+          {showPaymentSections && (
+            <section className="rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="mb-3 text-lg font-semibold text-slate-900">Payment View</h3>
+              <p className="text-sm text-slate-600">Payment analytics currently uses the same billing dataset in this range. Add payment-method endpoint segmentation next for deeper payment-only reporting.</p>
+            </section>
+          )}
+        </>
       )}
-    </div>
+    </section>
   );
 }

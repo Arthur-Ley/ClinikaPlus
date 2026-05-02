@@ -647,6 +647,46 @@ async function getBatchStockTotalByMedicationId(medicationId) {
   return (data || []).reduce((sum, row) => sum + Number(row?.quantity || 0), 0);
 }
 
+async function fetchMedicationInventoryForReports() {
+  const { data, error } = await supabase
+    .from("tbl_medications")
+    .select(`
+      medication_id,
+      medication_name,
+      reorder_threshold,
+      unit,
+      tbl_inventory (
+        total_stock
+      )
+    `)
+    .order("medication_name", { ascending: true });
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function fetchBatchesForReports() {
+  const { data, error } = await supabase
+    .from("tbl_batches")
+    .select(`
+      batch_id,
+      medication_id,
+      quantity,
+      unit_price,
+      expiry_date,
+      received_date,
+      updated_at,
+      disposed_at,
+      disposed_quantity,
+      status
+    `)
+    .order("received_date", { ascending: true })
+    .order("batch_id", { ascending: true });
+
+  if (error) throw error;
+  return data || [];
+}
+
 async function listActiveServices() {
   const { data, error } = await supabase
     .from("tbl_services")
@@ -685,6 +725,8 @@ export {
   fetchAnalyticsBills,
   fetchAnalyticsPayments,
   fetchBillItemsForReports,
+  fetchMedicationInventoryForReports,
+  fetchBatchesForReports,
   fetchPaymentsWithBillContext,
   listPaymentsWithBillPatient,
   listPaymentsByBillIdWithBillPatient,

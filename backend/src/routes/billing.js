@@ -12,6 +12,13 @@ import {
   markBillPrinted,
   getBillingAnalytics,
   getBillingReportsOverview,
+  getReportsSummary,
+  getMedicationDemandTrend,
+  getTopMovers,
+  getInventoryRunway,
+  getExpiryRisk,
+  getRevenueMix,
+  getUnitPriceTrend,
   getPatients,
   getServices,
   getBillingTransactions,
@@ -24,6 +31,13 @@ export const billingRouter = Router();
 
 billingRouter.get("/dashboard/analytics", asyncHandler(getBillingAnalytics));
 billingRouter.get("/reports/overview", asyncHandler(getBillingReportsOverview));
+billingRouter.get("/reports/summary", asyncHandler(getReportsSummary));
+billingRouter.get("/reports/medication-demand-trend", asyncHandler(getMedicationDemandTrend));
+billingRouter.get("/reports/top-movers", asyncHandler(getTopMovers));
+billingRouter.get("/reports/inventory-runway", asyncHandler(getInventoryRunway));
+billingRouter.get("/reports/expiry-risk", asyncHandler(getExpiryRisk));
+billingRouter.get("/reports/revenue-mix", asyncHandler(getRevenueMix));
+billingRouter.get("/reports/unit-price-trend", asyncHandler(getUnitPriceTrend));
 billingRouter.get("/transactions", asyncHandler(getBillingTransactions));
 billingRouter.get("/services", asyncHandler(getServices));
 billingRouter.get("/patients", asyncHandler(getPatients));

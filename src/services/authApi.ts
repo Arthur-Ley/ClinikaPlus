@@ -51,7 +51,7 @@ function isApiRequestUrl(value: string): boolean {
 }
 
 function isPublicAuthRequest(value: string): boolean {
-  const authPaths = ["/auth/login", "/auth/register", "/auth/forgot-password"];
+  const authPaths = ["/auth/login", "/auth/register", "/auth/forgot-password", "/auth/refresh"];
   return authPaths.some((path) => value.includes(path));
 }
 
@@ -59,6 +59,24 @@ function toLoginRedirectUrl(): string {
   const currentPath = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   const encodedCurrentPath = encodeURIComponent(currentPath);
   return `/login?redirect=${encodedCurrentPath}`;
+}
+
+function isUnauthorizedError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message === "Unauthorized" || error.message.includes("Server error: 401");
+}
+
+function isTransientAuthError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("aborterror") ||
+    message.includes("timeout") ||
+    message.includes("fetch failed") ||
+    message.includes("failed to fetch") ||
+    message.includes("networkerror") ||
+    message.includes("server error: 503")
+  );
 }
 
 async function postJson<TResponse>(path: string, body: unknown, maxRetries = 3): Promise<TResponse> {
@@ -126,6 +144,10 @@ export async function register(payload: RegisterPayload): Promise<{
 
 export async function requestPasswordReset(email: string, redirectTo: string): Promise<{ message: string }> {
   return postJson<{ message: string }>("/auth/forgot-password", { email, redirectTo });
+}
+
+export async function refreshAuthSession(refreshToken: string): Promise<LoginResponse> {
+  return postJson<LoginResponse>("/auth/refresh", { refreshToken }, 1);
 }
 
 export async function getCurrentUser(accessToken: string, maxRetries = 3): Promise<CurrentUserResponse> {
@@ -239,7 +261,34 @@ export async function validateAuthSession(): Promise<LoginResponse | null> {
 
       saveAuthSession(nextSession);
       return nextSession;
-    } catch {
+    } catch (error) {
+      if (isUnauthorizedError(error) && existingSession.refreshToken) {
+        try {
+          const refreshedSession = await refreshAuthSession(existingSession.refreshToken);
+          saveAuthSession(refreshedSession);
+          const retryResponse = await getCurrentUser(refreshedSession.accessToken, 1);
+          const nextSession: LoginResponse = {
+            ...refreshedSession,
+            user: {
+              ...refreshedSession.user,
+              ...retryResponse.user,
+            },
+          };
+          saveAuthSession(nextSession);
+          return nextSession;
+        } catch (refreshError) {
+          if (!isUnauthorizedError(refreshError) && isTransientAuthError(refreshError)) {
+            return existingSession;
+          }
+          clearAuthSession();
+          return null;
+        }
+      }
+
+      if (isTransientAuthError(error)) {
+        return existingSession;
+      }
+
       const latestSession = getAuthSession();
       if (!latestSession || latestSession.accessToken === tokenToValidate) {
         clearAuthSession();
@@ -289,6 +338,17 @@ export function installAuthFetchInterceptor(): void {
     });
 
     if (isApiRequest && !isPublicAuth && response.status === 401) {
+      const latestSession = getAuthSession();
+      if (latestSession?.refreshToken) {
+        try {
+          const refreshedSession = await refreshAuthSession(latestSession.refreshToken);
+          saveAuthSession(refreshedSession);
+          return response;
+        } catch {
+          // Fall through to logout if refresh fails.
+        }
+      }
+
       clearAuthSession();
       if (window.location.pathname !== "/login" && window.location.pathname !== "/register") {
         window.location.replace(toLoginRedirectUrl());

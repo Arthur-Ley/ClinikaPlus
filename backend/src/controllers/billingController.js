@@ -8,6 +8,13 @@ import {
   getBillDetailsFlow,
   getBillingAnalyticsFlow,
   getBillingReportsOverviewFlow,
+  getReportsSummaryFlow,
+  getMedicationDemandTrendFlow,
+  getTopMoversFlow,
+  getInventoryRunwayFlow,
+  getExpiryRiskFlow,
+  getRevenueMixFlow,
+  getUnitPriceTrendFlow,
   listPaymentsFlow,
   listPaymentsByBillIdFlow,
   listPatientsFlow,
@@ -146,6 +153,41 @@ export async function getBillingTransactions(req, res) {
 
 export async function getBillingReportsOverview(req, res) {
   const result = await getBillingReportsOverviewFlow(req.query);
+  return res.status(200).json(result);
+}
+
+export async function getReportsSummary(req, res) {
+  const result = await getReportsSummaryFlow(req.query);
+  return res.status(200).json(result);
+}
+
+export async function getMedicationDemandTrend(req, res) {
+  const result = await getMedicationDemandTrendFlow(req.query);
+  return res.status(200).json(result);
+}
+
+export async function getTopMovers(req, res) {
+  const result = await getTopMoversFlow(req.query);
+  return res.status(200).json(result);
+}
+
+export async function getInventoryRunway(req, res) {
+  const result = await getInventoryRunwayFlow(req.query);
+  return res.status(200).json(result);
+}
+
+export async function getExpiryRisk(req, res) {
+  const result = await getExpiryRiskFlow(req.query);
+  return res.status(200).json(result);
+}
+
+export async function getRevenueMix(req, res) {
+  const result = await getRevenueMixFlow(req.query);
+  return res.status(200).json(result);
+}
+
+export async function getUnitPriceTrend(req, res) {
+  const result = await getUnitPriceTrendFlow(req.query);
   return res.status(200).json(result);
 }
 

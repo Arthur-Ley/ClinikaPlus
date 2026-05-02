@@ -11,6 +11,8 @@ import {
   fetchAnalyticsBills,
   fetchAnalyticsPayments,
   fetchBillItemsForReports,
+  fetchMedicationInventoryForReports,
+  fetchBatchesForReports,
   fetchPaymentsWithBillContext,
   getAppUserById,
   getBillById,
@@ -415,6 +417,76 @@ function getChartGranularity(daySpan) {
   if (daySpan <= 31) return "day";
   if (daySpan <= 180) return "week";
   return "month";
+}
+
+function parseReportsScope(query = {}) {
+  const rawScope = normalizeText(query?.scope).toLowerCase();
+  const scope = rawScope === "single" || rawScope === "top5" ? rawScope : "all";
+  const medicationId = toPositiveInt(query?.medicationId);
+  const bucket = normalizeText(query?.bucket).toLowerCase();
+  const normalizedBucket = bucket === "week" || bucket === "month" ? bucket : "day";
+  const topN = Math.max(1, Math.min(20, toPositiveInt(query?.topN) || 5));
+  const limit = Math.max(1, Math.min(50, toPositiveInt(query?.limit) || 10));
+
+  return {
+    scope,
+    medicationId: medicationId || null,
+    bucket: normalizedBucket,
+    topN,
+    limit,
+  };
+}
+
+function getPeriodKey(dateOnly, bucket) {
+  if (!dateOnly) return "";
+  if (bucket === "month") return dateOnly.slice(0, 7);
+  if (bucket === "week") return startOfWeekDateOnly(dateOnly);
+  return dateOnly;
+}
+
+function formatPeriodLabel(key, bucket) {
+  if (!key) return "";
+  if (bucket === "month") return formatMonthLabel(key);
+  if (bucket === "week") return formatWeekLabel(key);
+  return formatDayLabel(key);
+}
+
+function buildPeriodKeys(startDate, endDate, bucket) {
+  const keys = [];
+  let cursor = startDate;
+  while (cursor <= endDate) {
+    const key = getPeriodKey(cursor, bucket);
+    if (!keys.includes(key)) keys.push(key);
+    cursor = addDays(cursor, 1);
+  }
+  return keys;
+}
+
+function resolveMedicationFromItem(item, medicationRowsById) {
+  const relation = Array.isArray(item?.tbl_medications) ? item.tbl_medications[0] : item?.tbl_medications;
+  const medicationId = toPositiveInt(item?.medication_id ?? item?.log_id);
+  if (!medicationId) return null;
+
+  return {
+    medication_id: medicationId,
+    medication_name:
+      relation?.medication_name ||
+      medicationRowsById.get(medicationId)?.medication_name ||
+      `Medication #${medicationId}`,
+  };
+}
+
+function mapMedicationInventoryRows(rows) {
+  return (rows || []).map((row) => {
+    const inventory = Array.isArray(row?.tbl_inventory) ? row.tbl_inventory[0] : row?.tbl_inventory;
+    return {
+      medication_id: Number(row.medication_id),
+      medication_name: row.medication_name || `Medication #${row.medication_id}`,
+      reorder_threshold: Number(row.reorder_threshold || 0),
+      current_stock: Number(inventory?.total_stock || 0),
+      unit: row.unit || "pcs",
+    };
+  });
 }
 
 function getStartOfWeekFromDateOnly(dateOnly) {
@@ -1490,6 +1562,489 @@ async function getBillingReportsOverviewFlow(query = {}) {
   };
 }
 
+async function getReportsSummaryFlow(query = {}) {
+  const range = parseReportRange(query);
+  const [billItems, inventoryRows, batchRows] = await Promise.all([
+    fetchBillItemsForReports(),
+    fetchMedicationInventoryForReports(),
+    fetchBatchesForReports(),
+  ]);
+
+  const medicationRows = mapMedicationInventoryRows(inventoryRows);
+  const medicationRowsById = new Map(medicationRows.map((row) => [row.medication_id, row]));
+  const filteredMedicationItems = (billItems || []).filter((item) => {
+    const bill = Array.isArray(item?.tbl_bills) ? item.tbl_bills[0] : item?.tbl_bills;
+    if (bill?.status === "Cancelled") return false;
+    const createdDate = toIsoDateOnly(item?.created_at);
+    if (!isDateWithinRange(createdDate, range.startDate, range.endDate)) return false;
+    return Boolean(toPositiveInt(item?.medication_id ?? item?.log_id));
+  });
+
+  const usageByMedication = new Map();
+  for (const item of filteredMedicationItems) {
+    const medication = resolveMedicationFromItem(item, medicationRowsById);
+    if (!medication) continue;
+    const qty = Number(item?.quantity || 0);
+    const revenue = Number(item?.subtotal || qty * Number(item?.unit_price || 0) || 0);
+    const current = usageByMedication.get(medication.medication_id) || { ...medication, qty: 0, revenue: 0 };
+    current.qty += qty;
+    current.revenue += revenue;
+    usageByMedication.set(medication.medication_id, current);
+  }
+
+  const avgDailyUsageByMedication = new Map();
+  for (const entry of usageByMedication.values()) {
+    avgDailyUsageByMedication.set(entry.medication_id, entry.qty / Math.max(range.daySpan, 1));
+  }
+
+  const stockoutAlerts = medicationRows.filter((row) => {
+    const avgDaily = avgDailyUsageByMedication.get(row.medication_id) || 0;
+    if (avgDaily <= 0) return false;
+    const daysLeft = row.current_stock / avgDaily;
+    return Number.isFinite(daysLeft) && daysLeft < 7;
+  }).length;
+
+  const previousStart = range.previousStartDate;
+  const previousEnd = range.previousEndDate;
+  const currentQtyByMedication = new Map();
+  const previousQtyByMedication = new Map();
+
+  for (const item of billItems || []) {
+    const bill = Array.isArray(item?.tbl_bills) ? item.tbl_bills[0] : item?.tbl_bills;
+    if (bill?.status === "Cancelled") continue;
+    const medication = resolveMedicationFromItem(item, medicationRowsById);
+    if (!medication) continue;
+    const qty = Number(item?.quantity || 0);
+    const createdDate = toIsoDateOnly(item?.created_at);
+    if (isDateWithinRange(createdDate, range.startDate, range.endDate)) {
+      currentQtyByMedication.set(medication.medication_id, (currentQtyByMedication.get(medication.medication_id) || 0) + qty);
+    }
+    if (isDateWithinRange(createdDate, previousStart, previousEnd)) {
+      previousQtyByMedication.set(medication.medication_id, (previousQtyByMedication.get(medication.medication_id) || 0) + qty);
+    }
+  }
+
+  let demandSpikes = 0;
+  for (const [medId, currentQty] of currentQtyByMedication.entries()) {
+    const prevQty = previousQtyByMedication.get(medId) || 0;
+    if (currentQty < 10) continue;
+    if (prevQty <= 0 && currentQty > 0) {
+      demandSpikes += 1;
+      continue;
+    }
+    const growth = ((currentQty - prevQty) / prevQty) * 100;
+    if (growth >= 25) demandSpikes += 1;
+  }
+
+  const nowDate = getTodayDateOnly();
+  const nearExpiryCutoff = addDays(nowDate, 30);
+  let expiryValueAtRisk = 0;
+  for (const batch of batchRows || []) {
+    const expiryDate = toIsoDateOnly(batch?.expiry_date);
+    const qty = Number(batch?.quantity || 0);
+    if (!expiryDate || qty <= 0) continue;
+    if (expiryDate < nowDate || expiryDate > nearExpiryCutoff) continue;
+    expiryValueAtRisk += qty * Number(batch?.unit_price || 0);
+  }
+
+  const topMedicationByRevenue = [...usageByMedication.values()].sort((a, b) => b.revenue - a.revenue)[0] || null;
+
+  return {
+    range: {
+      start_date: range.startDate,
+      end_date: range.endDate,
+      label: range.label,
+    },
+    insights: {
+      stockout_alerts_next_7_days: stockoutAlerts,
+      demand_spikes_wow: demandSpikes,
+      expiry_value_at_risk: roundCurrency(expiryValueAtRisk),
+      top_medication_by_revenue: topMedicationByRevenue
+        ? {
+            medication_id: topMedicationByRevenue.medication_id,
+            medication_name: topMedicationByRevenue.medication_name,
+            revenue: roundCurrency(topMedicationByRevenue.revenue),
+          }
+        : null,
+    },
+  };
+}
+
+async function getMedicationDemandTrendFlow(query = {}) {
+  const range = parseReportRange(query);
+  const scope = parseReportsScope(query);
+  const [billItems, inventoryRows] = await Promise.all([fetchBillItemsForReports(), fetchMedicationInventoryForReports()]);
+  const medicationRows = mapMedicationInventoryRows(inventoryRows);
+  const medicationRowsById = new Map(medicationRows.map((row) => [row.medication_id, row]));
+
+  const filtered = (billItems || []).filter((item) => {
+    const bill = Array.isArray(item?.tbl_bills) ? item.tbl_bills[0] : item?.tbl_bills;
+    if (bill?.status === "Cancelled") return false;
+    const dateOnly = toIsoDateOnly(item?.created_at);
+    if (!isDateWithinRange(dateOnly, range.startDate, range.endDate)) return false;
+    const medId = toPositiveInt(item?.medication_id ?? item?.log_id);
+    if (!medId) return false;
+    if (scope.scope === "single" && scope.medicationId && medId !== scope.medicationId) return false;
+    return true;
+  });
+
+  const totalsByMedication = new Map();
+  for (const item of filtered) {
+    const medication = resolveMedicationFromItem(item, medicationRowsById);
+    if (!medication) continue;
+    const qty = Number(item?.quantity || 0);
+    totalsByMedication.set(medication.medication_id, (totalsByMedication.get(medication.medication_id) || 0) + qty);
+  }
+
+  let selectedMedicationIds = [...totalsByMedication.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([medicationId]) => medicationId);
+
+  if (scope.scope === "top5") {
+    selectedMedicationIds = selectedMedicationIds.slice(0, scope.topN);
+  } else if (scope.scope === "all") {
+    selectedMedicationIds = selectedMedicationIds.slice(0, 12);
+  } else if (scope.scope === "single" && scope.medicationId) {
+    selectedMedicationIds = [scope.medicationId];
+  }
+
+  const periodKeys = buildPeriodKeys(range.startDate, range.endDate, scope.bucket);
+  const seriesMap = new Map();
+  for (const medicationId of selectedMedicationIds) {
+    seriesMap.set(medicationId, new Map(periodKeys.map((key) => [key, 0])));
+  }
+
+  for (const item of filtered) {
+    const medId = toPositiveInt(item?.medication_id ?? item?.log_id);
+    if (!medId || !seriesMap.has(medId)) continue;
+    const dateOnly = toIsoDateOnly(item?.created_at);
+    const key = getPeriodKey(dateOnly, scope.bucket);
+    const map = seriesMap.get(medId);
+    map.set(key, (map.get(key) || 0) + Number(item?.quantity || 0));
+  }
+
+  const series = selectedMedicationIds.map((medicationId) => {
+    const medicationName = medicationRowsById.get(medicationId)?.medication_name || `Medication #${medicationId}`;
+    const values = periodKeys.map((key) => {
+      const value = Number(seriesMap.get(medicationId)?.get(key) || 0);
+      return {
+        key,
+        label: formatPeriodLabel(key, scope.bucket),
+        value: roundCurrency(value),
+      };
+    });
+
+    const movingAverage = values.map((_, index) => {
+      const window = values.slice(Math.max(0, index - 2), index + 1);
+      const avg = window.reduce((sum, point) => sum + point.value, 0) / Math.max(window.length, 1);
+      return roundCurrency(avg);
+    });
+
+    return {
+      medication_id: medicationId,
+      medication_name: medicationName,
+      points: values,
+      moving_average: movingAverage,
+      total_quantity: roundCurrency(values.reduce((sum, point) => sum + point.value, 0)),
+    };
+  });
+
+  return {
+    range: {
+      start_date: range.startDate,
+      end_date: range.endDate,
+      label: range.label,
+      bucket: scope.bucket,
+    },
+    series,
+  };
+}
+
+async function getTopMoversFlow(query = {}) {
+  const range = parseReportRange(query);
+  const scope = parseReportsScope(query);
+  const [billItems, inventoryRows] = await Promise.all([fetchBillItemsForReports(), fetchMedicationInventoryForReports()]);
+  const medicationRows = mapMedicationInventoryRows(inventoryRows);
+  const medicationRowsById = new Map(medicationRows.map((row) => [row.medication_id, row]));
+
+  const current = new Map();
+  const previous = new Map();
+  for (const item of billItems || []) {
+    const bill = Array.isArray(item?.tbl_bills) ? item.tbl_bills[0] : item?.tbl_bills;
+    if (bill?.status === "Cancelled") continue;
+    const medId = toPositiveInt(item?.medication_id ?? item?.log_id);
+    if (!medId) continue;
+    if (scope.scope === "single" && scope.medicationId && medId !== scope.medicationId) continue;
+    const qty = Number(item?.quantity || 0);
+    const dateOnly = toIsoDateOnly(item?.created_at);
+    if (isDateWithinRange(dateOnly, range.startDate, range.endDate)) {
+      current.set(medId, (current.get(medId) || 0) + qty);
+    } else if (isDateWithinRange(dateOnly, range.previousStartDate, range.previousEndDate)) {
+      previous.set(medId, (previous.get(medId) || 0) + qty);
+    }
+  }
+
+  const allMedicationIds = new Set([...current.keys(), ...previous.keys()]);
+  const movers = [...allMedicationIds].map((medId) => {
+    const currentQty = Number(current.get(medId) || 0);
+    const previousQty = Number(previous.get(medId) || 0);
+    const growthPct = previousQty > 0 ? ((currentQty - previousQty) / previousQty) * 100 : currentQty > 0 ? 100 : 0;
+    return {
+      medication_id: medId,
+      medication_name: medicationRowsById.get(medId)?.medication_name || `Medication #${medId}`,
+      current_quantity: roundCurrency(currentQty),
+      previous_quantity: roundCurrency(previousQty),
+      growth_pct: roundCurrency(growthPct),
+    };
+  });
+
+  const rising = movers.filter((m) => m.growth_pct >= 0).sort((a, b) => b.growth_pct - a.growth_pct).slice(0, scope.limit);
+  const falling = movers.filter((m) => m.growth_pct < 0).sort((a, b) => a.growth_pct - b.growth_pct).slice(0, scope.limit);
+
+  return {
+    range: {
+      start_date: range.startDate,
+      end_date: range.endDate,
+      previous_start_date: range.previousStartDate,
+      previous_end_date: range.previousEndDate,
+    },
+    rising,
+    falling,
+  };
+}
+
+async function getInventoryRunwayFlow(query = {}) {
+  const range = parseReportRange(query);
+  const scope = parseReportsScope(query);
+  const [inventoryRows, billItems] = await Promise.all([fetchMedicationInventoryForReports(), fetchBillItemsForReports()]);
+  const medications = mapMedicationInventoryRows(inventoryRows);
+
+  const usageMap = new Map();
+  for (const item of billItems || []) {
+    const bill = Array.isArray(item?.tbl_bills) ? item.tbl_bills[0] : item?.tbl_bills;
+    if (bill?.status === "Cancelled") continue;
+    const medId = toPositiveInt(item?.medication_id ?? item?.log_id);
+    if (!medId) continue;
+    const dateOnly = toIsoDateOnly(item?.created_at);
+    if (!isDateWithinRange(dateOnly, range.startDate, range.endDate)) continue;
+    usageMap.set(medId, (usageMap.get(medId) || 0) + Number(item?.quantity || 0));
+  }
+
+  let rows = medications.map((medication) => {
+    const totalDispensed = Number(usageMap.get(medication.medication_id) || 0);
+    const avgDailyUsage = totalDispensed / Math.max(range.daySpan, 1);
+    const daysLeft = avgDailyUsage > 0 ? medication.current_stock / avgDailyUsage : null;
+    const risk =
+      daysLeft === null ? "No Usage Data"
+      : daysLeft < 7 ? "High"
+      : daysLeft <= 14 ? "Medium"
+      : "Low";
+
+    return {
+      medication_id: medication.medication_id,
+      medication_name: medication.medication_name,
+      unit: medication.unit,
+      current_stock: roundCurrency(medication.current_stock),
+      avg_daily_usage: roundCurrency(avgDailyUsage),
+      days_left: daysLeft == null ? null : roundCurrency(daysLeft),
+      risk,
+      reorder_threshold: roundCurrency(medication.reorder_threshold),
+    };
+  });
+
+  if (scope.scope === "single" && scope.medicationId) {
+    rows = rows.filter((row) => row.medication_id === scope.medicationId);
+  }
+
+  rows.sort((a, b) => {
+    const score = (risk) => (risk === "High" ? 0 : risk === "Medium" ? 1 : risk === "Low" ? 2 : 3);
+    return score(a.risk) - score(b.risk);
+  });
+
+  return {
+    range: { start_date: range.startDate, end_date: range.endDate },
+    items: rows.slice(0, 20),
+  };
+}
+
+async function getExpiryRiskFlow(query = {}) {
+  const range = parseReportRange(query);
+  const scope = parseReportsScope(query);
+  const [batches, inventoryRows] = await Promise.all([fetchBatchesForReports(), fetchMedicationInventoryForReports()]);
+  const medicationRows = mapMedicationInventoryRows(inventoryRows);
+  const medicationRowsById = new Map(medicationRows.map((row) => [row.medication_id, row]));
+  const today = getTodayDateOnly();
+  const nearExpiryCutoff = addDays(today, 30);
+  const periodKeys = buildPeriodKeys(range.startDate, range.endDate, scope.bucket);
+  const nearExpiryMap = new Map(periodKeys.map((key) => [key, 0]));
+  const disposedMap = new Map(periodKeys.map((key) => [key, 0]));
+  let atRiskValue = 0;
+  let nearExpiryQty = 0;
+  let disposedQty = 0;
+
+  for (const batch of batches || []) {
+    const medId = Number(batch?.medication_id || 0);
+    if (scope.scope === "single" && scope.medicationId && medId !== scope.medicationId) continue;
+
+    const qty = Number(batch?.quantity || 0);
+    const unitPrice = Number(batch?.unit_price || 0);
+    const expiryDate = toIsoDateOnly(batch?.expiry_date);
+    if (expiryDate && qty > 0 && expiryDate >= today && expiryDate <= nearExpiryCutoff) {
+      nearExpiryQty += qty;
+      atRiskValue += qty * unitPrice;
+      const key = getPeriodKey(expiryDate, scope.bucket);
+      if (nearExpiryMap.has(key)) {
+        nearExpiryMap.set(key, nearExpiryMap.get(key) + qty);
+      }
+    }
+
+    const disposedQuantity = Number(batch?.disposed_quantity || 0);
+    if (disposedQuantity > 0) {
+      const disposedDate = toIsoDateOnly(batch?.disposed_at || batch?.updated_at);
+      if (isDateWithinRange(disposedDate, range.startDate, range.endDate)) {
+        disposedQty += disposedQuantity;
+        const key = getPeriodKey(disposedDate, scope.bucket);
+        if (disposedMap.has(key)) {
+          disposedMap.set(key, disposedMap.get(key) + disposedQuantity);
+        }
+      }
+    }
+  }
+
+  return {
+    range: { start_date: range.startDate, end_date: range.endDate, bucket: scope.bucket },
+    metrics: {
+      near_expiry_quantity: roundCurrency(nearExpiryQty),
+      disposed_quantity: roundCurrency(disposedQty),
+      at_risk_value: roundCurrency(atRiskValue),
+    },
+    trend: periodKeys.map((key) => ({
+      key,
+      label: formatPeriodLabel(key, scope.bucket),
+      near_expiry_quantity: roundCurrency(nearExpiryMap.get(key) || 0),
+      disposed_quantity: roundCurrency(disposedMap.get(key) || 0),
+    })),
+  };
+}
+
+async function getRevenueMixFlow(query = {}) {
+  const range = parseReportRange(query);
+  const scope = parseReportsScope(query);
+  const [billItems, inventoryRows] = await Promise.all([fetchBillItemsForReports(), fetchMedicationInventoryForReports()]);
+  const medicationRows = mapMedicationInventoryRows(inventoryRows);
+  const medicationRowsById = new Map(medicationRows.map((row) => [row.medication_id, row]));
+  const revenueByMedication = new Map();
+
+  for (const item of billItems || []) {
+    const bill = Array.isArray(item?.tbl_bills) ? item.tbl_bills[0] : item?.tbl_bills;
+    if (bill?.status === "Cancelled") continue;
+    const medId = toPositiveInt(item?.medication_id ?? item?.log_id);
+    if (!medId) continue;
+    if (scope.scope === "single" && scope.medicationId && medId !== scope.medicationId) continue;
+    const dateOnly = toIsoDateOnly(item?.created_at);
+    if (!isDateWithinRange(dateOnly, range.startDate, range.endDate)) continue;
+    const subtotal = Number(item?.subtotal || Number(item?.quantity || 0) * Number(item?.unit_price || 0) || 0);
+    revenueByMedication.set(medId, (revenueByMedication.get(medId) || 0) + subtotal);
+  }
+
+  const sorted = [...revenueByMedication.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, Math.max(scope.limit, 15))
+    .map(([medicationId, revenue]) => ({
+      medication_id: medicationId,
+      medication_name: medicationRowsById.get(medicationId)?.medication_name || `Medication #${medicationId}`,
+      revenue: roundCurrency(revenue),
+    }));
+
+  const total = sorted.reduce((sum, item) => sum + item.revenue, 0);
+  let cumulative = 0;
+  const items = sorted.map((item) => {
+    const share = total > 0 ? (item.revenue / total) * 100 : 0;
+    cumulative += share;
+    return {
+      ...item,
+      share_pct: roundCurrency(share),
+      cumulative_pct: roundCurrency(cumulative),
+    };
+  });
+
+  return {
+    range: { start_date: range.startDate, end_date: range.endDate },
+    total_revenue: roundCurrency(total),
+    items,
+  };
+}
+
+async function getUnitPriceTrendFlow(query = {}) {
+  const range = parseReportRange(query);
+  const scope = parseReportsScope(query);
+  const [batches, billItems, inventoryRows] = await Promise.all([
+    fetchBatchesForReports(),
+    fetchBillItemsForReports(),
+    fetchMedicationInventoryForReports(),
+  ]);
+  const medicationRows = mapMedicationInventoryRows(inventoryRows);
+  const medicationRowsById = new Map(medicationRows.map((row) => [row.medication_id, row]));
+
+  let medicationId = scope.medicationId;
+  if (!medicationId) {
+    const revenueByMedication = new Map();
+    for (const item of billItems || []) {
+      const bill = Array.isArray(item?.tbl_bills) ? item.tbl_bills[0] : item?.tbl_bills;
+      if (bill?.status === "Cancelled") continue;
+      const medId = toPositiveInt(item?.medication_id ?? item?.log_id);
+      if (!medId) continue;
+      const dateOnly = toIsoDateOnly(item?.created_at);
+      if (!isDateWithinRange(dateOnly, range.startDate, range.endDate)) continue;
+      const subtotal = Number(item?.subtotal || Number(item?.quantity || 0) * Number(item?.unit_price || 0) || 0);
+      revenueByMedication.set(medId, (revenueByMedication.get(medId) || 0) + subtotal);
+    }
+    medicationId = [...revenueByMedication.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+  }
+
+  if (!medicationId) {
+    return {
+      range: { start_date: range.startDate, end_date: range.endDate, bucket: scope.bucket },
+      medication: null,
+      points: [],
+    };
+  }
+
+  const periodKeys = buildPeriodKeys(range.startDate, range.endDate, scope.bucket);
+  const aggregate = new Map(periodKeys.map((key) => [key, { sum: 0, count: 0 }]));
+
+  for (const batch of batches || []) {
+    const medId = Number(batch?.medication_id || 0);
+    if (medId !== medicationId) continue;
+    const dateOnly = toIsoDateOnly(batch?.received_date || batch?.updated_at);
+    if (!isDateWithinRange(dateOnly, range.startDate, range.endDate)) continue;
+    const key = getPeriodKey(dateOnly, scope.bucket);
+    if (!aggregate.has(key)) continue;
+    const unitPrice = Number(batch?.unit_price || 0);
+    const qtyWeight = Math.max(1, Number(batch?.quantity || 0));
+    const slot = aggregate.get(key);
+    slot.sum += unitPrice * qtyWeight;
+    slot.count += qtyWeight;
+  }
+
+  return {
+    range: { start_date: range.startDate, end_date: range.endDate, bucket: scope.bucket },
+    medication: {
+      medication_id: medicationId,
+      medication_name: medicationRowsById.get(medicationId)?.medication_name || `Medication #${medicationId}`,
+    },
+    points: periodKeys.map((key) => {
+      const slot = aggregate.get(key) || { sum: 0, count: 0 };
+      const avg = slot.count > 0 ? slot.sum / slot.count : 0;
+      return {
+        key,
+        label: formatPeriodLabel(key, scope.bucket),
+        average_unit_price: roundCurrency(avg),
+      };
+    }),
+  };
+}
+
 function toPaymentListItem(row) {
   const bill = Array.isArray(row?.tbl_bills) ? row.tbl_bills[0] : row?.tbl_bills;
   const patient = Array.isArray(bill?.tbl_patients) ? bill.tbl_patients[0] : bill?.tbl_patients;
@@ -1615,6 +2170,13 @@ export {
   getBillDetailsFlow,
   getBillingAnalyticsFlow,
   getBillingReportsOverviewFlow,
+  getReportsSummaryFlow,
+  getMedicationDemandTrendFlow,
+  getTopMoversFlow,
+  getInventoryRunwayFlow,
+  getExpiryRiskFlow,
+  getRevenueMixFlow,
+  getUnitPriceTrendFlow,
   listPaymentsFlow,
   listPaymentsByBillIdFlow,
   createPatientFlow,

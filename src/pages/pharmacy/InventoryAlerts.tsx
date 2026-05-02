@@ -794,76 +794,77 @@ export default function InventoryAlerts() {
       )}
 
       {restockTarget && (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-black/20 p-4 pb-6 pt-20 backdrop-blur-[1px]" onClick={closeCreateRestockRequest}>
-          <div className="w-full max-w-[520px] rounded-2xl border border-gray-300 bg-gray-100 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-3 flex items-center justify-between border-b border-gray-300 pb-3">
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/20 p-4 backdrop-blur-[1px]" onClick={closeCreateRestockRequest}>
+          <div className="flex max-h-[calc(100vh-2rem)] w-full max-w-[520px] flex-col overflow-hidden rounded-2xl border border-gray-300 bg-gray-100 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="sticky top-0 z-10 mb-3 flex items-center justify-between border-b border-gray-300 bg-gray-100 px-5 pb-3 pt-5">
               <h2 className="text-xl font-semibold text-gray-800">Create Restock Request</h2>
               <button type="button" onClick={closeCreateRestockRequest} className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-gray-300 text-gray-600 hover:text-gray-700">
                 <X size={14} />
               </button>
             </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+              <div className="rounded-xl bg-gray-200/60 p-3 text-sm text-gray-700">
+                <p><span className="font-semibold text-gray-800">Medication:</span> {restockTarget.name}</p>
+                <p><span className="font-semibold text-gray-800">Category:</span> {restockTarget.category}</p>
+                <p><span className="font-semibold text-gray-800">Current Stock:</span> {restockTarget.lowStock} {restockTarget.unit}</p>
+                <p><span className="font-semibold text-gray-800">Suggested Restock:</span> {restockTarget.suggestedRestock} {restockTarget.unit}</p>
+              </div>
 
-            <div className="rounded-xl bg-gray-200/60 p-3 text-sm text-gray-700">
-              <p><span className="font-semibold text-gray-800">Medication:</span> {restockTarget.name}</p>
-              <p><span className="font-semibold text-gray-800">Category:</span> {restockTarget.category}</p>
-              <p><span className="font-semibold text-gray-800">Current Stock:</span> {restockTarget.lowStock} {restockTarget.unit}</p>
-              <p><span className="font-semibold text-gray-800">Suggested Restock:</span> {restockTarget.suggestedRestock} {restockTarget.unit}</p>
+              <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                <label className="text-sm text-gray-700">
+                  Supplier
+                  <input
+                    className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
+                    value={restockDetails.supplier}
+                    onChange={(e) => setRestockDetails((prev) => ({ ...prev, supplier: e.target.value }))}
+                  />
+                  {restockErrors.supplier && <p className="mt-1 text-xs text-red-500">{restockErrors.supplier}</p>}
+                </label>
+
+                <label className="text-sm text-gray-700">
+                  Quantity ({restockTarget.unit})
+                  <input
+                    type="number"
+                    min={1}
+                    className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
+                    value={restockDetails.quantity}
+                    onChange={(e) => setRestockDetails((prev) => ({ ...prev, quantity: e.target.value }))}
+                  />
+                  {restockErrors.quantity && <p className="mt-1 text-xs text-red-500">{restockErrors.quantity}</p>}
+                </label>
+
+                <label className="text-sm text-gray-700 md:col-span-2">
+                  Needed By
+                  <input
+                    type="date"
+                    className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
+                    value={restockDetails.neededBy}
+                    onChange={(e) => setRestockDetails((prev) => ({ ...prev, neededBy: e.target.value }))}
+                  />
+                  {restockErrors.neededBy && <p className="mt-1 text-xs text-red-500">{restockErrors.neededBy}</p>}
+                </label>
+
+                <label className="text-sm text-gray-700 md:col-span-2">
+                  Notes (Optional)
+                  <textarea
+                    className="mt-1 w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2 text-sm"
+                    rows={3}
+                    value={restockDetails.notes}
+                    onChange={(e) => setRestockDetails((prev) => ({ ...prev, notes: e.target.value }))}
+                    placeholder="Add handling or urgency notes"
+                  />
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={confirmRestockRequest}
+                className="mt-4 h-10 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={isSubmittingRestock}
+              >
+                {isSubmittingRestock ? 'Creating Request...' : 'Confirm Restock Request'}
+              </button>
             </div>
-
-            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-              <label className="text-sm text-gray-700">
-                Supplier
-                <input
-                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
-                  value={restockDetails.supplier}
-                  onChange={(e) => setRestockDetails((prev) => ({ ...prev, supplier: e.target.value }))}
-                />
-                {restockErrors.supplier && <p className="mt-1 text-xs text-red-500">{restockErrors.supplier}</p>}
-              </label>
-
-              <label className="text-sm text-gray-700">
-                Quantity ({restockTarget.unit})
-                <input
-                  type="number"
-                  min={1}
-                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
-                  value={restockDetails.quantity}
-                  onChange={(e) => setRestockDetails((prev) => ({ ...prev, quantity: e.target.value }))}
-                />
-                {restockErrors.quantity && <p className="mt-1 text-xs text-red-500">{restockErrors.quantity}</p>}
-              </label>
-
-              <label className="text-sm text-gray-700 md:col-span-2">
-                Needed By
-                <input
-                  type="date"
-                  className="mt-1 h-9 w-full rounded-lg border border-gray-300 bg-transparent px-3 text-sm"
-                  value={restockDetails.neededBy}
-                  onChange={(e) => setRestockDetails((prev) => ({ ...prev, neededBy: e.target.value }))}
-                />
-                {restockErrors.neededBy && <p className="mt-1 text-xs text-red-500">{restockErrors.neededBy}</p>}
-              </label>
-
-              <label className="text-sm text-gray-700 md:col-span-2">
-                Notes (Optional)
-                <textarea
-                  className="mt-1 w-full rounded-lg border border-gray-300 bg-transparent px-3 py-2 text-sm"
-                  rows={3}
-                  value={restockDetails.notes}
-                  onChange={(e) => setRestockDetails((prev) => ({ ...prev, notes: e.target.value }))}
-                  placeholder="Add handling or urgency notes"
-                />
-              </label>
-            </div>
-
-            <button
-              type="button"
-              onClick={confirmRestockRequest}
-              className="mt-4 h-10 w-full rounded-lg bg-blue-600 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={isSubmittingRestock}
-            >
-              {isSubmittingRestock ? 'Creating Request...' : 'Confirm Restock Request'}
-            </button>
           </div>
         </div>
       )}

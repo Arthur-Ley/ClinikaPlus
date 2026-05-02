@@ -22,7 +22,7 @@ type Props = {
   patientGenderInput: string;
   medicationSearch: string;
   setMedicationSearch: (value: string) => void;
-  selectedMedication: { medication_name: string; total_stock: number; unit?: string; expiry_date?: string; batch_number?: string } | null;
+  selectedMedication: { medication_id?: number; medication_name: string; total_stock: number; unit?: string; expiry_date?: string; batch_number?: string; unit_price?: number | null } | null;
   setSelectedMedication: (value: any) => void;
   showMedicationDropdown: boolean;
   setShowMedicationDropdown: (value: boolean) => void;
@@ -75,6 +75,7 @@ type Props = {
   setCalculatorReferenceSearch: (value: string) => void;
   calculatorReferenceOptions: Array<{ medication_id: number; medication_name: string; form?: string; strength?: string; unit?: string }>;
   selectCalculatorReferenceMedication: (medication: { medication_id: number; medication_name: string; form?: string; strength?: string; unit?: string }) => void;
+  clearCalculatorReferenceMedication: () => void;
   toPeso: (value: number) => string;
   formatDateMed: (value: string) => string;
 };
@@ -119,6 +120,13 @@ export default function MedicineOnlyBillModal(props: Props) {
     if (!p.showCalculator) return;
     setShowCalculatorReferenceResults(true);
   }, [p.showCalculator]);
+
+  useEffect(() => {
+    if (p.medicationSearch.trim() !== '') return;
+    p.setSelectedMedication(null);
+    p.setUnitPrice(0);
+    p.setQuantity(1);
+  }, [p.medicationSearch, p]);
 
   return (
     <div className="relative flex max-h-[92vh] w-full max-w-[980px] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
@@ -166,12 +174,12 @@ export default function MedicineOnlyBillModal(props: Props) {
               <div className="mt-4 grid gap-3 lg:grid-cols-[1.7fr_0.7fr_0.7fr_auto]">
                 <div className="relative" ref={medicationSearchWrapRef}>
                   <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                  <input value={p.medicationSearch} onChange={(e) => { p.setMedicationSearch(e.target.value); p.setSelectedMedication(null); p.setUnitPrice(0); p.setQuantity(1); p.setShowMedicationDropdown(true); }} onFocus={() => p.setShowMedicationDropdown(true)} placeholder="Search medication" className="h-11 w-full rounded-xl border border-gray-200 bg-gray-50 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400" />
+                  <input value={p.medicationSearch} onChange={(e) => { const nextValue = e.target.value; p.setMedicationSearch(nextValue); if (!nextValue.trim()) { p.setSelectedMedication(null); p.setUnitPrice(0); p.setQuantity(1); p.setShowMedicationDropdown(false); return; } p.setSelectedMedication(null); p.setUnitPrice(0); p.setQuantity(1); p.setShowMedicationDropdown(true); }} onFocus={() => p.setShowMedicationDropdown(true)} placeholder="Search medication" className="h-11 w-full rounded-xl border border-gray-200 bg-gray-50 pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400" />
                   {p.showMedicationDropdown && p.filteredMedicationOptions.length > 0 && (
                     <div className="absolute left-0 top-12 z-20 w-full overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
                       <div className="max-h-48 overflow-auto">
                         {p.filteredMedicationOptions.map((med) => (
-                          <button key={med.medication_id} type="button" onClick={() => { p.setSelectedMedication(med); p.setMedicationSearch(med.medication_name); p.setUnitPrice(p.resolveMedicationUnitPrice(med.medication_name)); p.setQuantity(1); p.setShowMedicationDropdown(false); }} className="block w-full px-3 py-2.5 text-left text-sm hover:bg-green-50">
+                          <button key={med.medication_id} type="button" onClick={() => { p.setSelectedMedication(med); p.setMedicationSearch(med.medication_name); p.setUnitPrice(Number(Number(med.unit_price ?? p.resolveMedicationUnitPrice(med.medication_name)).toFixed(2))); p.setQuantity(1); p.setShowMedicationDropdown(false); }} className="block w-full px-3 py-2.5 text-left text-sm hover:bg-green-50">
                             <p className="font-semibold text-gray-900">{med.medication_name}</p>
                             <p className="text-xs text-gray-500">Stock: {med.total_stock} {med.unit || 'pcs'} · Batch: {med.batch_number || 'N/A'}</p>
                           </button>
@@ -181,10 +189,24 @@ export default function MedicineOnlyBillModal(props: Props) {
                   )}
                 </div>
                 <input type="number" min={1} value={p.quantity} onChange={(e) => p.setQuantity(Math.max(1, Number(e.target.value) || 1))} className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-3 text-center text-sm focus:outline-none focus:ring-2 focus:ring-blue-400" />
-                <input type="number" min={0} value={p.unitPrice} onChange={(e) => p.setUnitPrice(Math.max(0, Number(e.target.value) || 0))} className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400" />
+                <input type="number" min={0} step="0.01" value={Number.isFinite(p.unitPrice) ? p.unitPrice.toFixed(2) : '0.00'} onChange={(e) => p.setUnitPrice(Math.max(0, Number(e.target.value) || 0))} className="h-11 rounded-xl border border-gray-200 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400" />
                 <button type="button" onClick={p.addItem} disabled={!p.selectedMedication} className="h-11 rounded-xl bg-green-600 px-4 text-sm font-semibold text-white hover:bg-green-700 disabled:opacity-50">Add</button>
               </div>
-              {p.selectedMedication && <p className="mt-3 text-xs text-gray-500">Available: {p.selectedMedication.total_stock} {p.selectedMedication.unit || 'pcs'} · Expiry: {p.selectedMedication.expiry_date ? p.formatDateMed(p.selectedMedication.expiry_date) : 'N/A'} · Draft subtotal: <span className="font-semibold text-gray-800">{p.toPeso(p.subtotal)}</span></p>}
+              {p.selectedMedication && (
+                <div className="mt-3 rounded-xl border border-green-200 bg-green-50 px-3 py-2 text-xs text-gray-600">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-semibold text-gray-900">Selected medication: {p.selectedMedication.medication_name}</p>
+                    <button
+                      type="button"
+                      onClick={() => { p.setSelectedMedication(null); p.setMedicationSearch(''); p.setUnitPrice(0); p.setQuantity(1); p.setShowMedicationDropdown(false); }}
+                      className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-100"
+                    >
+                      Remove selected
+                    </button>
+                  </div>
+                  <p className="mt-1">Available: {p.selectedMedication.total_stock} {p.selectedMedication.unit || 'pcs'} · Expiry: {p.selectedMedication.expiry_date ? p.formatDateMed(p.selectedMedication.expiry_date) : 'N/A'} · Draft subtotal: <span className="font-semibold text-gray-800">{p.toPeso(p.subtotal)}</span></p>
+                </div>
+              )}
               {p.feedback && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">{p.feedback}</div>}
             </div>
 
@@ -295,16 +317,8 @@ export default function MedicineOnlyBillModal(props: Props) {
             <div className="mt-4 grid gap-4 md:grid-cols-[1.05fr_1.2fr] md:items-start">
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
                 <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">Medication Reference</p>
-                {p.calculatorReferenceMedication ? (
-                  <div className="mt-2">
-                    <p className="text-sm font-semibold text-gray-900">{p.calculatorReferenceMedication.medication_name}</p>
-                    <p className="mt-1 text-xs text-gray-500">
-                      {[p.calculatorReferenceMedication.form, p.calculatorReferenceMedication.strength, p.calculatorReferenceMedication.unit].filter(Boolean).join(' · ') || 'No additional details'}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="mt-2">
-                  <div className="relative" ref={calculatorReferenceWrapRef}>
+                <div className="relative mt-2" ref={calculatorReferenceWrapRef}>
+                  <div className="relative">
                     <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
                     <input
                       value={p.calculatorReferenceSearch}
@@ -317,8 +331,30 @@ export default function MedicineOnlyBillModal(props: Props) {
                       className="h-10 w-full rounded-xl border border-gray-200 bg-white pl-9 pr-3 text-sm focus:outline-none focus:ring-2 focus:ring-green-400"
                     />
                   </div>
+                  {p.calculatorReferenceMedication && (
+                    <div className="mt-2 rounded-xl border border-green-200 bg-green-50 px-3 py-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-gray-900">{p.calculatorReferenceMedication.medication_name}</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            p.clearCalculatorReferenceMedication();
+                            setShowCalculatorReferenceResults(true);
+                          }}
+                          className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                          aria-label="Remove selected medication"
+                          title="Remove selected"
+                        >
+                          <X size={12} />
+                        </button>
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500">
+                        {[p.calculatorReferenceMedication.form, p.calculatorReferenceMedication.strength, p.calculatorReferenceMedication.unit].filter(Boolean).join(' · ') || 'No additional details'}
+                      </p>
+                    </div>
+                  )}
                   {showCalculatorReferenceResults && (
-                    <div className="mt-2 max-h-44 overflow-auto rounded-xl border border-gray-200 bg-white">
+                    <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-20 max-h-44 overflow-auto rounded-xl border border-gray-200 bg-white shadow-lg">
                     {p.calculatorReferenceOptions.map((med) => (
                       <button
                         key={med.medication_id}
@@ -339,7 +375,6 @@ export default function MedicineOnlyBillModal(props: Props) {
                     </div>
                   )}
                 </div>
-              )}
             </div>
               <div className="grid gap-4 sm:grid-cols-2">
               {/* Units per intake */}
