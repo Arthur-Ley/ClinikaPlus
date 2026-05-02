@@ -25,3 +25,8 @@ dist-ssr
 
 # Backend env
 backend/.env
+
+# Environment files
+.env
+.env.*
+!.env.example
