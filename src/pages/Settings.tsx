@@ -5,6 +5,90 @@ import { supabase } from '../lib/supabaseClient';
 
 type SettingsTab = 'user' | 'system';
 type SystemMode = 'integrated' | 'standalone';
+const SYSTEM_MODE_STORAGE_KEY = 'clinikapluss_system_mode';
+const SETTINGS_DB_UNAVAILABLE_KEY = 'clinikapluss_settings_db_unavailable';
+const SETTINGS_TABLE_CANDIDATES = [
+  { schema: 'subsystem3', table: 'system_settings' },
+  { schema: 'subsystem3', table: 'tbl_system_settings' },
+  { schema: 'subsystem3', table: 'settings' },
+  { schema: 'subsystem3', table: 'tbl_settings' },
+  { schema: 'public', table: 'system_settings' },
+  { schema: 'public', table: 'tbl_system_settings' },
+  { schema: 'public', table: 'settings' },
+  { schema: 'public', table: 'tbl_settings' },
+] as const;
+type SettingsTableSource = (typeof SETTINGS_TABLE_CANDIDATES)[number];
+let resolvedSettingsTableSource: SettingsTableSource | null | undefined;
+
+function isSystemMode(value: unknown): value is SystemMode {
+  return value === 'integrated' || value === 'standalone';
+}
+
+async function readSystemModeFromDatabase(): Promise<SystemMode | null> {
+  if (!supabase) return null;
+  if (typeof window !== 'undefined' && window.localStorage.getItem(SETTINGS_DB_UNAVAILABLE_KEY) === '1') return null;
+
+  if (resolvedSettingsTableSource === null) return null;
+  const candidates = resolvedSettingsTableSource ? [resolvedSettingsTableSource] : SETTINGS_TABLE_CANDIDATES;
+
+  for (const candidate of candidates) {
+    const { data, error } = await supabase
+      .schema(candidate.schema)
+      .from(candidate.table)
+      .select('value, updated_at')
+      .eq('key', 'integration_mode')
+      .order('updated_at', { ascending: false })
+      .limit(1);
+
+    if (error) continue;
+    resolvedSettingsTableSource = candidate;
+    if (typeof window !== 'undefined') window.localStorage.removeItem(SETTINGS_DB_UNAVAILABLE_KEY);
+    const row = Array.isArray(data) && data.length ? data[0] : null;
+    const mode = row?.value;
+    if (isSystemMode(mode)) return mode;
+  }
+
+  resolvedSettingsTableSource = null;
+  if (typeof window !== 'undefined') window.localStorage.setItem(SETTINGS_DB_UNAVAILABLE_KEY, '1');
+  return null;
+}
+
+async function writeSystemModeToDatabase(mode: SystemMode): Promise<boolean> {
+  if (!supabase) return false;
+  if (typeof window !== 'undefined' && window.localStorage.getItem(SETTINGS_DB_UNAVAILABLE_KEY) === '1') return false;
+
+  if (resolvedSettingsTableSource === null) return false;
+  const candidates = resolvedSettingsTableSource ? [resolvedSettingsTableSource] : SETTINGS_TABLE_CANDIDATES;
+
+  for (const candidate of candidates) {
+    const { error: updateError } = await supabase
+      .schema(candidate.schema)
+      .from(candidate.table)
+      .update({ value: mode })
+      .eq('key', 'integration_mode');
+
+    if (!updateError) {
+      resolvedSettingsTableSource = candidate;
+      if (typeof window !== 'undefined') window.localStorage.removeItem(SETTINGS_DB_UNAVAILABLE_KEY);
+      return true;
+    }
+
+    const { error: insertError } = await supabase
+      .schema(candidate.schema)
+      .from(candidate.table)
+      .insert({ key: 'integration_mode', value: mode });
+
+    if (!insertError) {
+      resolvedSettingsTableSource = candidate;
+      if (typeof window !== 'undefined') window.localStorage.removeItem(SETTINGS_DB_UNAVAILABLE_KEY);
+      return true;
+    }
+  }
+
+  resolvedSettingsTableSource = null;
+  if (typeof window !== 'undefined') window.localStorage.setItem(SETTINGS_DB_UNAVAILABLE_KEY, '1');
+  return false;
+}
 
 function resolveFullNameFromSession(user: LoginResponse['user'] | null | undefined) {
   if (!user) return 'Current User';
@@ -50,9 +134,16 @@ export default function Settings() {
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [tabLoading, setTabLoading] = useState(true);
   const [isTabContentVisible, setIsTabContentVisible] = useState(true);
-  const [systemMode, setSystemMode] = useState<SystemMode>('standalone');
-  const [isModeSwitching, setIsModeSwitching] = useState(false);
-  const [targetSystemMode, setTargetSystemMode] = useState<SystemMode | null>(null);
+  const [systemMode, setSystemMode] = useState<SystemMode>(() => {
+    if (typeof window === 'undefined') return 'standalone';
+    const stored = window.localStorage.getItem(SYSTEM_MODE_STORAGE_KEY);
+    return stored === 'integrated' ? 'integrated' : 'standalone';
+  });
+  const [draftSystemMode, setDraftSystemMode] = useState<SystemMode>(() => {
+    if (typeof window === 'undefined') return 'standalone';
+    const stored = window.localStorage.getItem(SYSTEM_MODE_STORAGE_KEY);
+    return stored === 'integrated' ? 'integrated' : 'standalone';
+  });
   const [savedAt, setSavedAt] = useState('');
 
   const canSave = useMemo(
@@ -62,8 +153,14 @@ export default function Settings() {
   const saveButtonLabel = activeTab === 'user' ? 'Update Profile' : 'Save System Settings';
   const isSaveDisabled = activeTab === 'user' ? !canSave : false;
 
-  function handleSave() {
-    if (!canSave) return;
+  async function handleSave() {
+    if (activeTab === 'user' && !canSave) return;
+    if (activeTab === 'system' && typeof window !== 'undefined') {
+      window.localStorage.setItem(SYSTEM_MODE_STORAGE_KEY, draftSystemMode);
+      await writeSystemModeToDatabase(draftSystemMode);
+      setSystemMode(draftSystemMode);
+      window.dispatchEvent(new CustomEvent('clinikapluss:system-mode-changed', { detail: { mode: draftSystemMode } }));
+    }
     setSavedAt(new Date().toLocaleString('en-US'));
   }
 
@@ -211,18 +308,10 @@ export default function Settings() {
   }
 
   function handleSystemModeChange(nextMode: SystemMode) {
-    if (isModeSwitching || nextMode === systemMode) {
+    if (nextMode === draftSystemMode) {
       return;
     }
-
-    setIsModeSwitching(true);
-    setTargetSystemMode(nextMode);
-
-    window.setTimeout(() => {
-      setSystemMode(nextMode);
-      setIsModeSwitching(false);
-      setTargetSystemMode(null);
-    }, 1800);
+    setDraftSystemMode(nextMode);
   }
 
   const tabs: Array<{ id: SettingsTab; label: string; icon: typeof UserCog }> = [
@@ -239,6 +328,28 @@ export default function Settings() {
 
       setFullName(resolveFullNameFromSession(validatedSession.user));
       setEmail(resolveEmailFromSession(validatedSession.user));
+    })();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    setDraftSystemMode(systemMode);
+  }, [systemMode]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    (async () => {
+      const mode = await readSystemModeFromDatabase();
+      if (!isMounted || !mode) return;
+      setSystemMode(mode);
+      setDraftSystemMode(mode);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(SYSTEM_MODE_STORAGE_KEY, mode);
+      }
     })();
 
     return () => {
@@ -593,55 +704,33 @@ export default function Settings() {
                           </p>
                         </div>
 
-                        {isModeSwitching ? (
-                          <div className="inline-flex h-[42px] w-[220px] items-center justify-center rounded-xl border border-gray-200 bg-white">
-                            <div className="flex items-center gap-1.5">
-                              <span className="h-2 w-2 animate-bounce rounded-full bg-blue-600 [animation-delay:-0.3s]" />
-                              <span className="h-2 w-2 animate-bounce rounded-full bg-blue-600 [animation-delay:-0.15s]" />
-                              <span className="h-2 w-2 animate-bounce rounded-full bg-blue-600" />
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="relative inline-grid grid-cols-2 rounded-xl border border-gray-200 bg-white p-1">
-                            <span
-                              aria-hidden
-                              className={`pointer-events-none absolute left-1 top-1 h-[calc(100%-0.5rem)] w-[calc(50%-0.25rem)] rounded-lg bg-blue-600 shadow-sm transition-transform duration-300 ease-out ${
-                                systemMode === 'integrated' ? 'translate-x-0' : 'translate-x-full'
-                              }`}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => handleSystemModeChange('integrated')}
-                              className={`relative z-10 rounded-lg px-4 py-2 text-sm font-semibold transition-colors duration-300 ${
-                                systemMode === 'integrated' ? 'text-white' : 'text-gray-600 hover:text-gray-800'
-                              }`}
-                            >
-                              Integrated
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleSystemModeChange('standalone')}
-                              className={`relative z-10 rounded-lg px-4 py-2 text-sm font-semibold transition-colors duration-300 ${
-                                systemMode === 'standalone' ? 'text-white' : 'text-gray-600 hover:text-gray-800'
-                              }`}
-                            >
-                              Standalone
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      {isModeSwitching ? (
-                        <div className="mt-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2.5">
-                          <div className="flex items-center gap-2 text-xs font-semibold text-blue-700">
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            Applying {targetSystemMode || systemMode} mode. Please wait...
-                          </div>
-                          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-blue-100">
-                            <div className="h-full w-1/2 animate-pulse rounded-full bg-blue-600" />
-                          </div>
+                        <div className="relative inline-grid grid-cols-2 rounded-xl border border-gray-200 bg-white p-1">
+                          <span
+                            aria-hidden
+                            className={`pointer-events-none absolute left-1 top-1 h-[calc(100%-0.5rem)] w-[calc(50%-0.25rem)] rounded-lg bg-blue-600 shadow-sm transition-transform duration-300 ease-out ${
+                              draftSystemMode === 'integrated' ? 'translate-x-0' : 'translate-x-full'
+                            }`}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSystemModeChange('integrated')}
+                            className={`relative z-10 rounded-lg px-4 py-2 text-sm font-semibold transition-colors duration-300 ${
+                              draftSystemMode === 'integrated' ? 'text-white' : 'text-gray-600 hover:text-gray-800'
+                            }`}
+                          >
+                            Integrated
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSystemModeChange('standalone')}
+                            className={`relative z-10 rounded-lg px-4 py-2 text-sm font-semibold transition-colors duration-300 ${
+                              draftSystemMode === 'standalone' ? 'text-white' : 'text-gray-600 hover:text-gray-800'
+                            }`}
+                          >
+                            Standalone
+                          </button>
                         </div>
-                      ) : null}
+                      </div>
                     </div>
                   </>
                 )}

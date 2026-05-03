@@ -27,6 +27,7 @@ import {
   hasAnyPayment,
   createPrescriptionUsageLog,
   deletePrescriptionUsageLogById,
+  fetchPrescriptionUsageLogsForReports,
   listAvailableBatchesByMedicationId,
   listMedicationBillItemsByBillId,
   listActiveServices,
@@ -1673,26 +1674,31 @@ async function getReportsSummaryFlow(query = {}) {
 async function getMedicationDemandTrendFlow(query = {}) {
   const range = parseReportRange(query);
   const scope = parseReportsScope(query);
-  const [billItems, inventoryRows] = await Promise.all([fetchBillItemsForReports(), fetchMedicationInventoryForReports()]);
+  const [usageLogs, inventoryRows] = await Promise.all([
+    fetchPrescriptionUsageLogsForReports(),
+    fetchMedicationInventoryForReports(),
+  ]);
   const medicationRows = mapMedicationInventoryRows(inventoryRows);
   const medicationRowsById = new Map(medicationRows.map((row) => [row.medication_id, row]));
 
-  const filtered = (billItems || []).filter((item) => {
-    const bill = Array.isArray(item?.tbl_bills) ? item.tbl_bills[0] : item?.tbl_bills;
-    if (bill?.status === "Cancelled") return false;
-    const dateOnly = toIsoDateOnly(item?.created_at);
+  const filtered = (usageLogs || []).filter((log) => {
+    const actionType = String(log?.action_type || "Dispense").toLowerCase();
+    if (actionType !== "dispense") return false;
+    const dateOnly = toIsoDateOnly(log?.dispensed_date || log?.dispensed_at);
     if (!isDateWithinRange(dateOnly, range.startDate, range.endDate)) return false;
-    const medId = toPositiveInt(item?.medication_id ?? item?.log_id);
+    const medId = toPositiveInt(log?.medication_id);
     if (!medId) return false;
     if (scope.scope === "single" && scope.medicationId && medId !== scope.medicationId) return false;
     return true;
   });
 
   const totalsByMedication = new Map();
-  for (const item of filtered) {
-    const medication = resolveMedicationFromItem(item, medicationRowsById);
+  for (const log of filtered) {
+    const medId = toPositiveInt(log?.medication_id);
+    if (!medId) continue;
+    const medication = medicationRowsById.get(medId);
     if (!medication) continue;
-    const qty = Number(item?.quantity || 0);
+    const qty = Number(log?.quantity_dispensed || 0);
     totalsByMedication.set(medication.medication_id, (totalsByMedication.get(medication.medication_id) || 0) + qty);
   }
 
@@ -1714,13 +1720,13 @@ async function getMedicationDemandTrendFlow(query = {}) {
     seriesMap.set(medicationId, new Map(periodKeys.map((key) => [key, 0])));
   }
 
-  for (const item of filtered) {
-    const medId = toPositiveInt(item?.medication_id ?? item?.log_id);
+  for (const log of filtered) {
+    const medId = toPositiveInt(log?.medication_id);
     if (!medId || !seriesMap.has(medId)) continue;
-    const dateOnly = toIsoDateOnly(item?.created_at);
+    const dateOnly = toIsoDateOnly(log?.dispensed_date || log?.dispensed_at);
     const key = getPeriodKey(dateOnly, scope.bucket);
     const map = seriesMap.get(medId);
-    map.set(key, (map.get(key) || 0) + Number(item?.quantity || 0));
+    map.set(key, (map.get(key) || 0) + Number(log?.quantity_dispensed || 0));
   }
 
   const series = selectedMedicationIds.map((medicationId) => {

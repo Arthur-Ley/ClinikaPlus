@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { BillingPaymentsContext } from './BillingPaymentsContextObject.ts';
 import { getAuthSession } from '../services/authApi';
+import { supabase } from '../lib/supabaseClient';
 
 export type BillStatus = 'Pending' | 'Paid' | 'Cancelled';
 export type PaymentStatus = 'Pending' | 'Paid' | 'Processing';
+export type BillSource = 'native' | 'integrated';
+type SystemMode = 'integrated' | 'standalone';
+const SYSTEM_MODE_STORAGE_KEY = 'clinikapluss_system_mode';
 
 export type BillRecord = {
   id: string;
@@ -11,6 +15,7 @@ export type BillRecord = {
   date: string;
   total: string;
   status: BillStatus;
+  source: BillSource;
   backendBillId?: number;
   patientId?: number;
 };
@@ -24,6 +29,7 @@ export type PaymentQueueRecord = {
   method: string;
   date: string;
   status: PaymentStatus;
+  source: BillSource;
   backendBillId?: number;
 };
 
@@ -95,7 +101,9 @@ type BackendBill = {
   bill_id: number;
   bill_code: string;
   patient_id?: number | null;
+  public_patient_id?: string | number | null;
   tbl_patients?: Record<string, unknown> | Array<Record<string, unknown>> | null;
+  patient?: Record<string, unknown> | null;
   tbl_payments?: Array<{
     payment_id: number;
     amount_paid: number;
@@ -107,6 +115,7 @@ type BackendBill = {
   status: string;
   created_at?: string | null;
   remaining_balance?: number | null;
+  source?: BillSource;
 };
 
 
@@ -189,9 +198,25 @@ function normalizeBillStatus(value: string): BillStatus {
 
 function mapBackendRows(rows: BackendBill[]) {
   function resolvePatientName(row: BackendBill) {
+    const publicPatient = row.patient && typeof row.patient === 'object' ? row.patient : null;
+    if (publicPatient) {
+      const candidates = [publicPatient.full_name, publicPatient.patient_name, publicPatient.name];
+      for (const value of candidates) {
+        if (typeof value === 'string' && value.trim()) return value.trim();
+      }
+      const combined = [publicPatient.first_name, publicPatient.middle_name, publicPatient.last_name]
+        .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+        .join(' ')
+        .trim();
+      if (combined) return combined;
+    }
+
     const relation = Array.isArray(row.tbl_patients) ? row.tbl_patients[0] : row.tbl_patients;
     const patient = relation && typeof relation === 'object' ? relation : null;
-    if (!patient) return row.patient_id ? `Patient #${row.patient_id}` : 'Unknown Patient';
+    if (!patient) {
+      const fallbackId = row.patient_id ?? row.public_patient_id;
+      return fallbackId ? `Patient #${fallbackId}` : 'Unknown Patient';
+    }
 
     const fullNameCandidates = [
       patient.full_name,
@@ -209,7 +234,8 @@ function mapBackendRows(rows: BackendBill[]) {
     const combined = [firstName, middleName, lastName].filter(Boolean).join(' ').trim();
     if (combined) return combined;
 
-    return row.patient_id ? `Patient #${row.patient_id}` : 'Unknown Patient';
+    const fallbackId = row.patient_id ?? row.public_patient_id;
+    return fallbackId ? `Patient #${fallbackId}` : 'Unknown Patient';
   }
 
   const billing = rows.map((row) => {
@@ -220,8 +246,9 @@ function mapBackendRows(rows: BackendBill[]) {
       date: toDateOnly(row.created_at),
       total: toMoneyTag(amount),
       status: normalizeBillStatus(row.status),
+      source: row.source ?? 'native',
       backendBillId: row.bill_id,
-      patientId: row.patient_id ?? undefined,
+      patientId: toPositiveInteger(row.patient_id ?? row.public_patient_id) ?? undefined,
     } satisfies BillRecord;
   });
 
@@ -245,6 +272,7 @@ function mapBackendRows(rows: BackendBill[]) {
       method: latestPayment?.payment_method ?? '-',
       date: toDateOnly(latestPayment?.payment_date ?? row.created_at),
       status: toPaymentStatus(normalizedStatus),
+      source: row.source ?? 'native',
       backendBillId: row.bill_id,
     } satisfies PaymentQueueRecord;
   });
@@ -289,25 +317,127 @@ async function fetchAllBillRows() {
   return allRows;
 }
 
+function getSavedSystemMode(): SystemMode {
+  if (typeof window === 'undefined') return 'standalone';
+  return window.localStorage.getItem(SYSTEM_MODE_STORAGE_KEY) === 'integrated' ? 'integrated' : 'standalone';
+}
+
+
+function getSortTimestamp(value: string | null | undefined) {
+  const t = value ? new Date(value).getTime() : NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
+async function fetchPublicBillRows(): Promise<BackendBill[]> {
+  if (!supabase) return [];
+  const client = supabase;
+
+  const { data: billsData, error: billsError } = await supabase
+    .schema('public')
+    .from('tbl_bills')
+    .select('bill_id, bill_code, public_patient_id, total_amount, net_amount, status, created_at')
+    .order('created_at', { ascending: false });
+
+  if (billsError) throw billsError;
+
+  const bills = Array.isArray(billsData) ? billsData : [];
+
+  const toIdKey = (value: unknown) => {
+    if (value === null || value === undefined) return '';
+    const text = String(value).trim();
+    return text;
+  };
+  const baseRows = bills.map((bill) => {
+    const publicPatientId = toIdKey(bill.public_patient_id) || null;
+    return {
+      bill_id: Number(bill.bill_id),
+      bill_code: typeof bill.bill_code === 'string' && bill.bill_code.trim() ? bill.bill_code.trim() : `BILL-${bill.bill_id}`,
+      public_patient_id: publicPatientId,
+      patient_id: null,
+      patient: null,
+      tbl_payments: [],
+      total_amount: Number(bill.total_amount ?? 0),
+      net_amount: Number(bill.net_amount ?? bill.total_amount ?? 0),
+      status: typeof bill.status === 'string' ? bill.status : 'Pending',
+      created_at: typeof bill.created_at === 'string' ? bill.created_at : null,
+      source: 'integrated',
+    } satisfies BackendBill;
+  });
+
+  const enrichedRows = await Promise.all(
+    baseRows.map(async (row) => {
+      try {
+        const { data, error } = await client.rpc('get_bill_with_patient', { p_bill_id: row.bill_id });
+        if (error) return row;
+        const rpcBill = Array.isArray(data) ? data[0] : data;
+        if (!rpcBill || typeof rpcBill !== 'object') return row;
+        const record = rpcBill as Record<string, unknown>;
+        const patientObj = record.patient && typeof record.patient === 'object' ? record.patient as Record<string, unknown> : null;
+        const patientId = Number((patientObj?.patient_id ?? record.patient_id) ?? 0) || row.patient_id;
+        if (!patientObj && row.public_patient_id) {
+          const { data: fallbackPatient } = await client
+            .schema('public')
+            .from('tbl_patient')
+            .select('patient_id, first_name, middle_name, last_name, full_name')
+            .eq('user_id', String(row.public_patient_id))
+            .maybeSingle();
+          if (fallbackPatient && typeof fallbackPatient === 'object') {
+            const fallbackPatientId = Number((fallbackPatient as Record<string, unknown>).patient_id ?? 0) || patientId;
+            return {
+              ...row,
+              patient: fallbackPatient as Record<string, unknown>,
+              patient_id: fallbackPatientId || null,
+            } satisfies BackendBill;
+          }
+        }
+        return {
+          ...row,
+          patient: patientObj ?? row.patient,
+          patient_id: patientId || null,
+        } satisfies BackendBill;
+      } catch {
+        return row;
+      }
+    }),
+  );
+
+  return enrichedRows;
+}
+
+async function fetchBillRowsByMode(mode: SystemMode): Promise<BackendBill[]> {
+  const nativeRows = await fetchAllBillRows();
+  const nativeTagged = nativeRows.map((row) => ({ ...row, source: 'native' as const }));
+  if (mode !== 'integrated') return nativeTagged;
+
+  try {
+    const integratedRows = await fetchPublicBillRows();
+    return [...nativeTagged, ...integratedRows].sort((a, b) => getSortTimestamp(b.created_at) - getSortTimestamp(a.created_at));
+  } catch (error) {
+    console.warn('Integrated bills fetch failed; showing native bills only.', error);
+    return nativeTagged;
+  }
+}
+
 export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
   const [billingRecords, setBillingRecords] = useState<BillRecord[]>([]);
   const [paymentQueue, setPaymentQueue] = useState<PaymentQueueRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [systemMode, setSystemMode] = useState<SystemMode>(() => getSavedSystemMode());
 
   const refreshBillingData = useCallback(async () => {
-    const rows = await fetchAllBillRows();
+    const rows = await fetchBillRowsByMode(systemMode);
     const mapped = mapBackendRows(rows);
 
     setBillingRecords(mapped.billing);
     setPaymentQueue(mapped.payment);
-  }, []);
+  }, [systemMode]);
 
   useEffect(() => {
     let active = true;
 
     (async () => {
       try {
-        const rows = await fetchAllBillRows();
+        const rows = await fetchBillRowsByMode(systemMode);
         const mapped = mapBackendRows(rows);
 
         if (!active) return;
@@ -327,6 +457,18 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
+  }, [systemMode]);
+
+  useEffect(() => {
+    const syncMode = () => setSystemMode(getSavedSystemMode());
+    window.addEventListener('storage', syncMode);
+    window.addEventListener('focus', syncMode);
+    window.addEventListener('clinikapluss:system-mode-changed', syncMode as EventListener);
+    return () => {
+      window.removeEventListener('storage', syncMode);
+      window.removeEventListener('focus', syncMode);
+      window.removeEventListener('clinikapluss:system-mode-changed', syncMode as EventListener);
+    };
   }, []);
 
   const addBill = useCallback(async (bill: NewBillInput) => {
@@ -337,6 +479,7 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
         date: bill.date,
         total: bill.total,
         status: bill.status,
+        source: 'native',
         patientId: bill.patientId,
       } satisfies CreatedBillResult;
     }
@@ -398,6 +541,7 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
       date: toDateOnly(createdBill?.created_at) || bill.date,
       total: toMoneyTag(Number(createdBill?.net_amount ?? createdBill?.total_amount ?? parseAmount(bill.total))),
       status: normalizeBillStatus(createdBill?.status || bill.status),
+      source: 'native',
       backendBillId: createdBill?.bill_id ?? undefined,
       patientId: bill.patientId,
     };

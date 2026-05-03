@@ -18,6 +18,7 @@ import {
 import { printFinalBill } from './printFinalBill';
 import { type BillStatus } from '../../context/BillingPaymentsContext';
 import { useBillingPayments } from '../../context/useBillingPayments';
+import { supabase } from '../../lib/supabaseClient';
 
 type BillRow = {
   id: string;
@@ -25,6 +26,7 @@ type BillRow = {
   date: string;
   total: string;
   status: BillStatus;
+  source?: 'native' | 'integrated';
   backendBillId?: number;
   patientId?: number;
 };
@@ -91,6 +93,7 @@ type ServiceCatalogOption = {
 };
 type BillingFilter = 'all' | 'pending' | 'paid' | 'cancelled';
 type BillingSort = 'date' | 'status' | 'amount';
+type SystemMode = 'integrated' | 'standalone';
 type ActiveModal =
   | 'none' | 'createBillChoice' | 'createBill' | 'medicineOnlyBill' | 'viewBill' | 'billSuccess'
   | 'payBill' | 'cancelBill' | 'receipt'
@@ -159,6 +162,7 @@ const existingBillServices: ServiceItem[] = [
 ];
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+const SYSTEM_MODE_STORAGE_KEY = 'clinikapluss_system_mode';
 const G_CASH_LOGO_URL = '/payment-logos/gcash.svg';
 const MAYA_LOGO_URL = '/payment-logos/maya.svg';
 const VAT_RATE = 0.12;
@@ -231,6 +235,10 @@ function formatRoleLabel(value: string | null | undefined) {
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
     .join(' ');
 }
+function getSavedSystemMode(): SystemMode {
+  if (typeof window === 'undefined') return 'standalone';
+  return window.localStorage.getItem(SYSTEM_MODE_STORAGE_KEY) === 'integrated' ? 'integrated' : 'standalone';
+}
 function normalizeBreakdownType(service: ServiceItem) {
   if (service.type === 'medication') return 'Medications';
   const raw = (service.serviceType || '').trim().toLowerCase();
@@ -284,7 +292,7 @@ function buildDefaultBillMeta(bill: BillRow): BillUiMeta {
   };
 }
 
-const EMPTY_BILL_ROW: BillRow = { id: '', patient: '', date: '', total: 'P0', status: 'Pending' };
+const EMPTY_BILL_ROW: BillRow = { id: '', patient: '', date: '', total: 'P0', status: 'Pending', source: 'native' };
 
 function StatusPill({ status }: { status: string }) {
   const styles = status === 'Paid' ? 'bg-green-100 text-green-700' : status === 'Cancelled' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700';
@@ -336,6 +344,7 @@ export default function BillingAndPayments() {
   const { billingRecords, addBill, markPaymentPaid, paymentQueue, isLoading, cancelBill } = useBillingPayments();
   const location = useLocation();
   const [forceSkeletonVisible, setForceSkeletonVisible] = useState(true);
+  const [systemMode, setSystemMode] = useState<SystemMode>(() => getSavedSystemMode());
 
   const [modal, setModal] = useState<ActiveModal>('none');
   const [prevModal, setPrevModal] = useState<ActiveModal>('none');
@@ -442,6 +451,21 @@ export default function BillingAndPayments() {
   const tableFooterRef = useRef<HTMLDivElement | null>(null);
   const tableHeadRef = useRef<HTMLTableSectionElement | null>(null);
   const patientPickerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const syncMode = () => setSystemMode(getSavedSystemMode());
+    window.addEventListener('storage', syncMode);
+    window.addEventListener('focus', syncMode);
+    syncMode();
+    return () => {
+      window.removeEventListener('storage', syncMode);
+      window.removeEventListener('focus', syncMode);
+    };
+  }, []);
+
+  useEffect(() => {
+    setSystemMode(getSavedSystemMode());
+  }, [location.pathname]);
 
   useEffect(() => {
     let active = true;
@@ -646,6 +670,8 @@ export default function BillingAndPayments() {
   const viewBill = useMemo(() => (viewBillDetails?.bill && typeof viewBillDetails.bill === 'object' ? viewBillDetails.bill as Record<string, unknown> : null), [viewBillDetails]);
   const viewPatient = useMemo(() => {
     if (!viewBill) return null;
+    const nestedPatient = viewBill.patient;
+    if (nestedPatient && typeof nestedPatient === 'object') return nestedPatient as Record<string, unknown>;
     const relation = Array.isArray(viewBill.tbl_patients) ? viewBill.tbl_patients[0] : viewBill.tbl_patients;
     return relation && typeof relation === 'object' ? relation as Record<string, unknown> : null;
   }, [viewBill]);
@@ -678,13 +704,19 @@ export default function BillingAndPayments() {
       : ''
   ), [latestViewPaymentReceiver]);
   const viewServicesByType = useMemo(() => {
-    const order = ['Medications', 'Laboratory', 'Miscellaneous', 'Room Charge', 'Professional Fee'] as const;
+    const order = ['Medications', 'Miscellaneous', 'Service', 'Laboratory', 'Room Charge', 'Professional Fee'] as const;
     const grouped = new Map<string, ViewBillItem[]>();
     const sourceItems = Array.isArray(viewBillDetails?.items) ? viewBillDetails.items : [];
     const normalize = (value: string) => value.trim().toLowerCase();
     const resolveType = (item: ViewBillItem) => {
+      const rawType = typeof item?.service_type === 'string' ? item.service_type.trim() : '';
+      if (systemMode === 'integrated') {
+        if (rawType === 'Medication') return 'Medications';
+        if (rawType === 'Miscellaneous') return 'Miscellaneous';
+        if (rawType === 'Service') return 'Service';
+        if (rawType === 'Laboratory') return 'Laboratory';
+      }
       if (item.medication_id || item.log_id) return 'Medications';
-      const rawType = typeof item?.service_type === 'string' ? item.service_type : '';
       const normalizedType = normalize(rawType);
       if (normalizedType.includes('room')) return 'Room Charge';
       if (normalizedType.includes('lab') || normalizedType.includes('laboratory') || normalizedType.includes('ecg')) return 'Laboratory';
@@ -708,7 +740,7 @@ export default function BillingAndPayments() {
         return { label, items, total };
       })
       .filter((group) => group.items.length > 0 && group.total > 0);
-  }, [viewBillDetails]);
+  }, [systemMode, viewBillDetails]);
   const viewSummary = useMemo(() => {
     const toNum = (value: unknown) => (Number.isFinite(Number(value)) ? Number(value) : 0);
     return {
@@ -737,6 +769,47 @@ export default function BillingAndPayments() {
       ? formatRoleLabel(viewCreator.role)
       : ''
   ), [viewCreator]);
+
+  async function fetchIntegratedBillDetails(backendBillId: number): Promise<ViewBillDetailsResponse> {
+    if (!supabase) {
+      throw new Error('Supabase client is not configured.');
+    }
+
+    const [{ data: billData, error: billError }, { data: itemsData, error: itemsError }] = await Promise.all([
+      supabase.rpc('get_bill_with_patient', { p_bill_id: backendBillId }),
+      supabase
+        .schema('public')
+        .from('tbl_bill_items')
+        .select('bill_item_id, bill_id, service_type, service_id, medication_id, log_id, description, quantity, unit_price, subtotal')
+        .eq('bill_id', backendBillId)
+        .order('bill_item_id', { ascending: true }),
+    ]);
+
+    if (billError) throw billError;
+    if (itemsError) throw itemsError;
+
+    const bill = Array.isArray(billData)
+      ? (billData[0] && typeof billData[0] === 'object' ? billData[0] as Record<string, unknown> : null)
+      : (billData && typeof billData === 'object' ? billData as Record<string, unknown> : null);
+    if (!bill) return { bill: null, items: [], payments: [] };
+
+    const nestedPatient = (
+      (bill.patient && typeof bill.patient === 'object' ? bill.patient : null) ||
+      (bill.tbl_patient && typeof bill.tbl_patient === 'object' ? bill.tbl_patient : null) ||
+      (bill.tbl_patients && typeof bill.tbl_patients === 'object' ? bill.tbl_patients : null)
+    ) as Record<string, unknown> | null;
+    const normalizedBill: Record<string, unknown> = {
+      ...bill,
+      tbl_patients: nestedPatient,
+      patient_id: Number(bill.patient_id ?? bill.public_patient_id ?? 0) || null,
+    };
+
+    return {
+      bill: normalizedBill,
+      items: Array.isArray(itemsData) ? itemsData as ViewBillItem[] : [],
+      payments: [],
+    };
+  }
 
   const subtotal = useMemo(() => services.reduce((acc, s) => acc + s.quantity * s.unitPrice, 0), [services]);
   const discount = isSeniorCitizen ? subtotal * SENIOR_DISCOUNT_RATE : 0;
@@ -1264,15 +1337,30 @@ export default function BillingAndPayments() {
     try {
       setIsPaymentDetailsLoading(true);
       setPaymentDetailsError('');
-      const response = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}`);
-      if (!response.ok) {
-        throw new Error(`Billing details request failed (${response.status}).`);
-      }
+      let normalizedPayload: PaymentBillDetailsResponse;
+      if (systemMode === 'integrated' && bill.source === 'integrated') {
+        const integratedPayload = await fetchIntegratedBillDetails(backendBillId);
+        const billRow = integratedPayload.bill && typeof integratedPayload.bill === 'object'
+          ? integratedPayload.bill as Record<string, unknown>
+          : null;
+        const netAmount = Number(billRow?.net_amount ?? billRow?.total_amount ?? toAmount(bill.total));
+        const paid = (integratedPayload.payments || []).reduce((sum, payment) => sum + Number(payment?.amount_paid || 0), 0);
+        normalizedPayload = {
+          bill: billRow as unknown as PaymentBillDetail,
+          total_paid: paid,
+          remaining_balance: Math.max(0, netAmount - paid),
+        };
+      } else {
+        const response = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}`);
+        if (!response.ok) {
+          throw new Error(`Billing details request failed (${response.status}).`);
+        }
 
-      const payload = (await response.json()) as PaymentBillDetailsResponse | PaymentBillDetail;
-      const normalizedPayload = payload && typeof payload === 'object' && 'bill' in payload
-        ? payload as PaymentBillDetailsResponse
-        : ({ bill: payload as PaymentBillDetail } as PaymentBillDetailsResponse);
+        const payload = (await response.json()) as PaymentBillDetailsResponse | PaymentBillDetail;
+        normalizedPayload = payload && typeof payload === 'object' && 'bill' in payload
+          ? payload as PaymentBillDetailsResponse
+          : ({ bill: payload as PaymentBillDetail } as PaymentBillDetailsResponse);
+      }
       setPaymentBillDetails(normalizedPayload);
       const due = Number(normalizedPayload.remaining_balance ?? normalizedPayload.bill?.net_amount ?? normalizedPayload.bill?.total_amount ?? toAmount(bill.total));
       setPaymentAmount(String(Number.isFinite(due) ? Math.max(0, due) : toAmount(bill.total)));
@@ -1315,11 +1403,15 @@ export default function BillingAndPayments() {
 
     try {
       setIsViewBillDetailsLoading(true);
-      const response = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}`);
-      if (!response.ok) {
-        throw new Error(`Bill details request failed (${response.status}).`);
-      }
-      const payload = (await response.json()) as ViewBillDetailsResponse;
+      const payload = systemMode === 'integrated' && bill.source === 'integrated'
+        ? await fetchIntegratedBillDetails(backendBillId)
+        : await (async () => {
+          const response = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}`);
+          if (!response.ok) {
+            throw new Error(`Bill details request failed (${response.status}).`);
+          }
+          return await response.json() as ViewBillDetailsResponse;
+        })();
       setViewBillDetails(payload);
       const billRow = payload.bill && typeof payload.bill === 'object' ? payload.bill as Record<string, unknown> : null;
       const fetchedDiagnosis = billRow && typeof billRow.final_diagnosis === 'string' ? billRow.final_diagnosis.trim() : '';

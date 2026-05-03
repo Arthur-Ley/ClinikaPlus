@@ -637,6 +637,19 @@ async function deletePrescriptionUsageLogById(logId) {
   if (error) throw error;
 }
 
+async function fetchPrescriptionUsageLogsForReports() {
+  const { data, error } = await supabase
+    .from("tbl_prescription_usage_logs")
+    .select(
+      "log_id, medication_id, quantity_dispensed, dispensed_at, dispensed_date, action_type, bill_id, reference_number"
+    )
+    .order("dispensed_at", { ascending: false })
+    .order("log_id", { ascending: false });
+
+  if (error) throw error;
+  return data || [];
+}
+
 async function getBatchStockTotalByMedicationId(medicationId) {
   const { data, error } = await supabase
     .from("tbl_batches")
@@ -752,6 +765,7 @@ export {
   findPatientUuidByIdentifier,
   createPrescriptionUsageLog,
   deletePrescriptionUsageLogById,
+  fetchPrescriptionUsageLogsForReports,
   updateInventoryByMedicationId,
   updateBatchById,
   updateBillById,
