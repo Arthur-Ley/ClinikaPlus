@@ -6,28 +6,15 @@ import { notFound } from "./middlewares/notFound.js";
 import { apiRouter } from "./routes/index.js";
 
 const app = express();
-const allowedOrigins = env.corsOrigin
-  .split(",")
-  .map((origin) => origin.trim())
-  .filter(Boolean);
 
+// Simplified CORS for Vercel deployment
 app.use(
   cors({
-    origin(origin, callback) {
-      // Allow same-origin requests (like Vite proxy) and non-browser clients.
-      if (!origin) return callback(null, true);
-
-      const isExplicitlyAllowed = allowedOrigins.includes(origin);
-      const isLocalDevOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
-
-      if (isExplicitlyAllowed || isLocalDevOrigin) {
-        return callback(null, true);
-      }
-
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
-    },
+    origin: true, // This allows your Vercel frontend to communicate with the backend
+    credentials: true,
   })
 );
+
 app.use(express.json());
 
 app.get("/", (_req, res) => {
@@ -37,11 +24,19 @@ app.get("/", (_req, res) => {
   });
 });
 
+// Your routes are prefixed with /api
 app.use("/api", apiRouter);
 
 app.use(notFound);
 app.use(errorHandler);
 
-app.listen(env.port, () => {
-  console.log(`Backend listening on http://localhost:${env.port}`);
-});
+// CRITICAL: Export default app for Vercel
+export default app;
+
+// Only call app.listen when running locally
+if (process.env.NODE_ENV !== "production") {
+  const port = env.port || 4000;
+  app.listen(port, () => {
+    console.log(`Backend listening on http://localhost:${port}`);
+  });
+}
