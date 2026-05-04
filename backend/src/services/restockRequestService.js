@@ -119,7 +119,7 @@ async function createRestockRequestFlow(input) {
 async function updateRestockRequestFlow(requestId, updates, actorId = null) {
   const { data: existingRequest, error: existingRequestError } = await supabase
     .from("tbl_restock_requests")
-    .select("request_id, medication_id, requested_quantity, status")
+    .select("request_id, medication_id, supplier_id, requested_quantity, status")
     .eq("request_id", requestId)
     .single();
 
@@ -150,7 +150,12 @@ async function updateRestockRequestFlow(requestId, updates, actorId = null) {
   const isCompletingNow = existingRequest.status !== "Completed" && updates.status === "Completed";
   const isCancellingNow = existingRequest.status !== "Cancelled" && updates.status === "Cancelled";
   if (isCompletingNow) {
+    if (!updates.expiryDate) {
+      throw new Error("Expiry date is required before completing a restock request.");
+    }
+
     const quantityToRestock = updates.requestedQuantity ?? existingRequest.requested_quantity ?? 0;
+    const supplierIdToUse = updates.supplierId ?? existingRequest.supplier_id ?? null;
     let nextTotalStock = 0;
     let reorderThreshold = 0;
 
@@ -202,6 +207,24 @@ async function updateRestockRequestFlow(requestId, updates, actorId = null) {
       if (!insertedInventory?.inventory_id) {
         throw new Error("Failed to create inventory stock for completed restock request.");
       }
+    }
+
+    const batchNumber = `RSTK-${requestId}-${Date.now()}`;
+    const { data: insertedBatch, error: batchInsertError } = await supabase
+      .from("tbl_batches")
+      .insert({
+        medication_id: existingRequest.medication_id,
+        supplier_id: supplierIdToUse,
+        batch_number: batchNumber,
+        quantity: Number(quantityToRestock || 0),
+        expiry_date: updates.expiryDate,
+        received_date: updatePayload.updated_at.slice(0, 10),
+      })
+      .select("batch_id")
+      .single();
+    if (batchInsertError) throw batchInsertError;
+    if (!insertedBatch?.batch_id) {
+      throw new Error("Failed to create batch record for completed restock request.");
     }
 
     if (nextTotalStock >= reorderThreshold) {

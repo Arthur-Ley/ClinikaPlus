@@ -404,11 +404,13 @@ export default function InventoryAlerts() {
   }
 
   function openCreateRestockRequest(alert: InventoryAlert) {
-    if (alert.alertType !== 'Stock Risk') return;
     setRestockTarget(alert);
+    const defaultQty = alert.alertType === 'Expiration Risk'
+      ? Math.max(alert.suggestedRestock, 1)
+      : alert.suggestedRestock;
     setRestockDetails({
       supplier: getMedicationMetaFromAlert(alert).supplier,
-      quantity: String(alert.suggestedRestock),
+      quantity: String(defaultQty),
       neededBy: defaultNeededByDate(),
       notes: '',
     });
@@ -698,7 +700,7 @@ export default function InventoryAlerts() {
                 <div className="mt-2 text-sm text-gray-800 leading-6">
                   <p>Stock: {alert.lowStock} {alert.unit}</p>
                   <p>Expiry: {alert.expiry}</p>
-                  {alert.alertType === 'Stock Risk' && <p>Suggested Restock: {alert.suggestedRestock} {alert.unit}</p>}
+                  <p>Suggested Restock: {alert.suggestedRestock} {alert.unit}</p>
                   {alert.message && <p className="text-xs text-gray-600">{alert.message}</p>}
                 </div>
                 <div className="mt-3 flex items-center gap-4 text-sm">
@@ -711,19 +713,17 @@ export default function InventoryAlerts() {
                   >
                     View
                   </button>
-                  {alert.alertType === 'Stock Risk' && (
-                    <button
-                      className={`${
-                        createdRequestIds[alert.id]
-                          ? 'cursor-not-allowed text-gray-400'
-                          : 'text-blue-600 hover:text-blue-700'
-                      }`}
-                      onClick={() => openCreateRestockRequest(alert)}
-                      disabled={Boolean(createdRequestIds[alert.id])}
-                    >
-                      {createdRequestIds[alert.id] ? 'Request Created' : 'Create Stock Request'}
-                    </button>
-                  )}
+                  <button
+                    className={`${
+                      createdRequestIds[alert.id]
+                        ? 'cursor-not-allowed text-gray-400'
+                        : 'text-blue-600 hover:text-blue-700'
+                    }`}
+                    onClick={() => openCreateRestockRequest(alert)}
+                    disabled={Boolean(createdRequestIds[alert.id])}
+                  >
+                    {createdRequestIds[alert.id] ? 'Request Created' : 'Create Stock Request'}
+                  </button>
                   {alert.alertType === 'Expiration Risk' && (
                     <button
                       className="text-red-600 hover:text-red-700"

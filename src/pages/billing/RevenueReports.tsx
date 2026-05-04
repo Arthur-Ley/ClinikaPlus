@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowDownRight, ArrowUpRight, CalendarRange, ChevronLeft, ChevronRight, Layers, ShieldCheck, Percent, TrendingUp, X } from 'lucide-react';
 import { BarChart, Bar, PieChart, Pie, Cell, LineChart, Line, CartesianGrid, XAxis, YAxis, Tooltip, ResponsiveContainer, LabelList } from 'recharts';
+import { supabase } from '../../lib/supabaseClient';
+import { SkeletonBlock } from './BillingSkeletonParts';
 
 type Category = 'medication' | 'billing' | 'payment';
 type Preset = 'today' | 'this_week' | 'this_month' | 'this_year' | 'custom';
@@ -58,6 +60,20 @@ type AnalyticsResponse = {
 
 type BillsResponse = { items?: Array<{ status?: string; net_amount?: number; total_amount?: number; bill_id?: number }> };
 type PaymentsResponse = { items?: Array<{ amount_paid?: number; payment_method?: string; payment_date?: string }> };
+type SystemMode = 'integrated' | 'standalone';
+type BillingBillRow = { status?: string | null; created_at?: string | null; bill_date?: string | null; net_amount?: number | null };
+type PaymentRow = {
+  amount_paid?: number | null;
+  payment_method?: string | null;
+  payment_date?: string | null;
+  created_at?: string | null;
+};
+type BillAmountRow = {
+  status?: string | null;
+  net_amount?: number | null;
+  bill_date?: string | null;
+  created_at?: string | null;
+};
 
 type KpiCard = {
   title: string;
@@ -67,6 +83,29 @@ type KpiCard = {
 };
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
+const SYSTEM_MODE_STORAGE_KEY = 'clinikapluss_system_mode';
+
+function getSavedSystemMode(): SystemMode {
+  if (typeof window === 'undefined') return 'standalone';
+  return window.localStorage.getItem(SYSTEM_MODE_STORAGE_KEY) === 'integrated' ? 'integrated' : 'standalone';
+}
+
+function normalizeBillStatusForDistribution(status: string | null | undefined) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'paid') return 'Paid';
+  if (normalized === 'pending') return 'Pending';
+  if (normalized === 'cancelled' || normalized === 'canceled') return 'Cancelled';
+  return null;
+}
+
+function truncateByBucket(date: Date, bucket: Bucket) {
+  if (bucket === 'month') return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-01`;
+  if (bucket === 'week') {
+    const monday = startOfWeek(date);
+    return `${monday.getFullYear()}-${String(monday.getMonth() + 1).padStart(2, '0')}-${String(monday.getDate()).padStart(2, '0')}`;
+  }
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
 
 function toDateInput(d: Date) {
   const y = d.getFullYear();
@@ -151,6 +190,55 @@ function toMonthLabel(value: string | number) {
   return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
 }
 
+function toTimestamp(value: string | null | undefined) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+
+  // Treat date-only strings as local calendar dates to avoid UTC day-shift issues.
+  const dateOnlyMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const year = Number(dateOnlyMatch[1]);
+    const month = Number(dateOnlyMatch[2]);
+    const day = Number(dateOnlyMatch[3]);
+    const parsedLocal = new Date(year, month - 1, day, 0, 0, 0, 0);
+    if (!isFinite(parsedLocal.getTime())) return null;
+    return parsedLocal.getTime();
+  }
+
+  const parsed = new Date(raw);
+  if (!isFinite(parsed.getTime())) return null;
+  return parsed.getTime();
+}
+
+function toLocalIsoDate(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function eachDayInclusive(start: Date, end: Date) {
+  const dates: Date[] = [];
+  const cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  const limit = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+  while (cursor.getTime() <= limit.getTime()) {
+    dates.push(new Date(cursor));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return dates;
+}
+
+function eachMonthInclusive(start: Date, end: Date) {
+  const dates: Date[] = [];
+  const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+  const limit = new Date(end.getFullYear(), end.getMonth(), 1);
+  while (cursor.getTime() <= limit.getTime()) {
+    dates.push(new Date(cursor));
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  return dates;
+}
+
 function parseTrendLabelDate(value: string, fallbackYear: number) {
   const trimmed = String(value || '').trim();
   if (!trimmed) return null;
@@ -189,41 +277,6 @@ function chartPalette() {
   };
 }
 
-function SparkBars({ values, color }: { values: number[]; color: string }) {
-  const max = Math.max(...values, 1);
-  return (
-    <div className="mt-3 flex h-44 items-end gap-2">
-      {values.map((value, index) => (
-        <div
-          key={`${index}-${value}`}
-          className="flex-1 rounded-sm"
-          style={{ height: `${Math.max(6, (value / max) * 100)}%`, backgroundColor: color }}
-          title={`${value}`}
-        />
-      ))}
-    </div>
-  );
-}
-
-function DonutLike({ slices }: { slices: Array<{ label: string; value: number; color: string }> }) {
-  const total = slices.reduce((sum, s) => sum + s.value, 0) || 1;
-  return (
-    <div className="mt-3 space-y-2">
-      {slices.map((slice) => (
-        <div key={slice.label} className="space-y-1">
-          <div className="flex items-center justify-between text-xs text-gray-600">
-            <span>{slice.label}</span>
-            <span>{((slice.value / total) * 100).toFixed(1)}%</span>
-          </div>
-          <div className="h-2 w-full rounded-full bg-gray-100">
-            <div className="h-full rounded-full" style={{ width: `${(slice.value / total) * 100}%`, backgroundColor: slice.color }} />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function EmptyChart() {
   return <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500">No data for the selected period.</div>;
 }
@@ -255,6 +308,58 @@ function Kpi({ card }: { card: KpiCard }) {
   );
 }
 
+function ReportsPageSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="rounded-2xl border border-gray-200 bg-white px-5 py-4 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-5">
+          <div className="inline-flex items-center gap-2">
+            <SkeletonBlock className="h-9 w-28 rounded-full" />
+            <SkeletonBlock className="h-9 w-20 rounded-full" />
+            <SkeletonBlock className="h-9 w-24 rounded-full" />
+          </div>
+          <div className="inline-flex items-center gap-2 lg:ml-auto">
+            <SkeletonBlock className="h-7 w-14" />
+            <SkeletonBlock className="h-10 w-20 rounded-lg" />
+            <SkeletonBlock className="h-10 w-24 rounded-lg" />
+            <SkeletonBlock className="h-10 w-28 rounded-lg" />
+            <SkeletonBlock className="h-10 w-24 rounded-lg" />
+            <SkeletonBlock className="h-10 w-32 rounded-lg" />
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }).map((_, idx) => (
+          <div key={`reports-kpi-skeleton-${idx}`} className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+            <SkeletonBlock className="h-4 w-36" />
+            <SkeletonBlock className="mt-3 h-10 w-32" />
+            <SkeletonBlock className="mt-2 h-4 w-44" />
+            <SkeletonBlock className="mt-3 h-6 w-20 rounded-full" />
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-5">
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <SkeletonBlock className="h-5 w-52" />
+            <SkeletonBlock className="h-6 w-36 rounded-full" />
+          </div>
+          <SkeletonBlock className="h-[360px] w-full rounded-xl" />
+        </div>
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <SkeletonBlock className="h-5 w-48" />
+            <SkeletonBlock className="h-6 w-28 rounded-full" />
+          </div>
+          <SkeletonBlock className="h-[320px] w-full rounded-xl" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function RevenueReports() {
   const now = new Date();
   const [category, setCategory] = useState<Category>('medication');
@@ -265,6 +370,11 @@ export default function RevenueReports() {
   const [pendingEnd, setPendingEnd] = useState(customEnd);
   const [showRangeModal, setShowRangeModal] = useState(false);
   const [calendarMonth, setCalendarMonth] = useState(startOfMonth(now));
+  const [systemMode, setSystemMode] = useState<SystemMode>(() => getSavedSystemMode());
+  const [billingStatusData, setBillingStatusData] = useState<Array<{ name: string; value: number; color: string }>>([]);
+  const [billingTimelineData, setBillingTimelineData] = useState<Array<{ period: string; label: string; count: number; dailyBreakdown?: string }>>([]);
+  const [isBillingGraphsLoading, setIsBillingGraphsLoading] = useState(false);
+  const [billingDerivedRows, setBillingDerivedRows] = useState<BillingBillRow[]>([]);
 
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [demandTrend, setDemandTrend] = useState<DemandTrendResponse | null>(null);
@@ -277,7 +387,26 @@ export default function RevenueReports() {
   const [medicationCatalog, setMedicationCatalog] = useState<MedicationCatalogResponse | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
+  const [isCategorySwitching, setIsCategorySwitching] = useState(false);
   const [error, setError] = useState('');
+  const hasMountedRef = useRef(false);
+  const [paymentRows, setPaymentRows] = useState<PaymentRow[]>([]);
+  const [isPaymentDataLoading, setIsPaymentDataLoading] = useState(true);
+  const [pendingBillAmount, setPendingBillAmount] = useState(0);
+  const [totalBilledAmount, setTotalBilledAmount] = useState(0);
+  const colors = useMemo(() => chartPalette(), []);
+
+  useEffect(() => {
+    const syncMode = () => setSystemMode(getSavedSystemMode());
+    window.addEventListener('storage', syncMode);
+    window.addEventListener('focus', syncMode);
+    window.addEventListener('clinikapluss:system-mode-changed', syncMode as EventListener);
+    return () => {
+      window.removeEventListener('storage', syncMode);
+      window.removeEventListener('focus', syncMode);
+      window.removeEventListener('clinikapluss:system-mode-changed', syncMode as EventListener);
+    };
+  }, []);
 
   const range = useMemo(() => {
     const end = toDateInput(now);
@@ -297,6 +426,16 @@ export default function RevenueReports() {
   const pendingStartDate = useMemo(() => fromDateInput(pendingStart), [pendingStart]);
   const pendingEndDate = useMemo(() => fromDateInput(pendingEnd), [pendingEnd]);
   const selectingEnd = Boolean(pendingStartDate && (!pendingEndDate || pendingEndDate < pendingStartDate));
+
+  useEffect(() => {
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      return;
+    }
+    setIsCategorySwitching(true);
+    const timer = window.setTimeout(() => setIsCategorySwitching(false), 450);
+    return () => window.clearTimeout(timer);
+  }, [category]);
 
   useEffect(() => {
     let active = true;
@@ -370,8 +509,225 @@ export default function RevenueReports() {
     };
   }, [range.start, range.end, preset]);
 
-  const trendPoints = demandTrend?.series?.[0]?.points || [];
-  const trendValues = trendPoints.map((p) => Number(p.value || 0));
+  useEffect(() => {
+    let active = true;
+
+    async function loadPaymentDataAndBillTotals() {
+      setIsPaymentDataLoading(true);
+      try {
+        if (!supabase) {
+          if (!active) return;
+          setPaymentRows([]);
+          setPendingBillAmount(0);
+          setTotalBilledAmount(0);
+          return;
+        }
+
+        const startTs = new Date(`${range.start}T00:00:00`).getTime();
+        const endTs = new Date(`${range.end}T23:59:59.999`).getTime();
+
+        const paymentsQuery = supabase
+          .schema('subsystem3')
+          .from('tbl_payments')
+          .select('amount_paid, payment_method, payment_date, created_at');
+
+        const nativeBillsQuery = supabase
+          .schema('subsystem3')
+          .from('tbl_bills')
+          .select('status, net_amount, bill_date, created_at');
+
+        const queries = systemMode === 'integrated'
+          ? await Promise.all([
+            paymentsQuery,
+            nativeBillsQuery,
+            supabase
+              .schema('public')
+              .from('tbl_bills')
+              .select('status, net_amount, bill_date, created_at'),
+          ])
+          : await Promise.all([paymentsQuery, nativeBillsQuery]);
+
+        const paymentsResult = queries[0];
+        if (paymentsResult.error) throw paymentsResult.error;
+        const rawPaymentRows = (paymentsResult.data || []) as PaymentRow[];
+        const nextPaymentRows = rawPaymentRows.filter((row) => {
+          const ts = toTimestamp(row?.payment_date || row?.created_at);
+          return ts !== null && ts >= startTs && ts <= endTs;
+        });
+
+        const nativeBillsResult = queries[1];
+        if (nativeBillsResult.error) throw nativeBillsResult.error;
+        const nativeBills = (nativeBillsResult.data || []) as BillAmountRow[];
+
+        const integratedBills = systemMode === 'integrated' && queries.length > 2
+          ? (() => {
+            const result = queries[2];
+            if (!result) return [] as BillAmountRow[];
+            if (result.error) throw result.error;
+            return (result.data || []) as BillAmountRow[];
+          })()
+          : [];
+
+        const allBills = [...nativeBills, ...integratedBills].filter((row) => {
+          const ts = toTimestamp(row?.bill_date || row?.created_at);
+          return ts !== null && ts >= startTs && ts <= endTs;
+        });
+        const nextPendingAmount = allBills.reduce((sum, row) => {
+          const status = String(row?.status || '').trim().toLowerCase();
+          if (status !== 'pending') return sum;
+          return sum + Number(row?.net_amount || 0);
+        }, 0);
+        const nextTotalBilledAmount = allBills.reduce((sum, row) => sum + Number(row?.net_amount || 0), 0);
+
+        if (!active) return;
+        setPaymentRows(nextPaymentRows);
+        setPendingBillAmount(nextPendingAmount);
+        setTotalBilledAmount(nextTotalBilledAmount);
+      } catch (err) {
+        if (!active) return;
+        console.error('Failed to load payment KPI source data', err);
+        setError((prev) => prev || 'Failed to load payment KPI source data.');
+      } finally {
+        if (active) setIsPaymentDataLoading(false);
+      }
+    }
+
+    void loadPaymentDataAndBillTotals();
+    return () => {
+      active = false;
+    };
+  }, [range.start, range.end, systemMode]);
+
+  useEffect(() => {
+    let active = true;
+    async function loadBillingGraphs() {
+      setIsBillingGraphsLoading(true);
+      try {
+        if (!supabase) {
+          if (!active) return;
+          setBillingStatusData([]);
+          setBillingTimelineData([]);
+          setBillingDerivedRows([]);
+          return;
+        }
+        const startTs = new Date(`${range.start}T00:00:00`).getTime();
+        const endTs = new Date(`${range.end}T23:59:59.999`).getTime();
+        const bucket: Bucket = preset === 'this_year' ? 'month' : 'day';
+        const nativeQuery = supabase
+          .schema('subsystem3')
+          .from('tbl_bills')
+          .select('status, created_at, bill_date, net_amount');
+
+        const queries = systemMode === 'integrated'
+          ? await Promise.all([
+            nativeQuery,
+            supabase
+              .schema('public')
+              .from('tbl_bills')
+              .select('status, created_at, bill_date, net_amount'),
+          ])
+          : await Promise.all([nativeQuery]);
+
+        const nativeResult = queries[0];
+        if (nativeResult.error) throw nativeResult.error;
+        const nativeRows = (nativeResult.data || []) as BillingBillRow[];
+
+        const integratedRows = systemMode === 'integrated' && queries.length > 1
+          ? (() => {
+            const result = queries[1];
+            if (!result) return [] as BillingBillRow[];
+            if (result.error) throw result.error;
+            return (result.data || []) as BillingBillRow[];
+          })()
+          : [];
+
+        const allRows = [...nativeRows, ...integratedRows].filter((row) => {
+          const ts = toTimestamp(row?.bill_date || row?.created_at);
+          return ts !== null && ts >= startTs && ts <= endTs;
+        });
+        const statusMap = new Map<string, number>([
+          ['Pending', 0],
+          ['Paid', 0],
+          ['Cancelled', 0],
+        ]);
+        const timelineMap = new Map<string, number>();
+        const timelineDailyMap = new Map<string, Map<string, number>>();
+
+        for (const row of allRows) {
+          const normalizedStatus = normalizeBillStatusForDistribution(row.status);
+          if (normalizedStatus) {
+            statusMap.set(normalizedStatus, (statusMap.get(normalizedStatus) || 0) + 1);
+          }
+          const rowDate = row?.bill_date || row?.created_at || null;
+          const createdAt = rowDate ? new Date(rowDate) : null;
+          if (!createdAt || Number.isNaN(createdAt.getTime())) continue;
+          const key = truncateByBucket(createdAt, bucket);
+          timelineMap.set(key, (timelineMap.get(key) || 0) + 1);
+          if (bucket === 'month') {
+            const dayKey = toLocalIsoDate(createdAt);
+            if (!timelineDailyMap.has(key)) timelineDailyMap.set(key, new Map<string, number>());
+            const dayMap = timelineDailyMap.get(key)!;
+            dayMap.set(dayKey, (dayMap.get(dayKey) || 0) + 1);
+          }
+        }
+
+        const nextStatusData = [
+          { name: 'Pending', value: statusMap.get('Pending') || 0, color: '#f59e0b' },
+          { name: 'Paid', value: statusMap.get('Paid') || 0, color: '#10b981' },
+          { name: 'Cancelled', value: statusMap.get('Cancelled') || 0, color: '#ef4444' },
+        ];
+        const rangeStart = new Date(`${range.start}T00:00:00`);
+        const rangeEnd = new Date(`${range.end}T00:00:00`);
+        const timelineKeys = bucket === 'month'
+          ? eachMonthInclusive(rangeStart, rangeEnd).map((d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`)
+          : eachDayInclusive(rangeStart, rangeEnd).map((d) => toLocalIsoDate(d));
+        const nextTimelineData = timelineKeys.map((period) => {
+          const count = Number(timelineMap.get(period) || 0);
+          if (bucket === 'month') {
+            const monthDayMap = timelineDailyMap.get(period);
+            const detail = monthDayMap
+              ? [...monthDayMap.entries()]
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([day, qty]) => `${day.slice(-2)}: ${formatCount(qty)}`)
+                  .join(' | ')
+              : 'No daily bill activity in this month.';
+            return {
+              period,
+              label: new Date(`${period}T00:00:00`).toLocaleDateString('en-US', { month: 'short' }),
+              count,
+              dailyBreakdown: detail,
+            };
+          }
+          const dayDate = new Date(`${period}T00:00:00`);
+          return {
+            period,
+            label: preset === 'this_week'
+              ? dayDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+              : period,
+            count,
+          };
+        });
+
+        if (!active) return;
+        setBillingDerivedRows(allRows);
+        setBillingStatusData(nextStatusData);
+        setBillingTimelineData(nextTimelineData);
+      } catch {
+        if (!active) return;
+        setBillingDerivedRows([]);
+        setBillingStatusData([]);
+        setBillingTimelineData([]);
+      } finally {
+        if (active) setIsBillingGraphsLoading(false);
+      }
+    }
+
+    void loadBillingGraphs();
+    return () => {
+      active = false;
+    };
+  }, [range.start, range.end, preset, systemMode]);
+
   const rising = topMovers?.rising || [];
   const revenueItems = revenueMix?.items || [];
 
@@ -386,71 +742,99 @@ export default function RevenueReports() {
   }, [rising]);
 
   const dispensingVolumeTrendData = useMemo(() => {
-    const pointMap = new Map<number, { date: string; volume: number }>();
-    const fallbackYear = new Date(range.start).getFullYear();
+    const start = fromDateInput(range.start);
+    const end = fromDateInput(range.end);
+    if (!start || !end) return [];
 
+    const dailyMap = new Map<string, number>();
+    const fallbackYear = new Date(range.start).getFullYear();
     for (const series of demandTrend?.series || []) {
       for (const point of series?.points || []) {
         const rawLabel = String(point?.label || '').trim();
         const dateValue = parseTrendLabelDate(rawLabel, fallbackYear) || new Date(rawLabel);
         if (!isFinite(dateValue.getTime())) continue;
-        const isoDate = dateValue.toISOString().slice(0, 10);
-        const current = pointMap.get(dateValue.getTime()) || { date: isoDate, volume: 0, timestamp: dateValue.getTime() };
-        current.volume += Number(point?.value || 0);
-        pointMap.set(dateValue.getTime(), current);
+        const key = toLocalIsoDate(dateValue);
+        dailyMap.set(key, (dailyMap.get(key) || 0) + Number(point?.value || 0));
       }
     }
 
-    return [...pointMap.values()].sort((a, b) => (new Date(a.date)).getTime() - (new Date(b.date)).getTime());
-  }, [demandTrend, range.start]);
+    if (preset === 'this_year') {
+      return eachMonthInclusive(start, end).map((monthStart) => {
+        const monthKey = `${monthStart.getFullYear()}-${String(monthStart.getMonth() + 1).padStart(2, '0')}`;
+        const daysInMonth = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0).getDate();
+        let total = 0;
+        const parts: string[] = [];
+        for (let day = 1; day <= daysInMonth; day += 1) {
+          const dayKey = `${monthKey}-${String(day).padStart(2, '0')}`;
+          const value = Number(dailyMap.get(dayKey) || 0);
+          if (value > 0) parts.push(`${String(day).padStart(2, '0')}: ${formatCount(value)}`);
+          total += value;
+        }
+        return { label: monthStart.toLocaleDateString('en-US', { month: 'short' }), volume: total, dailyBreakdown: parts.join(' | ') || 'No daily dispense activity in this month.' };
+      });
+    }
+
+    const isWeek = preset === 'this_week';
+    return eachDayInclusive(start, end).map((day) => {
+      const key = toLocalIsoDate(day);
+      const volume = Number(dailyMap.get(key) || 0);
+      const label = isWeek
+        ? day.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+        : String(day.getDate());
+      return { label, volume };
+    });
+  }, [demandTrend, range.start, range.end, preset]);
 
   const medicationRevenueTrendData = useMemo(() => {
-    const revenueByDate = new Map<number, { date: string; revenue: number }>();
+    const start = fromDateInput(range.start);
+    const end = fromDateInput(range.end);
+    if (!start || !end) return [];
 
-    for (const payment of payments?.items || []) {
-      const rawDate = String(payment?.payment_date || '').trim();
+    const dailyMap = new Map<string, number>();
+    for (const row of paymentRows) {
+      const rawDate = String(row?.payment_date || row?.created_at || '').trim();
       if (!rawDate) continue;
       const date = new Date(rawDate);
       if (!isFinite(date.getTime())) continue;
-      const isoDate = date.toISOString().slice(0, 10);
-      const current = revenueByDate.get(date.getTime()) || { date: isoDate, revenue: 0, timestamp: date.getTime() };
-      current.revenue += Number(payment.amount_paid || 0);
-      revenueByDate.set(date.getTime(), current);
+      const key = toLocalIsoDate(date);
+      dailyMap.set(key, (dailyMap.get(key) || 0) + Number(row?.amount_paid || 0));
     }
 
-    return [...revenueByDate.values()].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  }, [payments]);
-
-  const dispensingVolumeMonthTicks = useMemo(() => {
-    const monthKeys = new Map<string, number>();
-    for (const point of dispensingVolumeTrendData) {
-      const date = new Date(point.date);
-      if (!isFinite(date.getTime())) continue;
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      if (!monthKeys.has(key)) monthKeys.set(key, new Date(date.getFullYear(), date.getMonth(), 1).getTime());
+    if (preset === 'this_year') {
+      return eachMonthInclusive(start, end).map((monthStart) => {
+        const monthKey = `${monthStart.getFullYear()}-${String(monthStart.getMonth() + 1).padStart(2, '0')}`;
+        const daysInMonth = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0).getDate();
+        let total = 0;
+        const parts: string[] = [];
+        for (let day = 1; day <= daysInMonth; day += 1) {
+          const dayKey = `${monthKey}-${String(day).padStart(2, '0')}`;
+          const value = Number(dailyMap.get(dayKey) || 0);
+          if (value > 0) parts.push(`${String(day).padStart(2, '0')}: ${formatPeso(value)}`);
+          total += value;
+        }
+        return { label: monthStart.toLocaleDateString('en-US', { month: 'short' }), revenue: total, dailyBreakdown: parts.join(' | ') || 'No daily revenue activity in this month.' };
+      });
     }
-    return [...monthKeys.values()];
-  }, [dispensingVolumeTrendData]);
 
-  const medicationRevenueMonthTicks = useMemo(() => {
-    const monthKeys = new Map<string, number>();
-    for (const point of medicationRevenueTrendData) {
-      const date = new Date(point.date);
-      if (!isFinite(date.getTime())) continue;
-      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-      if (!monthKeys.has(key)) monthKeys.set(key, new Date(date.getFullYear(), date.getMonth(), 1).getTime());
-    }
-    return [...monthKeys.values()];
-  }, [medicationRevenueTrendData]);
+    const isWeek = preset === 'this_week';
+    return eachDayInclusive(start, end).map((day) => {
+      const key = toLocalIsoDate(day);
+      const revenue = Number(dailyMap.get(key) || 0);
+      const label = isWeek
+        ? day.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+        : String(day.getDate());
+      return { label, revenue };
+    });
+  }, [paymentRows, range.start, range.end, preset]);
 
   const totalPrescriptions = (demandTrend?.series || []).reduce(
     (seriesSum, series) => seriesSum + (series?.points || []).reduce((pointSum, point) => pointSum + Number(point?.value || 0), 0),
     0
   );
   const totalDispensed = totalPrescriptions;
-  const totalCollected = (analytics?.analytics?.total_revenue || 0);
-  const billingVolume = (bills?.items || []).reduce((sum, bill) => sum + Number(bill.net_amount || bill.total_amount || 0), 0);
-  const pendingAmount = analytics?.analytics?.total_outstanding_balance || 0;
+  const totalCollected = paymentRows.reduce((sum, row) => sum + Number(row?.amount_paid || 0), 0);
+  const billingVolume = billingDerivedRows.reduce((sum, bill) => sum + Number(bill?.net_amount || 0), 0);
+  const pendingAmount = pendingBillAmount;
   const medicationRevenue = revenueItems.reduce((sum, item) => sum + Number(item?.revenue || 0), 0);
   const averagePrescriptionValue = totalPrescriptions > 0 ? medicationRevenue / totalPrescriptions : 0;
 
@@ -477,20 +861,99 @@ export default function RevenueReports() {
   }, [rising, summary, demandTrend]);
 
   const topMethod = useMemo(() => {
-    const list = payments?.items || [];
     const counts = new Map<string, number>();
-    for (const p of list) {
-      const key = String(p.payment_method || 'Unknown');
-      counts.set(key, (counts.get(key) || 0) + Number(p.amount_paid || 0));
+    for (const row of paymentRows) {
+      const key = String(row?.payment_method || 'Unknown').trim() || 'Unknown';
+      counts.set(key, (counts.get(key) || 0) + 1);
     }
-    let best = 'N/A';
-    let bestValue = 0;
-    let total = 0;
-    counts.forEach((v) => { total += v; if (v > bestValue) { bestValue = v; } });
-    counts.forEach((v, k) => { if (v === bestValue) best = k; });
-    const pct = total ? (bestValue / total) * 100 : 0;
-    return { method: best, pct };
-  }, [payments]);
+    let bestMethod = 'N/A';
+    let bestCount = 0;
+    counts.forEach((count, method) => {
+      if (count > bestCount) {
+        bestCount = count;
+        bestMethod = method;
+      }
+    });
+    return { method: bestMethod, count: bestCount };
+  }, [paymentRows]);
+
+  const collectionRate = useMemo(() => {
+    if (totalBilledAmount <= 0) return 0;
+    return (totalCollected / totalBilledAmount) * 100;
+  }, [totalCollected, totalBilledAmount]);
+
+  const paymentRevenueDailyMap = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const row of paymentRows) {
+      const raw = String(row?.payment_date || row?.created_at || '').trim();
+      if (!raw) continue;
+      const date = new Date(raw);
+      if (!isFinite(date.getTime())) continue;
+      const key = toLocalIsoDate(date);
+      map.set(key, (map.get(key) || 0) + Number(row?.amount_paid || 0));
+    }
+    return map;
+  }, [paymentRows]);
+
+  const paymentRevenueTrendData = useMemo(() => {
+    const start = fromDateInput(range.start);
+    const end = fromDateInput(range.end);
+    if (!start || !end) return [];
+
+    if (preset === 'this_year') {
+      return eachMonthInclusive(start, end).map((monthStart) => {
+        const monthKey = `${monthStart.getFullYear()}-${String(monthStart.getMonth() + 1).padStart(2, '0')}`;
+        const daysInMonth = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 0).getDate();
+        let monthlyTotal = 0;
+        const parts: string[] = [];
+        for (let day = 1; day <= daysInMonth; day += 1) {
+          const dayKey = `${monthKey}-${String(day).padStart(2, '0')}`;
+          const value = Number(paymentRevenueDailyMap.get(dayKey) || 0);
+          if (value > 0) {
+            parts.push(`${String(day).padStart(2, '0')}: ${formatPeso(value)}`);
+          }
+          monthlyTotal += value;
+        }
+
+        return {
+          label: monthStart.toLocaleDateString('en-US', { month: 'short' }),
+          revenue: monthlyTotal,
+          dailyBreakdown: parts.length ? parts.join(' | ') : 'No daily collections in this month.',
+        };
+      });
+    }
+
+    const rangeDays = eachDayInclusive(start, end);
+    const isWeek = preset === 'this_week';
+    const isMonth = preset === 'this_month';
+    return rangeDays.map((day) => {
+      const key = toLocalIsoDate(day);
+      const revenue = Number(paymentRevenueDailyMap.get(key) || 0);
+      const label = isWeek
+        ? day.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+        : isMonth
+          ? String(day.getDate())
+          : day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      return { label, revenue };
+    });
+  }, [paymentRevenueDailyMap, range.start, range.end, preset]);
+
+  const paymentMethodBreakdownData = useMemo(() => {
+    const byMethod = new Map<string, number>();
+    for (const row of paymentRows) {
+      const key = String(row?.payment_method || 'Unknown').trim() || 'Unknown';
+      byMethod.set(key, (byMethod.get(key) || 0) + Number(row?.amount_paid || 0));
+    }
+
+    const palette = [colors.primary, colors.secondary, colors.accent, colors.warn, colors.danger, colors.neutral];
+    return [...byMethod.entries()]
+      .sort(([, a], [, b]) => b - a)
+      .map(([name, value], index) => ({
+        name,
+        value,
+        color: palette[index % palette.length],
+      }));
+  }, [paymentRows, colors.primary, colors.secondary, colors.accent, colors.warn, colors.danger, colors.neutral]);
 
   const kpis: KpiCard[] = useMemo(() => {
     const p = chartPalette();
@@ -504,22 +967,30 @@ export default function RevenueReports() {
       ];
     }
     if (category === 'billing') {
-      const totalInvoices = (bills?.items || []).length;
-      const paid = (bills?.items || []).filter((b) => String(b.status || '').toLowerCase() === 'paid').length;
+      const totalInvoices = billingDerivedRows.length;
+      const paid = billingDerivedRows.filter((b) => String(b.status || '').toLowerCase() === 'paid').length;
+      const outstanding = billingDerivedRows.reduce((sum, row) => {
+        const status = String(row?.status || '').toLowerCase();
+        if (status !== 'pending') return sum;
+        return sum + Number(row?.net_amount || 0);
+      }, 0);
+      const averageInvoice = totalInvoices > 0
+        ? billingDerivedRows.reduce((sum, row) => sum + Number(row?.net_amount || 0), 0) / totalInvoices
+        : 0;
       const success = totalInvoices ? (paid / totalInvoices) * 100 : 0;
       return [
         { title: 'Total Invoices', value: formatCount(totalInvoices), detail: 'Generated this period', trendPct: 4.1 },
-        { title: 'Outstanding Balance', value: formatPeso(pendingAmount), detail: 'Unpaid as of today', trendPct: -2.3 },
-        { title: 'Average Invoice Value', value: formatPeso(analytics?.analytics?.average_bill_amount || 0), detail: 'Per transaction', trendPct: 3.9 },
+        { title: 'Outstanding Balance', value: formatPeso(outstanding), detail: 'Unpaid as of today', trendPct: -2.3 },
+        { title: 'Average Invoice Value', value: formatPeso(averageInvoice), detail: 'Per transaction', trendPct: 3.9 },
         { title: 'Billing Success Rate', value: `${success.toFixed(1)}%`, detail: 'Paid vs. total invoiced', trendPct: 2.6 },
       ];
     }
     if (category === 'payment') {
       return [
-        { title: 'Total Collected', value: formatPeso(totalCollected), detail: 'Cash received this period', trendPct: 5.2 },
+        { title: 'Total Collected', value: formatPeso(totalCollected), detail: 'From subsystem3 payments', trendPct: 5.2 },
         { title: 'Pending Payments', value: formatPeso(pendingAmount), detail: 'Awaiting collection', trendPct: -1.1 },
-        { title: 'Top Payment Method', value: `${topMethod.method} — ${topMethod.pct.toFixed(1)}%`, detail: 'Dominant mode this period', trendPct: 0.8 },
-        { title: 'Average Collection Days', value: '3.2 days', detail: 'From invoice to payment', trendPct: -2.7 },
+        { title: 'Top Payment Method', value: `${topMethod.method}`, detail: `${formatCount(topMethod.count)} transactions`, trendPct: 0.8 },
+        { title: 'Collection Rate', value: `${collectionRate.toFixed(1)}%`, detail: 'Collected vs total billed', trendPct: collectionRate >= 70 ? 2.4 : -1.8 },
       ];
     }
     return [
@@ -528,9 +999,8 @@ export default function RevenueReports() {
       { title: 'Expired Stock Alerts', value: formatCount(expiryRisk?.metrics?.near_expiry_quantity || 0), detail: 'Requires immediate action', trendPct: -3.2 },
       { title: 'Average Dispense Time', value: '12 mins', detail: 'From receipt to release', trendPct: -4.8 },
     ];
-  }, [category, totalPrescriptions, totalDispensed, billingVolume, totalCollected, topMedication, bills, pendingAmount, analytics, topMethod, medicationRevenue, averagePrescriptionValue]);
+  }, [category, totalPrescriptions, totalDispensed, billingVolume, totalCollected, topMedication, billingDerivedRows, pendingAmount, topMethod, collectionRate, medicationRevenue, averagePrescriptionValue]);
 
-  const colors = chartPalette();
   const medicationCategorySlices = useMemo(() => {
     const nameToCategory = new Map<string, string>();
     for (const row of medicationCatalog?.items || []) {
@@ -585,61 +1055,86 @@ export default function RevenueReports() {
     };
   }, [medicationCategorySlices, colors.neutral]);
 
+  const billingDonutInsights = useMemo(() => {
+    const pending = billingStatusData.find((item) => item.name === 'Pending')?.value || 0;
+    const paid = billingStatusData.find((item) => item.name === 'Paid')?.value || 0;
+    const cancelled = billingStatusData.find((item) => item.name === 'Cancelled')?.value || 0;
+    const total = pending + paid + cancelled;
+    if (!total) {
+      return {
+        headline: 'No billing activity for the selected range yet.',
+        pipeline: 'Once bills are created, this section will summarize flow quality and risk signals.',
+        operations: 'Use the date filter to compare billing momentum across periods.',
+      };
+    }
+
+    const paidPct = (paid / total) * 100;
+    const pendingPct = (pending / total) * 100;
+    const cancelledPct = (cancelled / total) * 100;
+    const dominant = paid >= pending && paid >= cancelled ? 'Paid' : pending >= cancelled ? 'Pending' : 'Cancelled';
+    const headline = dominant === 'Paid'
+      ? `Collections are leading: ${paidPct.toFixed(1)}% of bills are Paid (${formatCount(paid)} of ${formatCount(total)}).`
+      : dominant === 'Pending'
+        ? `Pipeline pressure is elevated: ${pendingPct.toFixed(1)}% of bills are Pending (${formatCount(pending)} of ${formatCount(total)}).`
+        : `Cancellation volume is currently highest at ${cancelledPct.toFixed(1)}% (${formatCount(cancelled)} of ${formatCount(total)}).`;
+
+    const pipeline = pendingPct >= 40
+      ? `Pending share is above 40%, which usually signals collection lag or billing follow-up backlog.`
+      : `Pending share is ${pendingPct.toFixed(1)}%, indicating a manageable active billing queue.`;
+    const operations = cancelledPct >= 15
+      ? `Cancelled bills are at ${cancelledPct.toFixed(1)}%; review cancellation reasons for preventable drop-offs.`
+      : `Cancelled bills remain at ${cancelledPct.toFixed(1)}%, suggesting stable billing completion behavior.`;
+
+    return { headline, pipeline, operations };
+  }, [billingStatusData]);
+
+  const paymentDonutInsights = useMemo(() => {
+    const total = paymentMethodBreakdownData.reduce((sum, row) => sum + Number(row?.value || 0), 0);
+    if (!total) {
+      return {
+        headline: 'No payment collection mix is available for the selected range yet.',
+        concentration: 'Once payments are posted, this section will highlight method concentration and channel balance.',
+        operations: 'Use this to monitor dependence on a single payment channel and diversify if needed.',
+        topMethod: 'N/A',
+        topSharePct: 0,
+        methodCount: 0,
+      };
+    }
+
+    const sorted = [...paymentMethodBreakdownData].sort((a, b) => Number(b.value || 0) - Number(a.value || 0));
+    const top = sorted[0];
+    const topValue = Number(top?.value || 0);
+    const topSharePct = (topValue / total) * 100;
+    const methodCount = sorted.length;
+
+    const headline = topSharePct >= 75
+      ? `${top?.name || 'Top method'} dominates collections at ${topSharePct.toFixed(1)}% (${formatPeso(topValue)} of ${formatPeso(total)}).`
+      : `${top?.name || 'Top method'} leads collections at ${topSharePct.toFixed(1)}% (${formatPeso(topValue)} of ${formatPeso(total)}), with a healthier channel mix.`;
+
+    const concentration = topSharePct >= 85
+      ? 'Collection concentration is high. Consider reinforcing alternate payment options to reduce single-channel risk.'
+      : topSharePct >= 65
+        ? 'Collection concentration is moderate. Keep monitoring shifts to avoid over-reliance on one method.'
+        : 'Collection mix is relatively balanced across channels for this period.';
+
+    const operations = methodCount <= 1
+      ? 'Only one payment method was used in this range. Validate if this reflects policy or operational constraints.'
+      : `You processed collections across ${methodCount} methods. Track changes week-over-week to catch channel drift early.`;
+
+    return {
+      headline,
+      concentration,
+      operations,
+      topMethod: String(top?.name || 'N/A'),
+      topSharePct,
+      methodCount,
+    };
+  }, [paymentMethodBreakdownData]);
+
+  const shouldShowPageSkeleton = isLoading || isCategorySwitching || (category === 'payment' && isPaymentDataLoading);
+
   return (
     <section className="rounded-2xl bg-gray-300/80 p-6">
-      <div className="sticky top-0 z-20 rounded-2xl border border-gray-200 bg-white px-5 py-4 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-5">
-          <div className="inline-flex items-center gap-2">
-          {[
-            { key: 'medication', label: 'Medication' },
-            { key: 'billing', label: 'Billing' },
-            { key: 'payment', label: 'Payment' },
-          ].map((chip) => (
-            <button
-              key={chip.key}
-              type="button"
-              onClick={() => setCategory(chip.key as Category)}
-              className={`rounded-full px-4 py-2 text-sm font-bold transition ${category === chip.key ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-700'}`}
-            >
-              {chip.label}
-            </button>
-          ))}
-          </div>
-
-          <div className="inline-flex items-center gap-2 lg:ml-auto">
-            <span className="inline-flex items-center gap-1.5 px-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
-              <CalendarRange size={14} />
-              Date
-            </span>
-            {[
-              { key: 'today', label: 'Today' },
-              { key: 'this_week', label: 'This Week' },
-              { key: 'this_month', label: 'This Month' },
-              { key: 'this_year', label: 'This Year' },
-              { key: 'custom', label: 'Custom Range' },
-            ].map((button) => (
-              <button
-                key={button.key}
-                type="button"
-                onClick={() => {
-                  if (button.key === 'custom') {
-                    setPendingStart(customStart);
-                    setPendingEnd(customEnd);
-                    setCalendarMonth(fromDateInput(customStart) || startOfMonth(new Date()));
-                    setShowRangeModal(true);
-                  } else {
-                    setPreset(button.key as Preset);
-                  }
-                }}
-                className={`rounded-lg border px-3 py-2 text-sm font-semibold ${preset === button.key ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-300 bg-white text-gray-700'}`}
-              >
-                {button.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-
       {showRangeModal && createPortal(
         <div className="fixed inset-0 z-[300] flex items-center justify-center bg-slate-900/40 backdrop-blur-md px-4 py-6">
           <div className="w-full max-w-2xl max-h-[92vh] overflow-auto rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl">
@@ -753,17 +1248,70 @@ export default function RevenueReports() {
         document.body
       )}
 
-      {error && <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
+      {shouldShowPageSkeleton ? (
+        <ReportsPageSkeleton />
+      ) : (
+        <>
+          <div className="rounded-2xl border border-gray-200 bg-white px-5 py-4 shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-5">
+              <div className="inline-flex items-center gap-2">
+              {[
+                { key: 'medication', label: 'Medication' },
+                { key: 'billing', label: 'Billing' },
+                { key: 'payment', label: 'Payment' },
+              ].map((chip) => (
+                <button
+                  key={chip.key}
+                  type="button"
+                  onClick={() => setCategory(chip.key as Category)}
+                  className={`rounded-full px-4 py-2 text-sm font-bold transition ${category === chip.key ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-700'}`}
+                >
+                  {chip.label}
+                </button>
+              ))}
+              </div>
 
-      <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
-        {isLoading
-          ? Array.from({ length: 4 }).map((_, idx) => (
-              <div key={`s-${idx}`} className="h-40 animate-pulse rounded-2xl border border-gray-200 bg-white" />
-            ))
-          : kpis.map((card) => <Kpi key={card.title} card={card} />)}
-      </div>
+              <div className="inline-flex items-center gap-2 lg:ml-auto">
+                <span className="inline-flex items-center gap-1.5 px-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  <CalendarRange size={14} />
+                  Date
+                </span>
+                {[
+                  { key: 'today', label: 'Today' },
+                  { key: 'this_week', label: 'This Week' },
+                  { key: 'this_month', label: 'This Month' },
+                  { key: 'this_year', label: 'This Year' },
+                  { key: 'custom', label: 'Custom Range' },
+                ].map((button) => (
+                  <button
+                    key={button.key}
+                    type="button"
+                    onClick={() => {
+                      if (button.key === 'custom') {
+                        setPendingStart(customStart);
+                        setPendingEnd(customEnd);
+                        setCalendarMonth(fromDateInput(customStart) || startOfMonth(new Date()));
+                        setShowRangeModal(true);
+                      } else {
+                        setPreset(button.key as Preset);
+                      }
+                    }}
+                    className={`rounded-lg border px-3 py-2 text-sm font-semibold ${preset === button.key ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-300 bg-white text-gray-700'}`}
+                  >
+                    {button.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
 
-      <div className="mt-6 space-y-5">
+          {error && <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
+
+          <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4">
+            {kpis.map((card) => <Kpi key={card.title} card={card} />)}
+          </div>
+
+          <div className="mt-6 space-y-5">
         {category === 'medication' && (
           <>
             <div className="grid grid-cols-1 gap-4">
@@ -811,8 +1359,8 @@ export default function RevenueReports() {
                 {medicationCategorySlices.length ? (
                   <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr] min-w-0">
                     <div className="min-w-0 rounded-3xl border border-gray-200 bg-white p-4 shadow-sm">
-                      <div className="mt-4 h-[280px]">
-                        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={240}>
+                      <div className="mt-4 h-[280px] min-w-0">
+                        <ResponsiveContainer width="100%" height={280} minWidth={0} minHeight={240}>
                           <PieChart>
                             <Pie
                               data={medicationCategorySlices}
@@ -917,19 +1465,14 @@ export default function RevenueReports() {
                     <LineChart data={dispensingVolumeTrendData} margin={{ top: 16, right: 24, left: 0, bottom: 32 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis
-                        dataKey="timestamp"
-                        type="number"
-                        scale="time"
-                        domain={[ 'dataMin', 'dataMax' ]}
-                        ticks={dispensingVolumeMonthTicks}
+                        dataKey="label"
                         tickLine={false}
                         axisLine={{ stroke: '#e5e7eb', strokeWidth: 1 }}
                         tick={chartTextStyle}
                         tickMargin={10}
                         height={44}
-                        minTickGap={24}
-                        tickFormatter={(value) => toMonthLabel(value)}
-                        interval={0}
+                        minTickGap={preset === 'this_month' ? 4 : 20}
+                        interval={preset === 'this_month' ? 0 : 'preserveStartEnd'}
                       />
                       <YAxis tickLine={false} axisLine={false} tick={chartTextStyle} tickMargin={10} />
                       <Tooltip
@@ -937,6 +1480,11 @@ export default function RevenueReports() {
                         contentStyle={{ fontSize: 12, borderRadius: 8 }}
                         itemStyle={{ fontSize: 12 }}
                         labelStyle={{ fontSize: 12 }}
+                        labelFormatter={(label, payload) => {
+                          if (preset !== 'this_year') return String(label || '');
+                          const detail = String(payload?.[0]?.payload?.dailyBreakdown || '').trim();
+                          return detail ? `${String(label || '')} | ${detail}` : String(label || '');
+                        }}
                       />
                       <Line
                         type="monotone"
@@ -959,19 +1507,14 @@ export default function RevenueReports() {
                     <LineChart data={medicationRevenueTrendData} margin={{ top: 16, right: 20, left: 0, bottom: 16 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                       <XAxis
-                        dataKey="timestamp"
-                        type="number"
-                        scale="time"
-                        domain={[ 'dataMin', 'dataMax' ]}
-                        ticks={medicationRevenueMonthTicks}
+                        dataKey="label"
                         tickLine={false}
                         axisLine={{ stroke: '#e5e7eb', strokeWidth: 1 }}
                         tick={chartTextStyle}
                         tickMargin={10}
                         height={44}
-                        minTickGap={24}
-                        tickFormatter={(value) => toMonthLabel(value)}
-                        interval={0}
+                        minTickGap={preset === 'this_month' ? 4 : 20}
+                        interval={preset === 'this_month' ? 0 : 'preserveStartEnd'}
                       />
                       <YAxis tickLine={false} axisLine={false} tickFormatter={(value) => formatPeso(Number(value))} tick={chartTextStyle} />
                       <Tooltip
@@ -979,6 +1522,11 @@ export default function RevenueReports() {
                         contentStyle={{ fontSize: 12, borderRadius: 8 }}
                         itemStyle={{ fontSize: 12 }}
                         labelStyle={{ fontSize: 12 }}
+                        labelFormatter={(label, payload) => {
+                          if (preset !== 'this_year') return String(label || '');
+                          const detail = String(payload?.[0]?.payload?.dailyBreakdown || '').trim();
+                          return detail ? `${String(label || '')} | ${detail}` : String(label || '');
+                        }}
                       />
                       <Line
                         type="monotone"
@@ -1001,55 +1549,244 @@ export default function RevenueReports() {
 
         {category === 'billing' && (
           <>
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              <ChartCard title="Billing Trends Over Time">
-                {trendValues.length ? <SparkBars values={trendValues.map((v) => v * 2)} color={colors.primary} /> : <EmptyChart />}
+            <div className="grid grid-cols-1 gap-6">
+              <ChartCard title="Bill Status Distribution" className="min-h-[24rem]">
+                {isBillingGraphsLoading ? (
+                  <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500">Loading bill status distribution...</div>
+                ) : billingStatusData.reduce((sum, item) => sum + item.value, 0) > 0 ? (
+                  <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1.08fr_0.92fr] lg:items-stretch">
+                    <div className="flex flex-col rounded-2xl border border-gray-200 bg-white p-3 sm:p-4">
+                      <div className="mb-2 flex items-center justify-between">
+                        <div className="inline-flex items-center gap-2 rounded-full bg-gray-100 px-3 py-1 text-xs font-semibold text-gray-700">
+                          <Layers size={14} />
+                          Status Mix
+                        </div>
+                        <span className="text-xs font-semibold text-gray-500">
+                          {formatCount(billingStatusData.reduce((sum, item) => sum + item.value, 0))} bills
+                        </span>
+                      </div>
+                      <ResponsiveContainer width="100%" height={260} minWidth={0} minHeight={220}>
+                        <PieChart>
+                          <Pie data={billingStatusData} dataKey="value" nameKey="name" innerRadius={70} outerRadius={110} paddingAngle={2}>
+                            {billingStatusData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+                          </Pie>
+                          <Tooltip formatter={(value) => [formatCount(Number(value || 0)), 'Bills']} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <div className="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-sm text-gray-700">
+                        {billingStatusData.map((entry) => (
+                          <div key={`legend-${entry.name}`} className="inline-flex items-center gap-2 rounded-full border border-gray-200 bg-gray-50 px-3 py-1.5">
+                            <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
+                            <span className="font-medium">{entry.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="flex flex-col rounded-2xl border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+                      <div className="mb-3 inline-flex w-fit items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-600">
+                        <ShieldCheck size={14} />
+                        Operational Insights
+                      </div>
+                      <div className="space-y-3">
+                        <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
+                          <p>{billingDonutInsights.headline}</p>
+                        </div>
+                        <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
+                          <p>{billingDonutInsights.pipeline}</p>
+                        </div>
+                        <div className="rounded-xl border border-gray-200 bg-white px-3 py-2.5">
+                          <p>{billingDonutInsights.operations}</p>
+                        </div>
+                      </div>
+                      <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                        {billingStatusData.map((entry) => (
+                          <div key={`insight-metric-${entry.name}`} className="rounded-lg border border-gray-200 bg-white p-2">
+                            <p className="text-[11px] font-semibold" style={{ color: entry.color }}>{entry.name}</p>
+                            <p className="text-base font-bold" style={{ color: entry.color }}>{formatCount(entry.value)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyChart />
+                )}
               </ChartCard>
-              <ChartCard title="Invoices by Status">
-                <SparkBars values={[
-                  (bills?.items || []).filter((b) => String(b.status || '').toLowerCase() === 'paid').length,
-                  (bills?.items || []).filter((b) => String(b.status || '').toLowerCase() === 'pending').length,
-                  (bills?.items || []).filter((b) => String(b.status || '').toLowerCase().includes('overdue')).length,
-                  (bills?.items || []).filter((b) => String(b.status || '').toLowerCase().includes('reject')).length,
-                ]} color={colors.secondary} />
+              <ChartCard title="Bills Created Over Time" className="min-h-[24rem]">
+                {isBillingGraphsLoading ? (
+                  <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500">Loading bills over time...</div>
+                ) : billingTimelineData.length > 0 ? (
+                  <div className="rounded-2xl border border-slate-200 bg-gradient-to-b from-slate-50 to-white p-3 sm:p-4">
+                    <ResponsiveContainer width="100%" height={320} minWidth={0} minHeight={240}>
+                      <BarChart data={billingTimelineData} margin={{ top: 14, right: 18, left: 4, bottom: 10 }} barCategoryGap="28%">
+                        <defs>
+                          <linearGradient id="billingBarsGradient" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#2563eb" stopOpacity={0.95} />
+                            <stop offset="100%" stopColor="#38bdf8" stopOpacity={0.9} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="4 6" stroke="#e2e8f0" vertical={false} />
+                        <XAxis
+                          dataKey="label"
+                          tick={{ ...chartTextStyle, fill: '#64748b', fontSize: 11 }}
+                          tickLine={false}
+                          axisLine={{ stroke: '#cbd5e1' }}
+                          tickMargin={10}
+                          interval={preset === 'this_month' ? 0 : 'preserveStartEnd'}
+                          minTickGap={preset === 'this_month' ? 4 : 16}
+                        />
+                        <YAxis
+                          tick={{ ...chartTextStyle, fill: '#64748b', fontSize: 11 }}
+                          tickLine={false}
+                          axisLine={false}
+                          allowDecimals={false}
+                          width={36}
+                        />
+                        <Tooltip
+                          formatter={(value) => [formatCount(Number(value || 0)), 'Bills']}
+                          contentStyle={{
+                            borderRadius: 12,
+                            border: '1px solid #e2e8f0',
+                            boxShadow: '0 8px 24px rgba(15, 23, 42, 0.08)',
+                          }}
+                          labelStyle={{ color: '#0f172a', fontWeight: 600 }}
+                          labelFormatter={(label, payload) => {
+                            if (preset !== 'this_year') return String(label || '');
+                            const detail = String(payload?.[0]?.payload?.dailyBreakdown || '').trim();
+                            return detail ? `${String(label || '')} | ${detail}` : String(label || '');
+                          }}
+                        />
+                        <Bar dataKey="count" fill="url(#billingBarsGradient)" radius={[10, 10, 0, 0]} maxBarSize={44} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <EmptyChart />
+                )}
               </ChartCard>
-            </div>
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-              <ChartCard title="Billing by Payer Over Time"><EmptyChart /></ChartCard>
-              <ChartCard title="Rejection Rate by Reason"><EmptyChart /></ChartCard>
-              <ChartCard title="AR Aging Trend"><EmptyChart /></ChartCard>
             </div>
           </>
         )}
 
         {category === 'payment' && (
           <>
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              <ChartCard title="Payments by Method Over Time">
-                <SparkBars values={[
-                  (payments?.items || []).filter((p) => String(p.payment_method || '').toLowerCase() === 'cash').length,
-                  (payments?.items || []).filter((p) => String(p.payment_method || '').toLowerCase() === 'gcash').length,
-                  (payments?.items || []).filter((p) => String(p.payment_method || '').toLowerCase() === 'maya').length,
-                  (payments?.items || []).filter((p) => String(p.payment_method || '').toLowerCase().includes('insurance')).length,
-                ]} color={colors.accent} />
+            <div className="grid grid-cols-1 gap-6">
+              <ChartCard
+                title="Revenue Trend"
+                className="min-h-[26rem]"
+                rightContent={<span>Based on selected date filter</span>}
+              >
+                {isPaymentDataLoading ? (
+                  <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500">Loading revenue trend...</div>
+                ) : paymentRevenueTrendData.length > 0 ? (
+                  <div className="min-w-0 w-full">
+                    <ResponsiveContainer width="100%" height={320} minWidth={0} minHeight={240}>
+                      <LineChart data={paymentRevenueTrendData} margin={{ top: 12, right: 14, left: 8, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis
+                          dataKey="label"
+                          tick={{ ...chartTextStyle, fill: '#64748b', fontSize: 11 }}
+                          tickLine={false}
+                          axisLine={false}
+                          interval={preset === 'this_month' ? 0 : 'preserveStartEnd'}
+                          minTickGap={preset === 'this_month' ? 4 : 20}
+                        />
+                        <YAxis
+                          tick={{ ...chartTextStyle, fill: '#64748b', fontSize: 11 }}
+                          tickLine={false}
+                          axisLine={false}
+                          tickFormatter={(value) => `PHP ${Number(value || 0).toLocaleString('en-PH', { maximumFractionDigits: 0 })}`}
+                          width={72}
+                        />
+                        <Tooltip
+                          formatter={(value) => [formatPeso(Number(value || 0)), 'Collected']}
+                          contentStyle={{ borderRadius: 12, borderColor: '#e2e8f0' }}
+                          labelFormatter={(label, payload) => {
+                            if (preset !== 'this_year') return String(label || '');
+                            const detail = String(payload?.[0]?.payload?.dailyBreakdown || '').trim();
+                            return detail ? `${String(label || '')} | ${detail}` : String(label || '');
+                          }}
+                        />
+                        <Line type="monotone" dataKey="revenue" stroke={colors.primary} strokeWidth={3} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                ) : (
+                  <EmptyChart />
+                )}
               </ChartCard>
-              <ChartCard title="Payment Method Share">
-                <DonutLike slices={[
-                  { label: 'Cash', value: (payments?.items || []).filter((p) => String(p.payment_method || '').toLowerCase() === 'cash').length, color: colors.primary },
-                  { label: 'GCash', value: (payments?.items || []).filter((p) => String(p.payment_method || '').toLowerCase() === 'gcash').length, color: colors.secondary },
-                  { label: 'Maya', value: (payments?.items || []).filter((p) => String(p.payment_method || '').toLowerCase() === 'maya').length, color: colors.accent },
-                  { label: 'Insurance', value: (payments?.items || []).filter((p) => String(p.payment_method || '').toLowerCase().includes('insurance')).length, color: colors.warn },
-                ]} />
+              <ChartCard title="Payment Method Breakdown" className="min-h-[25rem]">
+                {isPaymentDataLoading ? (
+                  <div className="flex h-72 items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50 text-sm text-gray-500">Loading payment method breakdown...</div>
+                ) : paymentMethodBreakdownData.length > 0 ? (
+                  <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-[1fr_1fr]">
+                    <div className="min-w-0 w-full">
+                      <ResponsiveContainer width="100%" height={300} minWidth={0} minHeight={240}>
+                        <PieChart>
+                          <Pie data={paymentMethodBreakdownData} dataKey="value" nameKey="name" innerRadius={68} outerRadius={108} paddingAngle={3}>
+                            {paymentMethodBreakdownData.map((entry) => (
+                              <Cell key={`payment-method-slice-${entry.name}`} fill={entry.color} />
+                            ))}
+                          </Pie>
+                          <Tooltip formatter={(value) => [formatPeso(Number(value || 0)), 'Collected']} />
+                        </PieChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <div className="space-y-3">
+                      <div className="rounded-2xl border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+                        <div className="mb-2 inline-flex w-fit items-center gap-2 rounded-full border border-gray-200 bg-white px-3 py-1 text-xs font-semibold uppercase tracking-[0.08em] text-gray-600">
+                          <Percent size={13} />
+                          Collection Insights
+                        </div>
+                        <div className="space-y-2">
+                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                            <p>{paymentDonutInsights.headline}</p>
+                          </div>
+                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                            <p>{paymentDonutInsights.concentration}</p>
+                          </div>
+                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2">
+                            <p>{paymentDonutInsights.operations}</p>
+                          </div>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-2 text-center">
+                          <div className="rounded-lg border border-gray-200 bg-white p-2">
+                            <p className="text-[11px] font-semibold text-gray-500">Top Method</p>
+                            <p className="text-base font-bold text-slate-900">{paymentDonutInsights.topMethod}</p>
+                          </div>
+                          <div className="rounded-lg border border-gray-200 bg-white p-2">
+                            <p className="text-[11px] font-semibold text-gray-500">Top Share</p>
+                            <p className="text-base font-bold text-slate-900">{paymentDonutInsights.topSharePct.toFixed(1)}%</p>
+                          </div>
+                        </div>
+                      </div>
+                      {paymentMethodBreakdownData.map((entry) => {
+                        const pct = totalCollected > 0 ? (entry.value / totalCollected) * 100 : 0;
+                        return (
+                          <div key={`payment-method-row-${entry.name}`} className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="inline-flex items-center gap-2">
+                                <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
+                                <span className="text-sm font-semibold text-gray-800">{entry.name}</span>
+                              </div>
+                              <span className="text-sm font-semibold text-gray-700">{pct.toFixed(1)}%</span>
+                            </div>
+                            <p className="mt-1 text-xs font-medium text-gray-500">{formatPeso(entry.value)}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyChart />
+                )}
               </ChartCard>
-            </div>
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-              <ChartCard title="Collection Efficiency Trend"><EmptyChart /></ChartCard>
-              <ChartCard title="Expected vs. Received"><EmptyChart /></ChartCard>
-              <ChartCard title="Refunds and Reversals Over Time"><EmptyChart /></ChartCard>
             </div>
           </>
         )}
       </div>
+        </>
+      )}
     </section>
   );
 }

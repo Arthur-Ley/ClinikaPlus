@@ -127,7 +127,7 @@ export async function removeBillItem(req, res) {
 }
 
 export async function cancelBill(req, res) {
-  const bill = await cancelBillFlow(req.params.billId);
+  const bill = await cancelBillFlow(req.params.billId, req.body?.bill_source || req.query?.bill_source);
   return res.status(200).json({ bill });
 }
 

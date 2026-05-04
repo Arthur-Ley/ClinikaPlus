@@ -190,6 +190,8 @@ export default function RestockSuppliers() {
     quantity: '',
     neededBy: '',
   });
+  const [completionExpiryDate, setCompletionExpiryDate] = useState('');
+  const [completionExpiryError, setCompletionExpiryError] = useState('');
   const [newSupplier, setNewSupplier] = useState({
     name: '',
     status: '' as SupplierStatus | '',
@@ -271,10 +273,11 @@ export default function RestockSuppliers() {
     const controller = new AbortController();
     setIsSupplierInsightsLoading(true);
     setSupplierInsightsError('');
+    const selectedSupplierId = selectedSupplier.supplierId;
 
     async function loadSupplierInsights() {
       try {
-        const response = await fetch(`${API_BASE_URL}/suppliers/${selectedSupplier.supplierId}/procurement-insights`, {
+        const response = await fetch(`${API_BASE_URL}/suppliers/${selectedSupplierId}/procurement-insights`, {
           signal: controller.signal,
         });
         const json = (await response.json().catch(() => null)) as SupplierProcurementInsightsResponse | { error?: string } | null;
@@ -631,7 +634,12 @@ export default function RestockSuppliers() {
 
   function openCancelRequest(request: RestockRequest) { setSelectedRequest(request); setModal('cancelRequest'); }
 
-  function openCompleteRequest(request: RestockRequest) { setSelectedRequest(request); setModal('completeRequest'); }
+  function openCompleteRequest(request: RestockRequest) {
+    setSelectedRequest(request);
+    setCompletionExpiryDate('');
+    setCompletionExpiryError('');
+    setModal('completeRequest');
+  }
 
   async function confirmCancelRequest() {
     if (!selectedRequest) return;
@@ -647,13 +655,19 @@ export default function RestockSuppliers() {
 
   async function markRequestAsCompleted() {
     if (!selectedRequest) return;
+    if (!completionExpiryDate) {
+      setCompletionExpiryError('New batch expiry date is required.');
+      return;
+    }
     try {
-      await updateRestockRequest(selectedRequest.requestId, { status: 'Completed' });
+      await updateRestockRequest(selectedRequest.requestId, { status: 'Completed', expiryDate: completionExpiryDate });
       await syncRestockRequests();
       setModal('none');
       setSelectedRequest(null);
+      setCompletionExpiryDate('');
+      setCompletionExpiryError('');
     } catch (error) {
-      setLoadError(error instanceof Error ? error.message : 'Failed to complete request.');
+      setCompletionExpiryError(error instanceof Error ? error.message : 'Failed to complete request.');
     }
   }
 
@@ -1260,6 +1274,19 @@ export default function RestockSuppliers() {
                   <p className="truncate font-semibold text-gray-800" title={selectedRequest.medication}>{selectedRequest.medication}</p>
                 </div>
               </div>
+              <label className="mt-4 block text-sm text-gray-700">
+                New Batch Expiry Date
+                <input
+                  type="date"
+                  className="mt-1 h-10 w-full rounded-lg border border-gray-300 bg-gray-50 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+                  value={completionExpiryDate}
+                  onChange={(e) => {
+                    setCompletionExpiryDate(e.target.value);
+                    if (completionExpiryError) setCompletionExpiryError('');
+                  }}
+                />
+              </label>
+              {completionExpiryError && <p className="mt-2 text-xs text-red-600">{completionExpiryError}</p>}
             </div>
 
             <div className="mt-5 flex items-center justify-end gap-3">

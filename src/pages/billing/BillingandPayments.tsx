@@ -19,6 +19,7 @@ import { printFinalBill } from './printFinalBill';
 import { type BillStatus } from '../../context/BillingPaymentsContext';
 import { useBillingPayments } from '../../context/useBillingPayments';
 import { supabase } from '../../lib/supabaseClient';
+import { getAuthSession } from '../../services/authApi';
 
 type BillRow = {
   id: string;
@@ -61,6 +62,7 @@ type ViewBillItem = {
 };
 type ViewBillPayment = {
   payment_id?: number;
+  payment_code?: string | null;
   payment_method?: string | null;
   amount_paid?: number | null;
   reference_number?: string | null;
@@ -239,6 +241,70 @@ function getSavedSystemMode(): SystemMode {
   if (typeof window === 'undefined') return 'standalone';
   return window.localStorage.getItem(SYSTEM_MODE_STORAGE_KEY) === 'integrated' ? 'integrated' : 'standalone';
 }
+
+function dedupeViewBillItems(items: ViewBillItem[]) {
+  const seen = new Set<string>();
+  const deduped: ViewBillItem[] = [];
+  for (const item of items) {
+    const keyById = Number(item?.bill_item_id || 0) > 0 ? `id:${Number(item.bill_item_id)}` : '';
+    const keyByShape = [
+      'shape',
+      Number(item?.medication_id || 0),
+      Number(item?.service_id || 0),
+      String(item?.service_type || '').trim().toLowerCase(),
+      String(item?.description || '').trim().toLowerCase(),
+      Number(item?.quantity || 0),
+      Number(item?.unit_price || 0),
+      Number(item?.subtotal || 0),
+    ].join('|');
+    const key = keyById || keyByShape;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+  return deduped;
+}
+
+function mergeIntegratedMedicationItems(items: ViewBillItem[]) {
+  const mergedByMedication = new Map<number, ViewBillItem>();
+  const passthrough: ViewBillItem[] = [];
+
+  for (const item of items) {
+    const serviceType = String(item?.service_type || '').trim().toLowerCase();
+    const medicationId = Number(item?.medication_id || 0);
+    const isMedication = medicationId > 0 && (serviceType === 'medication' || serviceType === 'medications');
+
+    if (!isMedication) {
+      passthrough.push(item);
+      continue;
+    }
+
+    const existing = mergedByMedication.get(medicationId);
+    if (!existing) {
+      mergedByMedication.set(medicationId, {
+        ...item,
+        quantity: Number(item?.quantity || 0),
+        subtotal: Number(item?.subtotal || 0),
+      });
+      continue;
+    }
+
+    const nextQty = Number(existing.quantity || 0) + Number(item?.quantity || 0);
+    const nextSubtotal = Number(existing.subtotal || 0) + Number(item?.subtotal || 0);
+    mergedByMedication.set(medicationId, {
+      ...existing,
+      quantity: nextQty,
+      subtotal: nextSubtotal,
+      unit_price: nextQty > 0 ? nextSubtotal / nextQty : Number(existing.unit_price || 0),
+      // Prefer the more descriptive label if available.
+      description: String(existing.description || '').trim().length >= String(item?.description || '').trim().length
+        ? existing.description
+        : item?.description,
+    });
+  }
+
+  return [...passthrough, ...mergedByMedication.values()];
+}
 function normalizeBreakdownType(service: ServiceItem) {
   if (service.type === 'medication') return 'Medications';
   const raw = (service.serviceType || '').trim().toLowerCase();
@@ -283,10 +349,10 @@ function buildDefaultBillMeta(bill: BillRow): BillUiMeta {
     services: existingBillServices,
     isSeniorCitizen: false,
     processedBy: 'Staff',
-    paymentMethod: bill.status === 'Paid' ? 'Cash' : undefined,
-    paymentDateTime: bill.status === 'Paid' ? `${bill.date}T09:15:00` : undefined,
-    paymentReference: bill.status === 'Paid' ? `REF-${bill.id}` : undefined,
-    amountPaid: bill.status === 'Paid' ? toAmount(bill.total) : undefined,
+    paymentMethod: undefined,
+    paymentDateTime: undefined,
+    paymentReference: undefined,
+    amountPaid: undefined,
     cancelledBy: bill.status === 'Cancelled' ? 'Staff' : undefined,
     cancelledReason: bill.status === 'Cancelled' ? 'Cancelled at front desk.' : undefined,
   };
@@ -775,7 +841,7 @@ export default function BillingAndPayments() {
       throw new Error('Supabase client is not configured.');
     }
 
-    const [{ data: billData, error: billError }, { data: itemsData, error: itemsError }] = await Promise.all([
+    const [{ data: billData, error: billError }, { data: itemsData, error: itemsError }, paymentsResponse] = await Promise.all([
       supabase.rpc('get_bill_with_patient', { p_bill_id: backendBillId }),
       supabase
         .schema('public')
@@ -783,10 +849,14 @@ export default function BillingAndPayments() {
         .select('bill_item_id, bill_id, service_type, service_id, medication_id, log_id, description, quantity, unit_price, subtotal')
         .eq('bill_id', backendBillId)
         .order('bill_item_id', { ascending: true }),
+      fetch(`${API_BASE_URL}/billing/payments`, { cache: 'no-store' }),
     ]);
 
     if (billError) throw billError;
     if (itemsError) throw itemsError;
+    if (!paymentsResponse.ok) {
+      throw new Error('Failed to load integrated payment details.');
+    }
 
     const bill = Array.isArray(billData)
       ? (billData[0] && typeof billData[0] === 'object' ? billData[0] as Record<string, unknown> : null)
@@ -804,10 +874,48 @@ export default function BillingAndPayments() {
       patient_id: Number(bill.patient_id ?? bill.public_patient_id ?? 0) || null,
     };
 
+    const paymentsPayload = (await paymentsResponse.json()) as {
+      items?: Array<{
+        payment_id?: number;
+        payment_code?: string | null;
+        bill_id?: number;
+        bill_source?: string;
+        payment_method?: string | null;
+        amount_paid?: number | null;
+        reference_number?: string | null;
+        payment_date?: string | null;
+        received_by?: string | null;
+        status?: string | null;
+        voided_at?: string | null;
+      }>;
+    };
+    const payments = (paymentsPayload.items || [])
+      .filter((row) => Number(row.bill_id) === backendBillId)
+      .filter((row) => String(row.bill_source || '').toLowerCase() === 'integrated')
+      .filter((row) => String(row.status || '').toLowerCase() !== 'voided')
+      .filter((row) => !row.voided_at)
+      .sort((a, b) => new Date(a.payment_date || 0).getTime() - new Date(b.payment_date || 0).getTime())
+      .map((row) => ({
+        payment_id: row.payment_id,
+        payment_code: row.payment_code ?? null,
+        payment_method: row.payment_method ?? null,
+        amount_paid: row.amount_paid ?? null,
+        reference_number: row.reference_number ?? null,
+        payment_date: row.payment_date ?? null,
+        received_by: row.received_by ?? null,
+      } satisfies ViewBillPayment));
+    const totalPaid = payments.reduce((sum, row) => sum + Number(row.amount_paid ?? 0), 0);
+    const netAmount = Number(bill.net_amount ?? bill.total_amount ?? 0);
+
+    const rawItems = Array.isArray(itemsData) ? itemsData as ViewBillItem[] : [];
+    const normalizedItems = mergeIntegratedMedicationItems(dedupeViewBillItems(rawItems));
+
     return {
       bill: normalizedBill,
-      items: Array.isArray(itemsData) ? itemsData as ViewBillItem[] : [],
-      payments: [],
+      items: normalizedItems,
+      payments,
+      total_paid: totalPaid,
+      remaining_balance: Math.max(0, netAmount - totalPaid),
     };
   }
 
@@ -1731,9 +1839,137 @@ export default function BillingAndPayments() {
     setIsReprintConfirming(false);
   }
 
+  async function printAccurateReceipt() {
+    const activeBill = selectedBill ?? selectedPayRow;
+    if (!activeBill) return;
+    const meta = billMetaById[activeBill.id] ?? buildDefaultBillMeta(activeBill);
+    const activeBillId = activeBill.backendBillId ?? billingRecords.find((row) => row.id === activeBill.id)?.backendBillId ?? null;
+    let detailsPayload: ViewBillDetailsResponse | null = null;
+    if (activeBillId) {
+      try {
+        detailsPayload = activeBill.source === 'integrated'
+          ? await fetchIntegratedBillDetails(activeBillId)
+          : await (async () => {
+            const response = await fetch(`${API_BASE_URL}/billing/bills/${activeBillId}`);
+            if (!response.ok) return null;
+            return await response.json() as ViewBillDetailsResponse;
+          })();
+      } catch {
+        detailsPayload = null;
+      }
+    }
+
+    const detailItems = Array.isArray(detailsPayload?.items) ? detailsPayload.items : [];
+    const detailPayments = Array.isArray(detailsPayload?.payments) ? detailsPayload.payments : [];
+    const latestPayment = detailPayments.length ? detailPayments[detailPayments.length - 1] : null;
+    const latestPaymentWithReference = [...detailPayments]
+      .reverse()
+      .find((payment) => typeof payment?.reference_number === 'string' && payment.reference_number.trim().length > 0) ?? null;
+    const detailBill = detailsPayload?.bill && typeof detailsPayload.bill === 'object'
+      ? detailsPayload.bill as Record<string, unknown>
+      : null;
+    const receiptDateTime = latestPayment?.payment_date || meta.paymentDateTime || activeBill.date;
+    const paymentMethod = latestPayment?.payment_method || meta.paymentMethod || 'N/A';
+    const paymentReference = latestPaymentWithReference?.reference_number || meta.paymentReference || 'N/A';
+    const amountPaid = Number(latestPayment?.amount_paid ?? meta.amountPaid ?? 0);
+    const receiptNo = latestPayment?.payment_code || (latestPayment?.payment_id ? `PAY-${latestPayment.payment_id}` : `PAY-${activeBill.id}`);
+    const netAmount = Number(detailBill?.net_amount ?? detailBill?.total_amount ?? toAmount(activeBill.total));
+    const totalPaid = Number(detailsPayload?.total_paid ?? amountPaid);
+    const remainingBalance = Number(detailsPayload?.remaining_balance ?? Math.max(0, netAmount - totalPaid));
+    const billStatus = String(detailBill?.status ?? activeBill.status ?? 'N/A');
+    const sessionUser = getAuthSession()?.user;
+    const currentUserName = [sessionUser?.firstName, sessionUser?.lastName]
+      .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+      .join(' ')
+      .trim();
+    const receiverRelation = latestPayment?.receiver && typeof latestPayment.receiver === 'object'
+      ? (Array.isArray(latestPayment.receiver) ? latestPayment.receiver[0] : latestPayment.receiver)
+      : null;
+    const receiverName = receiverRelation && typeof receiverRelation === 'object'
+      ? [receiverRelation.first_name, receiverRelation.last_name]
+          .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+          .join(' ')
+          .trim()
+      : '';
+    const receivedBy = receiverName || latestPayment?.received_by || currentUserName || 'N/A';
+
+    const printWindow = window.open('', '_blank', 'width=760,height=900');
+    if (!printWindow) {
+      window.alert('Please allow pop-ups to print the receipt.');
+      return;
+    }
+
+    printWindow.document.write(`
+      <!doctype html>
+      <html>
+        <head>
+          <title>Receipt ${escapeHtml(receiptNo)}</title>
+          <style>
+            body { font-family: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif; margin: 32px; color: #111827; }
+            .header { margin-bottom: 24px; }
+            .title { font-size: 24px; font-weight: 700; margin: 0 0 6px; }
+            .subtitle { color: #4b5563; margin: 0; }
+            .section { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; }
+            .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; }
+            .label { font-size: 12px; color: #6b7280; text-transform: uppercase; margin-bottom: 4px; }
+            .value { font-size: 14px; font-weight: 600; }
+            table { width: 100%; border-collapse: collapse; margin: 24px 0; }
+            th, td { border-bottom: 1px solid #e5e7eb; padding: 10px 8px; font-size: 14px; }
+            th { text-align: left; color: #4b5563; }
+            .summary { margin-top: 20px; border-top: 2px solid #d1d5db; padding-top: 14px; }
+            .summary-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
+            .summary-row.total { font-size: 16px; font-weight: 700; }
+            .footer { margin-top: 28px; font-size: 12px; color: #6b7280; text-align: center; }
+            @media print { body { margin: 20px; } }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <p class="title">CliniKaPlus</p>
+            <p class="subtitle">OFFICIAL RECEIPT</p>
+          </div>
+
+          <div class="section">
+            <div class="meta">
+              <div><div class="label">Receipt No.</div><div class="value">${escapeHtml(receiptNo)}</div></div>
+              <div><div class="label">Date & Time</div><div class="value">${escapeHtml(toDateTimeDisplay(receiptDateTime))}</div></div>
+              <div><div class="label">Patient</div><div class="value">${escapeHtml(activeBill.patient)}</div></div>
+              <div><div class="label">Bill Code</div><div class="value">${escapeHtml(activeBill.id)}</div></div>
+              <div><div class="label">Payment Method</div><div class="value">${escapeHtml(paymentMethod)}</div></div>
+              <div><div class="label">Reference Number</div><div class="value">${escapeHtml(paymentReference)}</div></div>
+              <div><div class="label">Received By</div><div class="value">${escapeHtml(receivedBy)}</div></div>
+              <div><div class="label">Bill Status</div><div class="value">${escapeHtml(billStatus)}</div></div>
+            </div>
+            <div class="summary">
+              <div class="summary-row"><span>Bill Net Amount</span><strong>${formatPhp(netAmount)}</strong></div>
+              <div class="summary-row"><span>Total Paid</span><strong>${formatPhp(totalPaid)}</strong></div>
+              <div class="summary-row"><span>Remaining Balance</span><strong>${formatPhp(remainingBalance)}</strong></div>
+              <div class="summary-row total"><span>Amount Paid</span><span>${formatPhp(amountPaid)}</span></div>
+            </div>
+          </div>
+
+          <div class="footer">
+            This payment receipt was generated from CliniKaPlus.
+          </div>
+          <script>
+            window.onload = function () {
+              window.print();
+              window.onafterprint = function () { window.close(); };
+            };
+          </script>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+  }
+
   function printBillDocument(kind: 'bill' | 'receipt') {
     const activeBill = selectedBill ?? selectedPayRow;
     if (!activeBill) return;
+    if (kind === 'receipt') {
+      void printAccurateReceipt();
+      return;
+    }
     const meta = billMetaById[activeBill.id] ?? buildDefaultBillMeta(activeBill);
     const resolvedTotal = meta.services.length
       ? meta.services.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0)
@@ -1907,6 +2143,8 @@ export default function BillingAndPayments() {
       const paidDate = new Date().toISOString();
       await markPaymentPaid({
         id: selectedPayRow.id,
+        backendBillId: selectedPayRow.backendBillId,
+        billSource: selectedPayRow.source,
         method: selectedMethod,
         amountPaid,
         reference: paymentReferenceInput.trim() || undefined,
@@ -2009,7 +2247,7 @@ export default function BillingAndPayments() {
   }, [paymentAmount, selectedPayRow.id, safePaymentAmountDue]);
   const paymentReference = paymentReferenceInput || 'N/A';
   function closePayModals() { closeAuxiliaryModals(); }
-  function printBillReceipt() { printBillDocument('receipt'); }
+  function printBillReceipt() { void printAccurateReceipt(); }
 
   const isEditingExisting = modal === 'viewBill';
 
@@ -3614,7 +3852,7 @@ export default function BillingAndPayments() {
                 <div className="flex justify-between"><span>Bill Code</span><span className="font-semibold">{paymentBillCode}</span></div>
                 <div className="mt-2 flex justify-between"><span>Amount Paid</span><span className="font-semibold">{toPeso(Number(paymentAmount || safePaymentAmountDue || 0))}</span></div>
                 <div className="mt-2 flex justify-between"><span>Payment Method</span><span className="font-semibold">{paymentMethodLabel}</span></div>
-                <div className="mt-2 flex justify-between"><span>Date</span><span className="font-semibold">{formatDateMed(new Date().toISOString())}</span></div>
+                <div className="mt-2 flex justify-between"><span>Date &amp; Time</span><span className="font-semibold">{toDateTimeDisplay(latestViewPayment?.payment_date || selectedBillMeta?.paymentDateTime || selectedPayRow.date)}</span></div>
               </div>
               <div className="px-6 py-4">
                 <div className="flex gap-2">

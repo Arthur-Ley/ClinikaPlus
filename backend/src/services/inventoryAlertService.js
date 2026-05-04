@@ -6,6 +6,23 @@ const STOCK_ALERT_TYPE = "Stock Risk";
 const EXPIRATION_ALERT_TYPE = "Expiration Risk";
 const LEGACY_EXPIRY_ALERT_TYPE = "Expiry Risk";
 const SUPPORTED_ALERT_TYPES = [STOCK_ALERT_TYPE, EXPIRATION_ALERT_TYPE, LEGACY_EXPIRY_ALERT_TYPE];
+const EXPIRY_WARNING_DAYS = 30;
+
+function daysUntil(dateValue) {
+  if (!dateValue) return null;
+  const target = new Date(dateValue);
+  if (Number.isNaN(target.getTime())) return null;
+  const diffMs = target.getTime() - Date.now();
+  return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+}
+
+function getExpiryStatus(expiryDate) {
+  const days = daysUntil(expiryDate);
+  if (days === null) return "N/A";
+  if (days < 0) return "Expired";
+  if (days <= EXPIRY_WARNING_DAYS) return "Near Expiry";
+  return "Valid";
+}
 
 function normalizeAlertType(alertType) {
   const value = String(alertType || "").trim().toLowerCase();
@@ -141,7 +158,33 @@ function buildAlertCandidates(stock) {
 
 async function syncAndListInventoryAlerts() {
   const stocks = await listMedicationStocks();
-  const activeStocks = stocks.filter((stock) => buildAlertCandidates(stock).length > 0);
+  const stockRows = stocks.filter((stock) => Boolean(buildStockAlertCandidate(stock)));
+
+  // Expiry alerts must consider all non-empty batches, not just latest per medication.
+  const { data: batchRows, error: batchError } = await supabase
+    .from("tbl_batches")
+    .select("batch_id, medication_id, batch_number, quantity, expiry_date")
+    .gt("quantity", 0)
+    .not("expiry_date", "is", null);
+  if (batchError) throw batchError;
+
+  const medicationInfoById = new Map(stocks.map((stock) => [stock.medication_id, stock]));
+  const expiryRows = (batchRows || [])
+    .map((batch) => {
+      const base = medicationInfoById.get(batch.medication_id);
+      if (!base) return null;
+      const expiryStatus = getExpiryStatus(batch.expiry_date);
+      return {
+        ...base,
+        batch_id: batch.batch_id,
+        batch_number: batch.batch_number || null,
+        batch_quantity: Number(batch.quantity || 0),
+        expiry_date: batch.expiry_date,
+        expiry_status: expiryStatus,
+        days_until_expiry: daysUntil(batch.expiry_date),
+      };
+    })
+    .filter((row) => row && Boolean(buildExpiryAlertCandidate(row)));
 
   const { data: unresolvedRows, error: unresolvedError } = await supabase
     .from("tbl_inventory_alerts")
@@ -157,39 +200,38 @@ async function syncAndListInventoryAlerts() {
   const updateRows = [];
   const insertRows = [];
 
-  activeStocks.forEach((stock) => {
-    const candidates = buildAlertCandidates(stock);
-    candidates.forEach((candidate) => {
-      const key = getActiveAlertKey(stock.batch_id, stock.medication_id, candidate.alert_type);
-      activeKeys.add(key);
-      const existing = unresolvedByKey.get(key);
-      if (!existing) {
-        if (!stock.batch_id) {
-          return;
-        }
-        if (pendingInsertKeys.has(key)) {
-          return;
-        }
-        pendingInsertKeys.add(key);
-        insertRows.push({
-          medication_id: stock.medication_id,
-          batch_id: stock.batch_id,
-          alert_type: candidate.alert_type,
-          severity: candidate.severity,
-          alert_message: candidate.message,
-          is_resolved: false,
-        });
+  const activeEntries = [
+    ...stockRows.map((stock) => ({ stock, candidate: buildStockAlertCandidate(stock) })),
+    ...expiryRows.map((stock) => ({ stock, candidate: buildExpiryAlertCandidate(stock) })),
+  ].filter((entry) => entry.candidate);
+
+  activeEntries.forEach(({ stock, candidate }) => {
+    const key = getActiveAlertKey(stock.batch_id, stock.medication_id, candidate.alert_type);
+    activeKeys.add(key);
+    const existing = unresolvedByKey.get(key);
+    if (!existing) {
+      if (!stock.batch_id || pendingInsertKeys.has(key)) {
         return;
       }
+      pendingInsertKeys.add(key);
+      insertRows.push({
+        medication_id: stock.medication_id,
+        batch_id: stock.batch_id,
+        alert_type: candidate.alert_type,
+        severity: candidate.severity,
+        alert_message: candidate.message,
+        is_resolved: false,
+      });
+      return;
+    }
 
-      if (existing.severity !== candidate.severity || existing.alert_message !== candidate.message) {
-        updateRows.push({
-          alert_id: existing.alert_id,
-          severity: candidate.severity,
-          alert_message: candidate.message,
-        });
-      }
-    });
+    if (existing.severity !== candidate.severity || existing.alert_message !== candidate.message) {
+      updateRows.push({
+        alert_id: existing.alert_id,
+        severity: candidate.severity,
+        alert_message: candidate.message,
+      });
+    }
   });
 
   (unresolvedRows || []).forEach((row) => {
@@ -237,10 +279,10 @@ async function syncAndListInventoryAlerts() {
 
   const finalByKey = new Map((finalRows || []).map((row) => [getPersistedAlertKey(row), row]));
 
-  return activeStocks
+  return [...stockRows, ...expiryRows]
     .flatMap((stock) => {
-      const stockCandidate = buildStockAlertCandidate(stock);
-      const expiryCandidate = buildExpiryAlertCandidate(stock);
+      const stockCandidate = stockRows.includes(stock) ? buildStockAlertCandidate(stock) : null;
+      const expiryCandidate = expiryRows.includes(stock) ? buildExpiryAlertCandidate(stock) : null;
       const alerts = [];
 
       if (stockCandidate) {

@@ -16,20 +16,26 @@ import {
   fetchPaymentsWithBillContext,
   getAppUserById,
   getBillById,
+  getBillsByIdsWithPatients,
+  getIntegratedBillById,
   getBillItemById,
   getBillItemsByBillId,
   getBatchStockTotalByMedicationId,
   getInventoryByMedicationId,
   getMedicationById,
+  listMedicationCatalogForMatching,
   getNextCode,
   getPaymentsByBillId,
+  getPaymentsByBillIdAndSource,
   findPatientUuidByIdentifier,
   hasAnyPayment,
+  hasAnyPaymentBySource,
   createPrescriptionUsageLog,
   deletePrescriptionUsageLogById,
   fetchPrescriptionUsageLogsForReports,
   listAvailableBatchesByMedicationId,
   listMedicationBillItemsByBillId,
+  listIntegratedMedicationBillItemsByBillId,
   listActiveServices,
   listPatients,
   listPaymentsWithBillPatient,
@@ -37,6 +43,7 @@ import {
   listBillIdsByItemDateRange,
   listBillsFiltered,
   listPaymentsForBills,
+  updateIntegratedBillById,
   updateBillById,
   updateBillItemById,
   updateBatchById,
@@ -322,6 +329,62 @@ function isMedicationServiceType(value) {
   return normalizeText(value).toLowerCase() === "medications";
 }
 
+const INTEGRATED_MEDICATION_NAME_MAP = new Map(
+  Object.entries({
+    "cetirizine 10mg": 7,
+    "ibuprofen 40mg": 5,
+    "ibuprofen 400mg tablet": 5,
+    "meropenem 1g": 18,
+    "amoxicillin 500mg capsule": 2,
+    "azithromycin 500mg tablet": 4,
+    "omeprazole 20mg capsule": 9,
+    "amlodipine 5mg tablet": 8,
+    "aspirin 150mg": 17,
+    "paracetamol 500mg tablet": 13,
+    "mefenamic acid 500mg capsule": 1,
+    "warfarin 5mg tablet": 10,
+    "diclofenac 100mg": 14,
+    "ascorbic acid 500mg tablet": 6,
+  })
+);
+
+function normalizeMedicationMatchKey(value) {
+  const raw = normalizeText(value).toLowerCase();
+  if (!raw) return "";
+  const strippedForms = raw
+    .replace(/\b(tablet|tab|capsule|cap|syrup|suspension|injectable|injection|vial)\b/g, " ")
+    .replace(/[^a-z0-9\s.-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return strippedForms;
+}
+
+function resolveIntegratedMedicationIdFromDescription(item, catalog, catalogByExact, catalogByNormalized) {
+  const directId = toPositiveInt(item?.medication_id);
+  if (directId) return directId;
+
+  const description = normalizeText(item?.description);
+  if (!description) return null;
+
+  const mappedId = INTEGRATED_MEDICATION_NAME_MAP.get(description.toLowerCase());
+  if (mappedId) return mappedId;
+
+  const exact = catalogByExact.get(description.toLowerCase());
+  if (exact) return exact;
+
+  const normalized = normalizeMedicationMatchKey(description);
+  if (!normalized) return null;
+
+  const normalizedMatch = catalogByNormalized.get(normalized);
+  if (normalizedMatch) return normalizedMatch;
+
+  const startsWithMatch = catalog.find((med) => {
+    const medName = normalizeMedicationMatchKey(med?.medication_name);
+    return medName && (normalized.startsWith(medName) || medName.startsWith(normalized));
+  });
+  return toPositiveInt(startsWithMatch?.medication_id) || null;
+}
+
 function classifyServiceSubtotal(item) {
   const amount = roundCurrency(Number(item?.subtotal || 0));
   const isMedication = toPositiveInt(item?.medication_id ?? item?.log_id);
@@ -357,23 +420,128 @@ function toTransactionRecord(row) {
   const patientId = bill?.patient_id ?? null;
   const patientName = resolvePatientName(bill?.tbl_patients, patientId);
   const paymentDate = row?.payment_date || row?.created_at || bill?.created_at || null;
+  const parsedPaymentDate = paymentDate ? new Date(paymentDate) : null;
+  const paymentDateTime = parsedPaymentDate && !Number.isNaN(parsedPaymentDate.getTime())
+    ? parsedPaymentDate.toISOString()
+    : paymentDate;
 
   return {
     payment_id: row.payment_id,
     payment_code: row.payment_code || `PAY-${row.payment_id}`,
     bill_id: row.bill_id,
+    bill_source: row.bill_source || "native",
     bill_code: bill?.bill_code || `BILL-${row.bill_id}`,
     patient_id: patientId,
     patient_name: patientName,
     amount: roundCurrency(Number(row.amount_paid || 0)),
     method: normalizeMethodLabel(row.payment_method),
-    date: toIsoDateOnly(paymentDate),
-    paid_at: paymentDate,
+    date: paymentDateTime,
+    paid_at: paymentDateTime,
     reference_number: row.reference_number || null,
     received_by: resolveUserDisplayName(row.receiver),
-    bill_status: bill?.status || "Paid",
-    status: "Paid",
+    bill_status: bill?.status || "Pending",
+    status: row?.status || "Paid",
   };
+}
+
+function isVoidedPayment(payment) {
+  const normalizedStatus = normalizeText(payment?.status).toLowerCase();
+  return normalizedStatus === "voided" || Boolean(payment?.voided_at);
+}
+
+function sumActivePayments(payments) {
+  return roundCurrency(
+    (payments || [])
+      .filter((payment) => !isVoidedPayment(payment))
+      .reduce((sum, payment) => sum + Number(payment.amount_paid || 0), 0)
+  );
+}
+
+function buildIntegratedPatientRelation(integratedBill) {
+  if (!integratedBill || typeof integratedBill !== "object") return null;
+
+  const nestedPatient = integratedBill.patient && typeof integratedBill.patient === "object"
+    ? integratedBill.patient
+    : null;
+
+  const firstName = normalizeText(integratedBill.first_name || nestedPatient?.first_name);
+  const lastName = normalizeText(integratedBill.last_name || nestedPatient?.last_name);
+  if (firstName || lastName) {
+    return {
+      first_name: firstName || "",
+      last_name: lastName || "",
+      full_name: [firstName, lastName].filter(Boolean).join(" ").trim() || null,
+    };
+  }
+
+  const fullName = normalizeText(
+    integratedBill.full_name
+    || integratedBill.patient_name
+    || integratedBill.name
+    || nestedPatient?.full_name
+    || nestedPatient?.patient_name
+    || nestedPatient?.name
+  );
+  if (!fullName) return null;
+  return {
+    first_name: fullName,
+    last_name: "",
+    full_name: fullName,
+  };
+}
+
+async function hydratePaymentRowsWithBillContext(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows || [];
+
+  const nativeBillIds = [];
+  const integratedBillIds = [];
+
+  for (const row of rows) {
+    const source = normalizeText(row?.bill_source).toLowerCase() || "native";
+    if (source === "integrated") integratedBillIds.push(row.bill_id);
+    else nativeBillIds.push(row.bill_id);
+  }
+
+  const nativeBillMap = new Map();
+  const integratedBillMap = new Map();
+
+  if (nativeBillIds.length) {
+    const nativeBills = await getBillsByIdsWithPatients(Array.from(new Set(nativeBillIds)));
+    for (const bill of nativeBills) {
+      nativeBillMap.set(bill.bill_id, bill);
+    }
+  }
+
+  if (integratedBillIds.length) {
+    const ids = Array.from(new Set(integratedBillIds));
+    const integratedBills = await Promise.all(ids.map((id) => getIntegratedBillById(id).catch(() => null)));
+    for (let i = 0; i < ids.length; i += 1) {
+      const bill = integratedBills[i];
+      if (!bill) continue;
+      integratedBillMap.set(ids[i], {
+        bill_id: ids[i],
+        bill_code: bill.bill_code || null,
+        patient_id: bill.patient_id ?? null,
+        status: bill.status || null,
+        net_amount: bill.net_amount ?? null,
+        total_amount: bill.total_amount ?? null,
+        created_at: bill.created_at || null,
+        tbl_patients: buildIntegratedPatientRelation(bill),
+      });
+    }
+  }
+
+  return rows.map((row) => {
+    const source = normalizeText(row?.bill_source).toLowerCase() || "native";
+    const mappedBill = source === "integrated"
+      ? integratedBillMap.get(row.bill_id) || null
+      : nativeBillMap.get(row.bill_id) || null;
+
+    return {
+      ...row,
+      tbl_bills: mappedBill,
+    };
+  });
 }
 
 function buildPaymentsByBillId(payments) {
@@ -525,7 +693,21 @@ function buildRevenueSeries(transactions, granularity) {
 }
 
 async function ensureBillExists(billId) {
+  return ensureBillExistsBySource(billId, "native");
+}
+
+function normalizeBillSource(value) {
+  const normalized = normalizeText(value).toLowerCase();
+  if (!normalized) return "native";
+  if (normalized === "native" || normalized === "integrated") return normalized;
+  throw badRequest("'bill_source' must be either 'native' or 'integrated'.");
+}
+
+async function ensureBillExistsBySource(billId, billSource) {
   try {
+    if (billSource === "integrated") {
+      return await getIntegratedBillById(billId);
+    }
     return await getBillById(billId);
   } catch (error) {
     if (error?.code === "PGRST116") {
@@ -929,9 +1111,38 @@ async function rollbackPaidMedicationDeductions(state) {
   }
 }
 
-async function applyPaidMedicationDeductionsForBill({ billId, billCode }) {
-  const medicationItems = (await listMedicationBillItemsByBillId(billId)).filter(
-    (item) => isMedicationServiceType(item?.service_type) || Boolean(toPositiveInt(item?.medication_id))
+async function applyPaidMedicationDeductionsForBill({ billId, billCode, billSource = "native" }) {
+  const integratedItemsRaw = billSource === "integrated"
+    ? await listIntegratedMedicationBillItemsByBillId(billId)
+    : [];
+  const medicationItems = billSource === "integrated"
+    ? integratedItemsRaw.filter((item) => {
+      const serviceType = String(item?.service_type || "").trim().toLowerCase();
+      return serviceType === "medication"
+        || serviceType === "medications"
+        || Boolean(toPositiveInt(item?.medication_id));
+    })
+    : (await listMedicationBillItemsByBillId(billId)).filter(
+      (item) => isMedicationServiceType(item?.service_type) || Boolean(toPositiveInt(item?.medication_id))
+    );
+  if (billSource === "integrated") {
+    console.log("[integrated-deduction] raw bill items", {
+      billId,
+      rows: integratedItemsRaw.map((item) => ({
+        bill_item_id: item?.bill_item_id,
+        description: item?.description ?? null,
+        medication_id: item?.medication_id ?? null,
+        service_type: item?.service_type ?? null,
+        quantity: item?.quantity ?? null,
+      })),
+    });
+  }
+  const medicationCatalog = billSource === "integrated" ? await listMedicationCatalogForMatching() : [];
+  const catalogByExact = new Map(
+    medicationCatalog.map((row) => [String(row?.medication_name || "").trim().toLowerCase(), toPositiveInt(row?.medication_id) || 0])
+  );
+  const catalogByNormalized = new Map(
+    medicationCatalog.map((row) => [normalizeMedicationMatchKey(row?.medication_name), toPositiveInt(row?.medication_id) || 0])
   );
 
   if (!medicationItems.length) {
@@ -944,13 +1155,23 @@ async function applyPaidMedicationDeductionsForBill({ billId, billCode }) {
     updatedBillItems: [],
     inventorySnapshots: [],
   };
+  const directInventoryAdjusted = new Set();
 
   try {
     const affectedMedicationIds = new Set();
 
     for (const item of medicationItems) {
-      const medicationId = toPositiveInt(item?.medication_id);
+      const medicationId = billSource === "integrated"
+        ? resolveIntegratedMedicationIdFromDescription(item, medicationCatalog, catalogByExact, catalogByNormalized)
+        : toPositiveInt(item?.medication_id);
       const quantityRequired = toPositiveInt(item?.quantity) || 0;
+
+      if (billSource === "integrated" && !medicationId && quantityRequired > 0) {
+        const rawName = normalizeText(item?.description) || "Unknown medication";
+        throw conflict(
+          `Unable to map integrated medication "${rawName}" (bill_item_id=${item?.bill_item_id ?? "n/a"}, service_type=${String(item?.service_type || "")}) to subsystem3.tbl_medications. Please align medication names or store medication_id in public.tbl_bill_items.`
+        );
+      }
 
       if (!medicationId || quantityRequired <= 0) {
         continue;
@@ -961,42 +1182,88 @@ async function applyPaidMedicationDeductionsForBill({ billId, billCode }) {
       const medication = await getMedicationById(medicationId);
       const medicationName = normalizeText(medication?.medication_name) || `Medication #${medicationId}`;
       const availableBatches = await listAvailableBatchesByMedicationId(medicationId);
-      const selectedBatch = availableBatches[0] || null;
+      const totalAvailableFromBatches = availableBatches.reduce((sum, batch) => sum + Number(batch?.quantity || 0), 0);
+      const inventory = await getInventoryByMedicationId(medicationId);
+      let remainingQuantity = quantityRequired;
+      let firstUsageLogId = null;
 
-      if (!selectedBatch || Number(selectedBatch.quantity || 0) < quantityRequired) {
+      if (totalAvailableFromBatches < quantityRequired) {
+        const inventoryTotal = Number(inventory?.total_stock || 0);
+        if (inventoryTotal < quantityRequired) {
+          throw conflict(`Insufficient stock for ${medicationName}. Please update inventory before marking as Paid.`);
+        }
+
+        rollbackState.inventorySnapshots.push({
+          medication_id: medicationId,
+          total_stock: inventoryTotal,
+          status: inventory?.status || "Adequate",
+          last_updated: inventory?.last_updated || null,
+        });
+
+        const nextInventoryTotal = inventoryTotal - quantityRequired;
+        const reorderThreshold = Number(medication?.reorder_threshold || 0);
+        await updateInventoryByMedicationId(medicationId, {
+          total_stock: nextInventoryTotal,
+          status: deriveInventoryStatusForPaidFlow(nextInventoryTotal, reorderThreshold),
+          last_updated: new Date().toISOString(),
+        });
+
+        directInventoryAdjusted.add(medicationId);
+        remainingQuantity = 0;
+      }
+
+      for (const batch of availableBatches) {
+        if (remainingQuantity <= 0) break;
+        const batchQty = Number(batch?.quantity || 0);
+        if (batchQty <= 0) continue;
+
+        const deductQty = Math.min(batchQty, remainingQuantity);
+        rollbackState.batchSnapshots.push({
+          batch_id: batch.batch_id,
+          previous_quantity: batchQty,
+        });
+
+        await updateBatchById(batch.batch_id, {
+          quantity: batchQty - deductQty,
+        });
+
+        const usageLog = await createPrescriptionUsageLog({
+          medication_id: medicationId,
+          batch_id: batch.batch_id,
+          quantity_dispensed: deductQty,
+          dispensed_at: new Date().toISOString(),
+          bill_id: billSource === "integrated" ? null : billId,
+          reference_number: billCode,
+        });
+
+        if (!firstUsageLogId) {
+          firstUsageLogId = usageLog.log_id;
+        }
+        rollbackState.insertedLogIds.push(usageLog.log_id);
+        remainingQuantity -= deductQty;
+      }
+
+      if (remainingQuantity > 0) {
         throw conflict(`Insufficient stock for ${medicationName}. Please update inventory before marking as Paid.`);
       }
 
-      rollbackState.batchSnapshots.push({
-        batch_id: selectedBatch.batch_id,
-        previous_quantity: Number(selectedBatch.quantity || 0),
-      });
+      if (billSource === "native" && firstUsageLogId) {
+        rollbackState.updatedBillItems.push({
+          bill_item_id: item.bill_item_id,
+          previous_log_id: item.log_id ?? null,
+        });
 
-      const nextBatchQty = Number(selectedBatch.quantity || 0) - quantityRequired;
-      await updateBatchById(selectedBatch.batch_id, {
-        quantity: nextBatchQty,
-      });
-
-      const usageLog = await createPrescriptionUsageLog({
-        medication_id: medicationId,
-        batch_id: selectedBatch.batch_id,
-        quantity_dispensed: quantityRequired,
-        dispensed_at: new Date().toISOString(),
-        reference_number: billCode,
-      });
-
-      rollbackState.insertedLogIds.push(usageLog.log_id);
-      rollbackState.updatedBillItems.push({
-        bill_item_id: item.bill_item_id,
-        previous_log_id: item.log_id ?? null,
-      });
-
-      await updateBillItemById(item.bill_item_id, {
-        log_id: usageLog.log_id,
-      });
+        await updateBillItemById(item.bill_item_id, {
+          log_id: firstUsageLogId,
+        });
+      }
     }
 
     for (const medicationId of affectedMedicationIds) {
+      if (directInventoryAdjusted.has(medicationId)) {
+        continue;
+      }
+
       const [totalStockFromBatches, medication, inventory] = await Promise.all([
         getBatchStockTotalByMedicationId(medicationId),
         getMedicationById(medicationId),
@@ -1214,11 +1481,12 @@ async function removeBillItemFlow(billId, billItemId) {
 
 async function createPaymentFlow(payload, fallbackBillId = null, currentUser = null) {
   const numericBillId = toPositiveInt(payload?.bill_id ?? fallbackBillId);
+  const billSource = normalizeBillSource(payload?.bill_source);
   if (!numericBillId) {
     throw badRequest("'bill_id' is required and must be a positive integer.");
   }
 
-  const bill = await ensureBillExists(numericBillId);
+  const bill = await ensureBillExistsBySource(numericBillId, billSource);
   if (bill.status === "Cancelled") {
     throw conflict("Cannot record payment for a cancelled bill.");
   }
@@ -1231,6 +1499,7 @@ async function createPaymentFlow(payload, fallbackBillId = null, currentUser = n
   try {
     payment = await createPaymentWithGeneratedCode({
       bill_id: numericBillId,
+      bill_source: billSource,
       payment_method: paymentInput.payment_method,
       amount_paid: paymentInput.amount_paid,
       reference_number: paymentInput.reference_number,
@@ -1239,8 +1508,8 @@ async function createPaymentFlow(payload, fallbackBillId = null, currentUser = n
       notes: paymentInput.notes,
     });
 
-    const payments = await getPaymentsByBillId(numericBillId);
-    const totalPaid = roundCurrency(payments.reduce((sum, row) => sum + Number(row.amount_paid || 0), 0));
+    const payments = await getPaymentsByBillIdAndSource(numericBillId, billSource);
+    const totalPaid = sumActivePayments(payments);
     const netAmount = roundCurrency(Number(bill.net_amount || 0));
     const nextStatus = totalPaid >= netAmount ? "Paid" : "Pending";
     const isTransitioningToPaid = bill.status !== "Paid" && nextStatus === "Paid";
@@ -1249,12 +1518,18 @@ async function createPaymentFlow(payload, fallbackBillId = null, currentUser = n
       medicationDeductionState = await applyPaidMedicationDeductionsForBill({
         billId: numericBillId,
         billCode: bill.bill_code || `BILL-${numericBillId}`,
+        billSource,
       });
     }
 
-    const updatedBill = await updateBillById(numericBillId, {
-      status: nextStatus,
-    });
+    const updatedBill = billSource === "integrated"
+      ? await updateIntegratedBillById(numericBillId, {
+          status: nextStatus,
+          updated_at: new Date().toISOString(),
+        })
+      : await updateBillById(numericBillId, {
+          status: nextStatus,
+        });
 
     return {
       payment,
@@ -1278,22 +1553,28 @@ async function createPaymentFlow(payload, fallbackBillId = null, currentUser = n
   }
 }
 
-async function cancelBillFlow(billId) {
+async function cancelBillFlow(billId, billSourceInput = "native") {
   const numericBillId = toPositiveInt(billId);
   if (!numericBillId) {
     throw badRequest("'billId' must be a positive integer.");
   }
 
-  await ensureBillExists(numericBillId);
+  const billSource = normalizeBillSource(billSourceInput);
+  await ensureBillExistsBySource(numericBillId, billSource);
 
-  const paid = await hasAnyPayment(numericBillId);
+  const paid = await hasAnyPaymentBySource(numericBillId, billSource);
   if (paid) {
     throw conflict("Cannot cancel bill with existing payments.");
   }
 
-  const updated = await updateBillById(numericBillId, {
-    status: "Cancelled",
-  });
+  const updated = billSource === "integrated"
+    ? await updateIntegratedBillById(numericBillId, {
+        status: "Cancelled",
+        updated_at: new Date().toISOString(),
+      })
+    : await updateBillById(numericBillId, {
+        status: "Cancelled",
+      });
 
   return updated;
 }
@@ -1328,7 +1609,7 @@ async function getBillDetailsFlow(billId) {
   const hydratedBill = await attachBillCreator(bill);
   const hydratedPayments = await attachPaymentReceivers(payments);
 
-  const totalPaid = roundCurrency(payments.reduce((sum, row) => sum + Number(row.amount_paid || 0), 0));
+  const totalPaid = sumActivePayments(payments);
   const remainingBalance = roundCurrency(Math.max(0, Number(bill.net_amount || 0) - totalPaid));
 
   return {
@@ -1355,7 +1636,7 @@ async function listBillsFlow(query) {
   });
 
   const ids = rows.map((row) => row.bill_id);
-  const payments = await listPaymentsForBills(ids);
+  const payments = await listPaymentsForBills(ids, "native");
 
   const paymentsByBillId = new Map();
   for (const payment of payments) {
@@ -1367,7 +1648,7 @@ async function listBillsFlow(query) {
 
   const enriched = rows.map((bill) => {
     const billPayments = paymentsByBillId.get(bill.bill_id) || [];
-    const totalPaid = roundCurrency(billPayments.reduce((sum, row) => sum + Number(row.amount_paid || 0), 0));
+    const totalPaid = sumActivePayments(billPayments);
     const remainingBalance = roundCurrency(Math.max(0, Number(bill.net_amount || 0) - totalPaid));
 
     return {
@@ -1386,12 +1667,13 @@ async function getBillingAnalyticsFlow() {
   const totalPendingBills = bills.filter((bill) => bill.status === "Pending").length;
   const totalPaidBills = bills.filter((bill) => bill.status === "Paid").length;
 
+  const activePayments = payments.filter((payment) => !isVoidedPayment(payment));
   const totalRevenue = roundCurrency(
-    payments.reduce((sum, payment) => sum + Number(payment.amount_paid || 0), 0)
+    activePayments.reduce((sum, payment) => sum + Number(payment.amount_paid || 0), 0)
   );
 
   const paidByBillId = new Map();
-  for (const payment of payments) {
+  for (const payment of activePayments) {
     const current = paidByBillId.get(payment.bill_id) || 0;
     paidByBillId.set(payment.bill_id, current + Number(payment.amount_paid || 0));
   }
@@ -1413,16 +1695,16 @@ async function getBillingAnalyticsFlow() {
   return {
   total_pending_bills: totalPendingBills,
   total_paid_bills: totalPaidBills,
-  total_transactions: payments.length,
+  total_transactions: activePayments.length,
   total_revenue: totalRevenue,
   total_outstanding_balance: totalOutstandingBalance,
   average_bill_amount: averageBillAmount,
-  payments: payments.map((p) => ({
+  payments: activePayments.map((p) => ({
     bill_id: p.bill_id,
     amount: Number(p.amount_paid || 0),
     date: p.payment_date ? new Date(p.payment_date).toISOString().slice(0, 10) : null,
     method: p.payment_method || '-',
-    status: 'Paid',
+    status: p.status || 'Paid',
   })),
 };
 }
@@ -1430,10 +1712,12 @@ async function getBillingAnalyticsFlow() {
 async function listBillingTransactionsFlow(query) {
   const params = parseTransactionListParams(query);
   const rows = await fetchPaymentsWithBillContext();
-  const hydratedRows = await attachPaymentReceivers(rows);
+  const rowsWithBills = await hydratePaymentRowsWithBillContext(rows);
+  const hydratedRows = await attachPaymentReceivers(rowsWithBills);
 
   const allTransactions = hydratedRows
     .map(toTransactionRecord)
+    .filter((row) => normalizeText(row.status).toLowerCase() !== "voided")
     .filter((row) => row.amount > 0)
     .sort((a, b) => new Date(b.paid_at || 0).getTime() - new Date(a.paid_at || 0).getTime());
 
@@ -1483,7 +1767,8 @@ async function getBillingReportsOverviewFlow(query = {}) {
     fetchPaymentsWithBillContext(),
     fetchBillItemsForReports(),
   ]);
-  const hydratedPaymentRows = await attachPaymentReceivers(paymentRows);
+  const paymentRowsWithBills = await hydratePaymentRowsWithBillContext(paymentRows);
+  const hydratedPaymentRows = await attachPaymentReceivers(paymentRowsWithBills);
 
   const transactions = hydratedPaymentRows
     .map(toTransactionRecord)
@@ -2058,10 +2343,13 @@ function toPaymentListItem(row) {
     payment_id: row.payment_id,
     payment_code: row.payment_code,
     bill_id: row.bill_id,
+    bill_source: row.bill_source || "native",
     payment_method: row.payment_method,
     amount_paid: roundCurrency(Number(row.amount_paid || 0)),
     reference_number: row.reference_number || null,
     payment_date: row.payment_date || null,
+    status: row.status || "Paid",
+    voided_at: row.voided_at || null,
     notes: row.notes || null,
     created_at: row.created_at || null,
     bill_code: bill?.bill_code || null,
@@ -2072,7 +2360,8 @@ function toPaymentListItem(row) {
 
 async function listPaymentsFlow() {
   const rows = await listPaymentsWithBillPatient();
-  const hydratedRows = await attachPaymentReceivers(rows);
+  const rowsWithBills = await hydratePaymentRowsWithBillContext(rows);
+  const hydratedRows = await attachPaymentReceivers(rowsWithBills);
   return {
     items: hydratedRows.map(toPaymentListItem),
   };
@@ -2084,7 +2373,8 @@ async function listPaymentsByBillIdFlow(billId) {
     throw badRequest("'bill_id' must be a positive integer.");
   }
   const rows = await listPaymentsByBillIdWithBillPatient(numericBillId);
-  const hydratedRows = await attachPaymentReceivers(rows);
+  const rowsWithBills = await hydratePaymentRowsWithBillContext(rows);
+  const hydratedRows = await attachPaymentReceivers(rowsWithBills);
   return {
     items: hydratedRows.map(toPaymentListItem),
   };

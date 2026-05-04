@@ -97,6 +97,18 @@ export function validateUpdateRestockRequestInput(payload) {
     next.notes = notes || null;
   }
 
+  if (payload?.expiry_date !== undefined) {
+    const expiryDate = toIsoDate(payload.expiry_date);
+    if (!expiryDate) {
+      return { ok: false, message: "'expiry_date' must be a valid date." };
+    }
+    next.expiryDate = expiryDate;
+  }
+
+  if (next.status === "Completed" && !next.expiryDate) {
+    return { ok: false, message: "'expiry_date' is required when status is Completed." };
+  }
+
   return {
     ok: true,
     data: next,

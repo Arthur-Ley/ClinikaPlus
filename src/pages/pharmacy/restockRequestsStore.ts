@@ -42,6 +42,7 @@ type UpdateRestockRequestInput = {
   status?: RestockRequestStatus;
   neededBy?: string;
   notes?: string;
+  expiryDate?: string;
 };
 
 type RestockApiItem = {
@@ -202,6 +203,7 @@ export async function updateRestockRequest(id: number, updates: UpdateRestockReq
       supplier_id: updates.supplierId,
       requested_quantity: updates.quantity,
       status: updates.status,
+      expiry_date: updates.expiryDate,
       notes: updates.notes !== undefined || updates.neededBy !== undefined
         ? buildNotes(updates.neededBy || '', updates.notes || '')
         : undefined,

@@ -74,6 +74,8 @@ type UpdateBillInput = Partial<Pick<BillRecord, 'patient' | 'date' | 'total' | '
 
 type MarkPaymentPaidInput = {
   id: string;
+  backendBillId?: number;
+  billSource?: BillSource;
   method: string;
   amountPaid: number;
   reference?: string;
@@ -373,8 +375,25 @@ async function fetchPublicBillRows(): Promise<BackendBill[]> {
         if (!rpcBill || typeof rpcBill !== 'object') return row;
         const record = rpcBill as Record<string, unknown>;
         const patientObj = record.patient && typeof record.patient === 'object' ? record.patient as Record<string, unknown> : null;
-        const patientId = Number((patientObj?.patient_id ?? record.patient_id) ?? 0) || row.patient_id;
-        if (!patientObj && row.public_patient_id) {
+        const topLevelPatient = {
+          patient_id: record.patient_id ?? null,
+          first_name: typeof record.first_name === 'string' ? record.first_name : null,
+          middle_name: typeof record.middle_name === 'string' ? record.middle_name : null,
+          last_name: typeof record.last_name === 'string' ? record.last_name : null,
+          full_name: typeof record.full_name === 'string' ? record.full_name : null,
+          patient_name: typeof record.patient_name === 'string' ? record.patient_name : null,
+          name: typeof record.name === 'string' ? record.name : null,
+        } as Record<string, unknown>;
+        const hasTopLevelPatientName = Boolean(
+          topLevelPatient.full_name
+          || topLevelPatient.patient_name
+          || topLevelPatient.name
+          || topLevelPatient.first_name
+          || topLevelPatient.last_name
+        );
+        const resolvedPatientObj = patientObj ?? (hasTopLevelPatientName ? topLevelPatient : null);
+        const patientId = Number((resolvedPatientObj?.patient_id ?? record.patient_id) ?? 0) || row.patient_id;
+        if (!resolvedPatientObj && row.public_patient_id) {
           const { data: fallbackPatient } = await client
             .schema('public')
             .from('tbl_patient')
@@ -392,7 +411,7 @@ async function fetchPublicBillRows(): Promise<BackendBill[]> {
         }
         return {
           ...row,
-          patient: patientObj ?? row.patient,
+          patient: resolvedPatientObj ?? row.patient,
           patient_id: patientId || null,
         } satisfies BackendBill;
       } catch {
@@ -591,21 +610,27 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const markPaymentPaid = useCallback(async (input: MarkPaymentPaidInput) => {
-    const row = paymentQueue.find((item) => item.id === input.id);
+    const row = paymentQueue.find((item) =>
+      item.id === input.id
+      && (input.backendBillId ? toPositiveInteger(item.backendBillId) === toPositiveInteger(input.backendBillId) : true)
+      && (input.billSource ? item.source === input.billSource : true)
+    );
     if (!row) {
       throw new Error('Payment record not found.');
     }
 
-    const backendBillId = toPositiveInteger(row.backendBillId) ?? extractPositiveInteger(row.id);
+    const backendBillId = toPositiveInteger(input.backendBillId) ?? toPositiveInteger(row.backendBillId) ?? extractPositiveInteger(row.id);
     if (!backendBillId) {
       throw new Error('Unable to resolve bill ID for payment.');
     }
+    const billSource: BillSource = input.billSource ?? row.source ?? 'native';
 
     const response = await fetch(`${API_BASE_URL}/billing/payments`, {
       method: 'POST',
       headers: createAuthHeaders(),
       body: JSON.stringify({
         bill_id: backendBillId,
+        bill_source: billSource,
         payment_method: input.method,
         amount_paid: input.amountPaid,
         reference_number: input.reference || null,
@@ -635,6 +660,9 @@ export function BillingPaymentsProvider({ children }: { children: ReactNode }) {
     const response = await fetch(`${API_BASE_URL}/billing/bills/${backendBillId}/cancel`, {
       method: 'PATCH',
       headers: createAuthHeaders(),
+      body: JSON.stringify({
+        bill_source: row.source ?? 'native',
+      }),
     });
 
     if (!response.ok) {

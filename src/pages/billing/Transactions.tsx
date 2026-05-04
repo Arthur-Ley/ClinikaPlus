@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Eye, X } from 'lucide-react';
+import { supabase } from '../../lib/supabaseClient';
 import Pagination from '../../components/ui/Pagination';
 import SectionToolbar from '../../components/ui/SectionToolbar';
 import {
@@ -13,6 +14,7 @@ type ReceiptTransaction = {
   payment_id: number;
   payment_code: string;
   bill_id: number;
+  bill_source?: 'native' | 'integrated';
   bill_code: string;
   patient_id: number | null;
   patient_name: string;
@@ -70,6 +72,7 @@ type ReceiptBillDetails = {
     subtotal_room_charge?: number | null;
     subtotal_professional_fee?: number | null;
     status?: string | null;
+    bill_status?: string | null;
   } | null;
   items?: ReceiptBillItem[];
   payments?: ReceiptBillPayment[];
@@ -340,13 +343,78 @@ export default function Transactions() {
       try {
         setIsReceiptLoading(true);
         setReceiptLoadError('');
-        const response = await fetch(`${API_BASE_URL}/billing/bills/${selectedReceipt.bill_id}`);
-        if (!response.ok) {
-          throw new Error('Failed to load receipt details.');
+        if (selectedReceipt.bill_source === 'integrated') {
+          if (!supabase) {
+            throw new Error('Integrated receipt source is unavailable.');
+          }
+
+          const [billRpc, integratedItemsQuery, paymentsResponse] = await Promise.all([
+            supabase
+              .schema('public')
+              .rpc('get_bill_with_patient', { p_bill_id: selectedReceipt.bill_id }),
+            supabase
+              .schema('public')
+              .from('tbl_bill_items')
+              .select('bill_item_id, description, quantity, unit_price, subtotal, service_type')
+              .eq('bill_id', selectedReceipt.bill_id)
+              .order('bill_item_id', { ascending: true }),
+            fetch(`${API_BASE_URL}/billing/payments`, { cache: 'no-store' }),
+          ]);
+
+          if (billRpc.error) {
+            throw new Error('Failed to load integrated bill details.');
+          }
+          if (integratedItemsQuery.error) {
+            throw new Error('Failed to load integrated billed items.');
+          }
+          if (!paymentsResponse.ok) {
+            throw new Error('Failed to load integrated payment details.');
+          }
+
+          const paymentsPayload = (await paymentsResponse.json()) as {
+            items?: Array<{
+              payment_id?: number;
+              bill_id?: number;
+              bill_source?: string;
+              payment_date?: string | null;
+              received_by?: string | null;
+              reference_number?: string | null;
+              payment_method?: string | null;
+              amount_paid?: number | null;
+              status?: string | null;
+              voided_at?: string | null;
+            }>;
+          };
+          const billRow = Array.isArray(billRpc.data) ? billRpc.data[0] : billRpc.data;
+          const payments = (paymentsPayload.items || [])
+            .filter((row) => Number(row.bill_id) === Number(selectedReceipt.bill_id))
+            .filter((row) => String(row.bill_source || '').toLowerCase() === 'integrated')
+            .filter((row) => String(row.status || '').toLowerCase() !== 'voided')
+            .filter((row) => !row.voided_at)
+            .sort((a, b) => new Date(a.payment_date || 0).getTime() - new Date(b.payment_date || 0).getTime());
+          const totalPaid = payments.reduce((sum, row) => sum + Number(row?.amount_paid || 0), 0);
+          const netAmount = Number((billRow as Record<string, unknown> | null)?.net_amount ?? (billRow as Record<string, unknown> | null)?.total_amount ?? selectedReceipt.amount ?? 0);
+          const integratedItems = Array.isArray(integratedItemsQuery.data)
+            ? integratedItemsQuery.data as ReceiptBillItem[]
+            : [];
+          const payload: ReceiptBillDetails = {
+            bill: billRow as ReceiptBillDetails['bill'],
+            items: integratedItems,
+            payments,
+            total_paid: totalPaid,
+            remaining_balance: Math.max(0, netAmount - totalPaid),
+          };
+          if (!active) return;
+          setReceiptDetails(payload);
+        } else {
+          const response = await fetch(`${API_BASE_URL}/billing/bills/${selectedReceipt.bill_id}`);
+          if (!response.ok) {
+            throw new Error('Failed to load receipt details.');
+          }
+          const payload = (await response.json()) as ReceiptBillDetails;
+          if (!active) return;
+          setReceiptDetails(payload);
         }
-        const payload = (await response.json()) as ReceiptBillDetails;
-        if (!active) return;
-        setReceiptDetails(payload);
       } catch {
         if (!active) return;
         setReceiptDetails(null);
@@ -368,15 +436,20 @@ export default function Transactions() {
   const receiptPayments = Array.isArray(receiptDetails?.payments) ? receiptDetails.payments : [];
   const latestReceiptPayment = receiptPayments.length ? receiptPayments[receiptPayments.length - 1] : null;
   const receiptTotalPaid = Number(receiptDetails?.total_paid ?? selectedReceipt?.amount ?? 0);
-  const receiptRemainingBalance = Number(receiptDetails?.remaining_balance ?? 0);
   const receiptNetAmount = Number(receiptBill?.net_amount ?? receiptBill?.total_amount ?? selectedReceipt?.amount ?? 0);
-  const receiptSubtotal = Number(
+  const receiptSubtotalFromBill = Number(
     (receiptBill?.subtotal_medications ?? 0) +
     (receiptBill?.subtotal_laboratory ?? 0) +
     (receiptBill?.subtotal_miscellaneous ?? 0) +
     (receiptBill?.subtotal_room_charge ?? 0) +
     (receiptBill?.subtotal_professional_fee ?? 0)
   );
+  const receiptSubtotalFromItems = receiptItems.reduce((sum, item) => sum + Number(item?.subtotal ?? 0), 0);
+  const receiptSubtotal = receiptSubtotalFromBill > 0 ? receiptSubtotalFromBill : receiptSubtotalFromItems;
+  const receiptRemainingBalance = Number(
+    receiptDetails?.remaining_balance ?? Math.max(0, receiptNetAmount - receiptTotalPaid)
+  );
+  const receiptBillStatus = receiptBill?.status || receiptBill?.bill_status || selectedReceipt?.bill_status || selectedReceipt?.status || 'N/A';
   const receiptReceiverName = latestReceiptPayment?.receiver
     ? [latestReceiptPayment.receiver.first_name, latestReceiptPayment.receiver.last_name]
         .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -453,7 +526,7 @@ export default function Transactions() {
               </div>
               <div>
                 <div class="label">Bill Status</div>
-                <div class="value">${receiptBill?.status || selectedReceipt.bill_status || selectedReceipt.status}</div>
+                <div class="value">${receiptBillStatus}</div>
               </div>
             </div>
 
@@ -683,7 +756,7 @@ export default function Transactions() {
                     <div className="flex justify-between"><span>Subtotal</span><span className="font-semibold">{formatPeso(receiptSubtotal)}</span></div>
                     <div className="flex justify-between"><span>Discount</span><span className="font-semibold">{formatPeso(Number(receiptBill?.less_amount ?? 0))}</span></div>
                     <div className="flex justify-between"><span>Discount Type</span><span className="font-semibold">{receiptBill?.discount_type || 'None'}</span></div>
-                    <div className="flex justify-between"><span>Bill Status</span><span className="font-semibold">{receiptBill?.status || selectedReceipt.bill_status || selectedReceipt.status}</span></div>
+                    <div className="flex justify-between"><span>Bill Status</span><span className="font-semibold">{receiptBillStatus}</span></div>
                   </div>
                 </div>
 

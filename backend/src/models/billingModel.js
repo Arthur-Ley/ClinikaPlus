@@ -58,6 +58,9 @@ const BILL_ITEM_SELECT = [
   "created_at",
 ].join(", ");
 
+const PAYMENT_SELECT =
+  "payment_id, payment_code, bill_id, bill_source, payment_method, amount_paid, reference_number, payment_date, received_by, notes, status, updated_by, voided_by, voided_at, void_reason, updated_at, created_at";
+
 async function getNextCode(tableName, codeColumn, prefix) {
   if (tableName === "tbl_payments" && codeColumn === "payment_code") {
     const { data, error } = await supabase
@@ -154,7 +157,7 @@ async function listBillsFiltered({ status, page, pageSize, billIds }) {
 
   let query = supabase
     .from("tbl_bills")
-    .select(`${BILL_SELECT}, tbl_payments(payment_id, amount_paid, payment_date, payment_method)`, {
+    .select(BILL_SELECT, {
       count: "exact",
     })
     .order("bill_id", { ascending: false });
@@ -253,9 +256,7 @@ async function createPayment(row) {
   const { data, error } = await supabase
     .from("tbl_payments")
     .insert(row)
-    .select(
-      "payment_id, payment_code, bill_id, payment_method, amount_paid, reference_number, payment_date, received_by, notes, created_at"
-    )
+    .select(PAYMENT_SELECT)
     .single();
 
   if (error) throw error;
@@ -268,12 +269,15 @@ async function deletePaymentById(paymentId) {
 }
 
 async function getPaymentsByBillId(billId) {
+  return getPaymentsByBillIdAndSource(billId, "native");
+}
+
+async function getPaymentsByBillIdAndSource(billId, billSource) {
   const { data, error } = await supabase
     .from("tbl_payments")
-    .select(
-      "payment_id, payment_code, bill_id, payment_method, amount_paid, reference_number, payment_date, received_by, notes, created_at"
-    )
+    .select(PAYMENT_SELECT)
     .eq("bill_id", billId)
+    .eq("bill_source", billSource)
     .order("payment_date", { ascending: true })
     .order("payment_id", { ascending: true });
 
@@ -282,22 +286,28 @@ async function getPaymentsByBillId(billId) {
 }
 
 async function hasAnyPayment(billId) {
+  return hasAnyPaymentBySource(billId, "native");
+}
+
+async function hasAnyPaymentBySource(billId, billSource) {
   const { count, error } = await supabase
     .from("tbl_payments")
     .select("payment_id", { head: true, count: "exact" })
-    .eq("bill_id", billId);
+    .eq("bill_id", billId)
+    .eq("bill_source", billSource);
 
   if (error) throw error;
   return (count || 0) > 0;
 }
 
-async function listPaymentsForBills(billIds) {
+async function listPaymentsForBills(billIds, billSource = "native") {
   if (!billIds.length) return [];
 
   const { data, error } = await supabase
     .from("tbl_payments")
-    .select("payment_id, bill_id, amount_paid, payment_date")
+    .select("payment_id, bill_id, bill_source, amount_paid, payment_date, status, voided_at")
     .in("bill_id", billIds)
+    .eq("bill_source", billSource)
     .order("payment_date", { ascending: true })
     .order("payment_id", { ascending: true });
 
@@ -317,7 +327,8 @@ async function fetchAnalyticsBills() {
 async function fetchAnalyticsPayments() {
   const { data, error } = await supabase
     .from("tbl_payments")
-    .select("payment_id, bill_id, amount_paid, payment_date, payment_method");
+    .select("payment_id, bill_id, bill_source, amount_paid, payment_date, payment_method, status, voided_at")
+    .eq("bill_source", "native");
 
   if (error) throw error;
   return data || [];
@@ -330,23 +341,16 @@ async function fetchPaymentsWithBillContext() {
       payment_id,
       payment_code,
       bill_id,
+      bill_source,
       payment_method,
       amount_paid,
       reference_number,
       payment_date,
       received_by,
       notes,
-      created_at,
-      tbl_bills (
-        bill_id,
-        bill_code,
-        patient_id,
-        status,
-        net_amount,
-        total_amount,
-        created_at,
-        tbl_patients (*)
-      )
+      status,
+      voided_at,
+      created_at
     `)
     .order("payment_date", { ascending: false })
     .order("payment_id", { ascending: false });
@@ -405,6 +409,15 @@ async function getMedicationById(medicationId) {
 
   if (error) throw error;
   return data;
+}
+
+async function listMedicationCatalogForMatching() {
+  const { data, error } = await supabase
+    .from("tbl_medications")
+    .select("medication_id, medication_name");
+
+  if (error) throw error;
+  return data || [];
 }
 
 async function updateInventoryByMedicationId(medicationId, updates) {
@@ -509,24 +522,16 @@ async function listPaymentsWithBillPatient() {
       payment_id,
       payment_code,
       bill_id,
+      bill_source,
       payment_method,
       amount_paid,
       reference_number,
       payment_date,
       received_by,
       notes,
-      created_at,
-      tbl_bills (
-        bill_id,
-        bill_code,
-        patient_id,
-        net_amount,
-        status,
-        tbl_patients (
-          first_name,
-          last_name
-        )
-      )
+      status,
+      voided_at,
+      created_at
     `)
     .order("payment_date", { ascending: false })
     .order("payment_id", { ascending: false });
@@ -542,24 +547,16 @@ async function listPaymentsByBillIdWithBillPatient(billId) {
       payment_id,
       payment_code,
       bill_id,
+      bill_source,
       payment_method,
       amount_paid,
       reference_number,
       payment_date,
       received_by,
       notes,
-      created_at,
-      tbl_bills (
-        bill_id,
-        bill_code,
-        patient_id,
-        net_amount,
-        status,
-        tbl_patients (
-          first_name,
-          last_name
-        )
-      )
+      status,
+      voided_at,
+      created_at
     `)
     .eq("bill_id", billId)
     .order("payment_date", { ascending: true })
@@ -635,6 +632,71 @@ async function deletePrescriptionUsageLogById(logId) {
     .eq("log_id", logId);
 
   if (error) throw error;
+}
+
+async function getIntegratedBillById(billId) {
+  const { data, error } = await supabase
+    .schema("public")
+    .rpc("get_bill_with_patient", { p_bill_id: billId });
+  if (error) throw error;
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) {
+    const notFoundError = new Error("Bill not found.");
+    notFoundError.code = "PGRST116";
+    throw notFoundError;
+  }
+
+  return row;
+}
+
+async function updateIntegratedBillById(billId, updates) {
+  const patch = {
+    ...updates,
+    updated_at: updates?.updated_at || new Date().toISOString(),
+  };
+
+  const { data, error } = await supabase
+    .schema("public")
+    .from("tbl_bills")
+    .update(patch)
+    .eq("bill_id", billId)
+    .select("bill_id, status, updated_at")
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+async function getBillsByIdsWithPatients(billIds) {
+  if (!Array.isArray(billIds) || billIds.length === 0) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("tbl_bills")
+    .select(BILL_SELECT)
+    .in("bill_id", billIds);
+
+  if (error) throw error;
+  return data || [];
+}
+
+async function listIntegratedMedicationBillItemsByBillId(billId) {
+  const { data, error } = await supabase
+    .schema("public")
+    .from("tbl_bill_items")
+    .select("bill_item_id, bill_id, service_id, log_id, medication_id, description, quantity, unit_price, subtotal, created_at, service_type")
+    .eq("bill_id", billId)
+    .order("bill_item_id", { ascending: true });
+
+  if (error) throw error;
+  return (data || []).filter((item) => {
+    const hasMedicationId = Number(item?.medication_id || 0) > 0;
+    const type = String(item?.service_type || "").trim().toLowerCase();
+    const isMedicationType = type === "medication" || type === "medications";
+    return hasMedicationId || isMedicationType;
+  });
 }
 
 async function fetchPrescriptionUsageLogsForReports() {
@@ -715,6 +777,16 @@ async function listActiveServices() {
 async function getAppUserById(userId) {
   if (!userId) return null;
 
+  const subsystem3Query = await supabase
+    .schema("subsystem3")
+    .from("tbl_users")
+    .select(APP_USER_SELECT)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (!subsystem3Query.error && subsystem3Query.data) {
+    return subsystem3Query.data;
+  }
+
   const { data, error } = await supabase
     .from("tbl_users")
     .select(APP_USER_SELECT)
@@ -744,14 +816,18 @@ export {
   listPaymentsWithBillPatient,
   listPaymentsByBillIdWithBillPatient,
   getBillById,
+  getBillsByIdsWithPatients,
   getBillItemById,
   getBillItemsByBillId,
   getInventoryByMedicationId,
   getMedicationById,
+  listMedicationCatalogForMatching,
   getBatchStockTotalByMedicationId,
   getNextCode,
   getPaymentsByBillId,
+  getPaymentsByBillIdAndSource,
   hasAnyPayment,
+  hasAnyPaymentBySource,
   createPatient,
   listPatients,
   listActiveServices,
@@ -760,6 +836,7 @@ export {
   listBillIdsByItemDateRange,
   listPaymentsForBills,
   listMedicationBillItemsByBillId,
+  listIntegratedMedicationBillItemsByBillId,
   listAvailableBatchesByMedicationId,
   hasPatientById,
   findPatientUuidByIdentifier,
@@ -770,4 +847,6 @@ export {
   updateBatchById,
   updateBillById,
   updateBillItemById,
+  getIntegratedBillById,
+  updateIntegratedBillById,
 };
